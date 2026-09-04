@@ -1,0 +1,130 @@
+/* ============================================================
+   CIP Design tokens
+   Neutral, calm, premium. Tenant colour is injected at runtime
+   through --brand-* variables set by <CompanyWorkspace />.
+   ============================================================ */
+
+:root {
+  /* Ink / neutrals */
+  --ink-900: #0b1220;
+  --ink-800: #16203a;
+  --ink-700: #26324e;
+  --ink-600: #48546f;
+  --ink-500: #66738c;
+  --ink-400: #8e99ad;
+  --ink-300: #b7c0cf;
+  --ink-200: #dde3ec;
+  --ink-100: #eef1f6;
+  --ink-050: #f6f8fb;
+
+  --surface: #ffffff;
+  --canvas: #f7f9fc;
+  --line: #e6eaf1;
+  --line-soft: #eef1f6;
+
+  /* Semantic — the colour rule matters:
+     red = cannot ship, amber = attention, green = ready */
+  --ok-700: #0d7a52;
+  --ok-500: #12a273;
+  --ok-050: #e8f7f1;
+  --warn-700: #9a6300;
+  --warn-500: #d38b06;
+  --warn-050: #fdf4e3;
+  --stop-700: #a4262c;
+  --stop-500: #d64550;
+  --stop-050: #fdeeef;
+  --info-700: #3f3d9e;
+  --info-500: #5b58d6;
+  --info-050: #eeeefc;
+
+  /* Brand — overridden per tenant */
+  --brand: #5b58d6;
+  --brand-deep: #3f3d9e;
+  --brand-soft: #eeeefc;
+  --brand-tint: #f6f6ff;
+  --brand-ink: #ffffff;
+
+  /* Sidebar — overridden per tenant */
+  --nav-bg: #ffffff;
+  --nav-fg: #48546f;
+  --nav-fg-strong: #0b1220;
+  --nav-line: #e6eaf1;
+  --nav-active-bg: var(--brand-soft);
+  --nav-active-fg: var(--brand-deep);
+  --nav-hover: #f3f5f9;
+  --nav-card: #f7f9fc;
+
+  /* Shape */
+  --r-xs: 8px;
+  --r-sm: 12px;
+  --r-md: 16px;
+  --r-lg: 22px;
+  --r-xl: 28px;
+  --r-pill: 999px;
+
+  /* Elevation — soft, never heavy */
+  --sh-1: 0 1px 2px rgba(16, 24, 40, .04), 0 1px 3px rgba(16, 24, 40, .06);
+  --sh-2: 0 2px 4px rgba(16, 24, 40, .03), 0 8px 20px rgba(16, 24, 40, .06);
+  --sh-3: 0 4px 8px rgba(16, 24, 40, .04), 0 18px 40px rgba(16, 24, 40, .09);
+  --sh-focus: 0 0 0 4px color-mix(in srgb, var(--brand) 18%, transparent);
+
+  /* Type */
+  --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-display: 'Fraunces', 'Iowan Old Style', Georgia, serif;
+
+  --sidebar-w: 268px;
+  --shell-max: 1240px;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root { height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--canvas);
+  color: var(--ink-700);
+  font-family: var(--font);
+  font-size: 15px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1, h2, h3, h4 { color: var(--ink-900); margin: 0; line-height: 1.2; letter-spacing: -0.02em; font-weight: 600; }
+h1 { font-size: 34px; letter-spacing: -0.03em; }
+h2 { font-size: 22px; }
+h3 { font-size: 17px; }
+h4 { font-size: 15px; }
+p { margin: 0; }
+a { color: inherit; text-decoration: none; }
+button, input, textarea, select { font: inherit; color: inherit; }
+button { cursor: pointer; }
+
+::selection { background: color-mix(in srgb, var(--brand) 22%, transparent); }
+
+:focus-visible { outline: none; box-shadow: var(--sh-focus); border-radius: var(--r-sm); }
+/* The composer draws its own focus state on the whole card. */
+.composer textarea:focus-visible { box-shadow: none; }
+
+/* Utility scraps used across the app */
+.muted { color: var(--ink-500); }
+.tiny { font-size: 12.5px; }
+.small { font-size: 13.5px; }
+.strong { color: var(--ink-900); font-weight: 600; }
+.row { display: flex; align-items: center; }
+.gap-6 { gap: 6px; } .gap-8 { gap: 8px; } .gap-10 { gap: 10px; }
+.gap-12 { gap: 12px; } .gap-16 { gap: 16px; } .gap-20 { gap: 20px; }
+.spread { display: flex; align-items: center; justify-content: space-between; }
+.stack { display: flex; flex-direction: column; }
+.grow { flex: 1; min-width: 0; }
+.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+@keyframes riseIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes shimmer { 0% { opacity: .35; } 50% { opacity: 1; } 100% { opacity: .35; } }
+.rise { animation: riseIn .38s cubic-bezier(.22,.8,.3,1) both; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: .001ms !important; transition-duration: .001ms !important; }
+}
