@@ -1,9 +1,12 @@
+'use client';
+
 import { useMemo, useState } from 'react';
-import { useTenant } from '../context/tenantStore';
-import { useNav } from '../context/NavContext';
+import { useWorkspace } from '@/context/workspace';
+import { useNavigate } from '@/lib/navigate';
+import { useToast } from '@/context/toast';
 import { Card, EmptyState, Pill, StatusPill } from '../components/ui/Bits';
 import { Icon } from '../components/ui/Icon';
-import type { WorkItem } from '../data/types';
+import type { WorkItemDTO } from '@/types/workspace';
 
 type Tab = 'all' | 'blocked' | 'review' | 'progress' | 'done';
 
@@ -15,7 +18,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'done', label: 'Completed' },
 ];
 
-const MATCH: Record<Tab, (w: WorkItem) => boolean> = {
+const MATCH: Record<Tab, (w: WorkItemDTO) => boolean> = {
   all: () => true,
   blocked: (w) => w.status === 'blocked',
   review: (w) => w.status === 'in_review',
@@ -24,18 +27,19 @@ const MATCH: Record<Tab, (w: WorkItem) => boolean> = {
 };
 
 /** Red only ever means "this cannot be shipped". */
-function edge(w: WorkItem) {
+function edge(w: WorkItemDTO) {
   if (w.status === 'blocked') return 'stop';
   if (w.status === 'in_review') return 'warn';
   if (w.status === 'completed') return 'ok';
   return 'busy';
 }
 
-export function TrustSection({ onNote }: { onNote: (s: string) => void }) {
-  const { tenant } = useTenant();
-  const { go } = useNav();
+export function TrustSection() {
+  const workspace = useWorkspace();
+  const { ask } = useNavigate();
+  const { note: onNote } = useToast();
   const [tab, setTab] = useState<Tab>('all');
-  const t = tenant.trust;
+  const t = workspace.trust;
 
   const counts = useMemo(
     () => ({
@@ -57,7 +61,7 @@ export function TrustSection({ onNote }: { onNote: (s: string) => void }) {
         <p className="eyebrow">Trust</p>
         <h1>Everything is checked, tracked and improving</h1>
         <p className="lede">
-          Where your work stands, what is holding anything up, and what we have learned about {tenant.name} this month.
+          Where your work stands, what is holding anything up, and what we have learned about {workspace.name} this month.
         </p>
       </header>
 
@@ -111,7 +115,7 @@ export function TrustSection({ onNote }: { onNote: (s: string) => void }) {
             title="Nothing in this list — which is good news"
             copy="When you have work at this stage it appears here, with the reason in plain language."
             action={
-              <button type="button" className="btn btn-primary btn-sm" onClick={() => go('ask')}>
+              <button type="button" className="btn btn-primary btn-sm" onClick={() => ask()}>
                 Create something
               </button>
             }
@@ -149,9 +153,9 @@ export function TrustSection({ onNote }: { onNote: (s: string) => void }) {
                 </span>
               )}
 
-              {w.owner && (
+              {w.ownerName && (
                 <span className="wi-people">
-                  <Icon name="people" size={14} /> With {w.owner}
+                  <Icon name="people" size={14} /> With {w.ownerName}
                 </span>
               )}
             </span>
@@ -195,8 +199,8 @@ export function TrustSection({ onNote }: { onNote: (s: string) => void }) {
 }
 
 function ChecksAndLearnings() {
-  const { tenant } = useTenant();
-  const t = tenant.trust;
+  const workspace = useWorkspace();
+  const t = workspace.trust;
 
   return (
     <>

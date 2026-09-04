@@ -93,8 +93,8 @@ export async function getSession(): Promise<AuthenticatedSession | null> {
       join users u       on u.id = s.user_id
       -- the join to memberships is the authorisation check: no membership,
       -- no row, no session, whatever the session record claims.
-      -- `companies` is deliberately not joined: it is under row-level
-      -- security, which has no company set this early in the request.
+      -- the companies table is deliberately not joined: it is under
+      -- row-level security, and no company is set this early in a request.
       join memberships m on m.user_id = s.user_id and m.company_id = s.company_id
      where s.token_hash = ${tokenHash(token)}
        and s.expires_at > now()

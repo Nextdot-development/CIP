@@ -3,6 +3,23 @@
   "plugins": ["react", "typescript", "oxc"],
   "rules": {
     "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
+    "react/only-export-components": [
+      "warn",
+      {
+        "allowConstantExport": true,
+        "allowExportNames": [
+          "metadata",
+          "generateMetadata",
+          "dynamic",
+          "revalidate",
+          "runtime",
+          "config",
+          "useWorkspace",
+          "useAskSeed",
+          "useToast"
+        ]
+      }
+    ]
+  },
+  "ignorePatterns": [".next", "dist", "node_modules"]
 }

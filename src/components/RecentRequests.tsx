@@ -1,18 +1,20 @@
+'use client';
+
 import type { CSSProperties } from 'react';
-import { useTenant } from '../context/tenantStore';
-import { useNav } from '../context/NavContext';
+import { useWorkspace } from '@/context/workspace';
+import { useNavigate } from '@/lib/navigate';
 import { Card, EmptyState, LinkCta, StatusPill } from './ui/Bits';
 import { Icon } from './ui/Icon';
 
 export function RecentRequests() {
-  const { tenant } = useTenant();
-  const { go } = useNav();
-  const items = tenant.requests.slice(0, 4);
+  const workspace = useWorkspace();
+  const { go, ask } = useNavigate();
+  const items = workspace.requests.slice(0, 4);
 
   return (
     <Card
       title="Your recent requests"
-      action={<LinkCta onClick={() => go('trust')}>View all</LinkCta>}
+      action={<LinkCta onClick={() => go('/trust')}>View all</LinkCta>}
     >
       {items.length === 0 ? (
         <EmptyState
@@ -20,7 +22,7 @@ export function RecentRequests() {
           title="Nothing here yet — and that is easy to fix"
           copy={`You haven't asked ${'CIP'} for anything yet. Tell us what you are launching next and we will take it from there.`}
           action={
-            <button type="button" className="btn btn-primary btn-sm" onClick={() => go('ask')}>
+            <button type="button" className="btn btn-primary btn-sm" onClick={() => ask()}>
               Create something
             </button>
           }

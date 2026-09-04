@@ -1,24 +1,26 @@
+'use client';
+
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { useTenant } from '../context/tenantStore';
+import { useWorkspace } from '@/context/workspace';
 import { Avatar } from './ui/Bits';
 import { Icon } from './ui/Icon';
 
 /** The pod is always visible. People and AI, working together — not a black box. */
 export function PodCard() {
-  const { tenant } = useTenant();
+  const workspace = useWorkspace();
   const [open, setOpen] = useState(false);
 
   return (
     <>
       <div className="pod-card">
         <div className="pod-stack">
-          {tenant.pod.members.map((m) => (
+          {workspace.pod.members.map((m) => (
             <Avatar key={m.id} initials={m.initials} tint={m.tint} size="md" title={`${m.name} — ${m.craft}`} />
           ))}
         </div>
         <div className="pod-title">Your CIP Pod</div>
-        <p className="pod-copy">{tenant.pod.blurb}</p>
+        <p className="pod-copy">{workspace.pod.blurb}</p>
         <button type="button" className="pod-cta" onClick={() => setOpen(true)}>
           Meet your pod <Icon name="arrow-right" size={14} />
         </button>
@@ -34,7 +36,7 @@ export function PodCard() {
  * stacking context — an overlay left inside it would sit under the page.
  */
 function PodDrawer({ onClose }: { onClose: () => void }) {
-  const { tenant } = useTenant();
+  const workspace = useWorkspace();
 
   // Hold the page still while the drawer is open.
   useEffect(() => {
@@ -53,7 +55,7 @@ function PodDrawer({ onClose }: { onClose: () => void }) {
           <div>
             <h3>Your CIP Pod</h3>
             <p className="small muted" style={{ marginTop: 6 }}>
-              The people behind {tenant.name}&apos;s work. CIP does the heavy lifting; they make the calls.
+              The people behind {workspace.name}&apos;s work. CIP does the heavy lifting; they make the calls.
             </p>
           </div>
           <button type="button" className="icon-btn" onClick={onClose} aria-label="Close">
@@ -61,7 +63,7 @@ function PodDrawer({ onClose }: { onClose: () => void }) {
           </button>
         </header>
         <div className="drawer-body">
-          {tenant.pod.members.map((m) => (
+          {workspace.pod.members.map((m) => (
             <div className="pod-member" key={m.id}>
               <Avatar initials={m.initials} tint={m.tint} size="lg" />
               <div>

@@ -126,3 +126,9 @@
   animation: riseIn .25s ease both;
 }
 .toast .ok { color: #6ee7b7; display: grid; place-items: center; }
+
+.logo-mark .logo-img { width: 100%; height: 100%; object-fit: contain; border-radius: inherit; }
+.logo-mark .logo-letters { font-weight: 700; font-size: 0.42em; letter-spacing: -0.02em; line-height: 1; }
+.logo-mark.sm .logo-letters { font-size: 12px; }
+.logo-mark.md .logo-letters { font-size: 14px; }
+.logo-mark.lg .logo-letters { font-size: 18px; }

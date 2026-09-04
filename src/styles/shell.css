@@ -133,3 +133,18 @@
   .sidebar { display: none; }
   .page { padding-left: 20px; padding-right: 20px; }
 }
+
+/* Company badge — a label, not a control */
+.company-badge {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; border-radius: var(--r-md);
+  background: var(--nav-card); border: 1px solid var(--nav-line);
+}
+.company-badge .name { font-weight: 600; color: var(--nav-fg-strong); font-size: 14.5px; }
+.company-badge .industry { font-size: 11.5px; color: var(--nav-fg); opacity: .8; }
+
+.side-user .sign-out {
+  border: 0; background: transparent; color: var(--nav-fg);
+  padding: 7px; border-radius: var(--r-xs); display: grid; place-items: center;
+}
+.side-user .sign-out:hover { background: var(--nav-hover); color: var(--nav-fg-strong); }

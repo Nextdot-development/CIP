@@ -7,7 +7,7 @@ export type IconName =
   | 'sparkle' | 'image' | 'video' | 'doc' | 'grid'
   | 'megaphone' | 'alert' | 'bolt' | 'trend' | 'palette' | 'book' | 'voice' | 'box'
   | 'link' | 'clock' | 'shield' | 'close' | 'people' | 'lock' | 'unlock'
-  | 'x';
+  | 'x' | 'signout';
 
 const P: Record<IconName, string> = {
   home: 'M3 10.2 12 3l9 7.2V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z',
@@ -39,6 +39,7 @@ const P: Record<IconName, string> = {
   shield: 'M12 3l7.5 3v5.6c0 4.3-3 8.2-7.5 9.4-4.5-1.2-7.5-5.1-7.5-9.4V6z',
   close: 'M6 6l12 12 M18 6 6 18',
   x: 'M6 6l12 12 M18 6 6 18',
+  signout: 'M15.5 8.5V6a1 1 0 0 0-1-1h-8a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-2.5 M10.5 12h10 M18 9l3 3-3 3',
   people: 'M9 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z M2.5 20a6.5 6.5 0 0 1 13 0 M16 4.5a3.5 3.5 0 0 1 0 7 M17 14.2a6.5 6.5 0 0 1 4.5 5.8',
   lock: 'M7 10.5V8a5 5 0 0 1 10 0v2.5 M5.5 10.5h13a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1h-13a1 1 0 0 1-1-1v-8a1 1 0 0 1 1-1z',
   unlock: 'M7 10.5V8a5 5 0 0 1 9.6-2 M5.5 10.5h13a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1h-13a1 1 0 0 1-1-1v-8a1 1 0 0 1 1-1z',

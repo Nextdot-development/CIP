@@ -1,8 +1,10 @@
+'use client';
+
 import { useState } from 'react';
 import type { CSSProperties } from 'react';
-import { useTenant } from '../context/tenantStore';
-import { useNav } from '../context/NavContext';
-import type { AskMode } from '../context/NavContext';
+import { useWorkspace } from '@/context/workspace';
+import { useNavigate } from '@/lib/navigate';
+import type { AskMode } from '@/context/NavContext';
 import { PromptSuggestions, RequestComposer } from '../components/RequestComposer';
 import { RecentRequests } from '../components/RecentRequests';
 import { MonthlySummary } from '../components/MonthlySummary';
@@ -17,12 +19,12 @@ function greeting(): string {
 }
 
 export function HomeDashboard() {
-  const { tenant } = useTenant();
-  const { go } = useNav();
+  const workspace = useWorkspace();
+  const { ask } = useNavigate();
   const [draft, setDraft] = useState('');
 
   const send = (mode: AskMode) => {
-    if (draft.trim()) go('ask', { text: draft.trim(), mode });
+    if (draft.trim()) ask({ text: draft.trim(), mode });
   };
 
   return (
@@ -30,7 +32,7 @@ export function HomeDashboard() {
       <div className="home-top">
         <div className="greeting">
           <h1>
-            {greeting()}, {tenant.user.firstName}
+            {greeting()}, {workspace.user.firstName}
             <span className="wave">👋</span>
           </h1>
           <p className="ask-line">What would you like to create today?</p>
@@ -40,13 +42,13 @@ export function HomeDashboard() {
             value={draft}
             onChange={setDraft}
             onSubmit={send}
-            placeholder={tenant.composerPlaceholder}
+            placeholder={workspace.composerPlaceholder}
           />
 
           <PromptSuggestions
             lead="Try asking:"
-            items={tenant.promptSuggestions}
-            onPick={(s) => go('ask', { text: s, mode: 'pod' })}
+            items={workspace.promptSuggestions}
+            onPick={(s) => ask({ text: s, mode: 'pod' })}
           />
         </div>
 
@@ -64,28 +66,30 @@ export function HomeDashboard() {
   );
 }
 
-/** Company-owned art. Changes completely with the tenant. */
+/** Company-owned art. Changes completely with the workspace. */
 function HeroPanel() {
-  const { tenant } = useTenant();
+  const workspace = useWorkspace();
   return (
     <aside className="hero">
       <div className="hero-logo">
-        <LogoMark logo={tenant.branding.logo} bg="rgba(255,255,255,.14)" fg="currentColor" size="md" />
-        <span className="hero-name">{tenant.name}</span>
+        <LogoMark name={workspace.name} logoUrl={workspace.logoUrl} bg="rgba(255,255,255,.14)" fg="currentColor" size="md" />
+        <span className="hero-name">{workspace.name}</span>
       </div>
-      <h2>{tenant.hero.title}</h2>
-      <p className="hero-sub">{tenant.hero.subtitle}</p>
-      <span className="hero-watermark" aria-hidden>
-        <LogoMark logo={tenant.branding.logo} bg="transparent" fg="currentColor" size="lg" />
-      </span>
+      <h2>{workspace.hero.title}</h2>
+      <p className="hero-sub">{workspace.hero.subtitle}</p>
+      {workspace.logoUrl && (
+        <span className="hero-watermark" aria-hidden>
+          <LogoMark name={workspace.name} logoUrl={workspace.logoUrl} bg="transparent" fg="currentColor" size="lg" />
+        </span>
+      )}
     </aside>
   );
 }
 
 function Pillars() {
-  const { tenant } = useTenant();
-  const { go } = useNav();
-  const bb = tenant.brandBrain;
+  const workspace = useWorkspace();
+  const { go, ask } = useNavigate();
+  const bb = workspace.brandBrain;
 
   return (
     <div className="pillars">
@@ -103,7 +107,7 @@ function Pillars() {
         <h3>Teach</h3>
         <p className="p-tag">Give us your brand.</p>
         <p className="p-copy">
-          Upload, connect and confirm. Help us understand what makes {tenant.name} unlike anyone else.
+          Upload, connect and confirm. Help us understand what makes {workspace.name} unlike anyone else.
         </p>
         <div className="p-meta">
           <Progress value={bb.understanding} goal={bb.unlockAt} />
@@ -111,7 +115,7 @@ function Pillars() {
             <b className="strong">{bb.understanding}% understood.</b> Paid campaigns unlock at {bb.unlockAt}%.
           </p>
         </div>
-        <button type="button" className="btn btn-ghost" onClick={() => go('teach')}>
+        <button type="button" className="btn btn-ghost" onClick={() => go('/teach')}>
           Continue setup <Icon name="arrow-right" size={15} />
         </button>
       </article>
@@ -132,7 +136,7 @@ function Pillars() {
         <p className="p-copy">
           Describe your idea the way you would to a colleague. CIP turns it into on-brand work.
         </p>
-        <button type="button" className="btn btn-ghost" onClick={() => go('ask')}>
+        <button type="button" className="btn btn-ghost" onClick={() => ask()}>
           Create something <Icon name="arrow-right" size={15} />
         </button>
       </article>
@@ -156,7 +160,7 @@ function Pillars() {
         <div className="p-meta">
           <TrustLine />
         </div>
-        <button type="button" className="btn btn-ghost" onClick={() => go('trust')}>
+        <button type="button" className="btn btn-ghost" onClick={() => go('/trust')}>
           View dashboard <Icon name="arrow-right" size={15} />
         </button>
       </article>
@@ -166,9 +170,9 @@ function Pillars() {
 
 /** Says plainly whether anything is actually stuck. */
 function TrustLine() {
-  const { tenant } = useTenant();
-  const blocked = tenant.trust.work.filter((w) => w.status === 'blocked').length;
-  const review = tenant.trust.work.filter((w) => w.status === 'in_review').length;
+  const workspace = useWorkspace();
+  const blocked = workspace.trust.work.filter((w) => w.status === 'blocked').length;
+  const review = workspace.trust.work.filter((w) => w.status === 'in_review').length;
 
   if (blocked > 0) {
     return (

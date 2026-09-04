@@ -184,8 +184,11 @@ async function loadBrand(tx: TransactionSql, scope: CompanyScope): Promise<W.Bra
 async function loadMonth(tx: TransactionSql, scope: CompanyScope): Promise<W.WorkspaceDTO['month']> {
   // The workspace shows the most recent month that actually has figures,
   // rather than assuming the current calendar month has been closed.
-  const periodRows = await tx<{ period: Date }[]>`
-    select max(period) as period from monthly_metrics where company_id = ${scope.companyId}
+  // Read the period back as text. A `date` round-tripped through a JS Date
+  // picks up a timezone and stops matching the column it came from.
+  const periodRows = await tx<{ period: string | null }[]>`
+    select to_char(max(period), 'YYYY-MM-DD') as period
+      from monthly_metrics where company_id = ${scope.companyId}
   `;
   const period = periodRows[0]?.period ?? null;
   if (!period) return { period: new Date().toISOString().slice(0, 10), metrics: [] };
@@ -199,12 +202,12 @@ async function loadMonth(tx: TransactionSql, scope: CompanyScope): Promise<W.Wor
   >`
     select id, key, label, value, unit, note, delta, delta_unit, delta_note, tone
       from monthly_metrics
-     where company_id = ${scope.companyId} and period = ${period}
+     where company_id = ${scope.companyId} and period = ${period}::date
      order by sort_order
   `;
 
   return {
-    period: period.toISOString().slice(0, 10),
+    period,
     // numeric arrives as a string from the driver so precision is never lost
     metrics: rows.map((r) => ({
       id: r.id, key: r.key, label: r.label,

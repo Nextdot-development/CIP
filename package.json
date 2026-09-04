@@ -8,10 +8,13 @@
     "start": "next start",
     "lint": "oxlint",
     "typecheck": "tsc --noEmit",
-    "db:migrate": "tsx src/server/migrate.ts",
-    "db:seed": "tsx src/server/seed.ts",
-    "db:reset": "tsx src/server/migrate.ts && tsx src/server/seed.ts",
-    "test": "node --conditions=react-server --import tsx --test tests/*.test.ts"
+    "db:migrate": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx src/server/migrate.ts",
+    "db:seed": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx src/server/seed.ts",
+    "db:reset": "npm run db:migrate && npm run db:seed",
+    "test": "node --conditions=react-server --import tsx --test tests/*.test.ts",
+    "db:local": "node --env-file-if-exists=.env.local --import tsx scripts/local-db.ts",
+    "prove": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/prove-isolation.ts",
+    "check:bundle": "tsx scripts/check-bundle.ts"
   },
   "dependencies": {
     "next": "^16.3.4",

@@ -8,6 +8,8 @@ const nextConfig: NextConfig = {
   experimental: {
     typedRoutes: true,
   },
+  // Next writes AGENTS.md/CLAUDE.md by default; this repo keeps its own docs.
+  agentRules: false,
 };
 
 export default nextConfig;

@@ -1,7 +1,11 @@
+'use client';
+
 import { useEffect, useState } from 'react';
-import { useTenant } from '../context/tenantStore';
-import { useNav } from '../context/NavContext';
-import type { AskMode, AskSeed } from '../context/NavContext';
+import { useWorkspace } from '@/context/workspace';
+import { useNavigate } from '@/lib/navigate';
+import { useAskSeed } from '@/context/NavContext';
+import { useToast } from '@/context/toast';
+import type { AskMode } from '@/context/NavContext';
 import { PromptSuggestions, RequestComposer } from '../components/RequestComposer';
 import { Avatar, Card } from '../components/ui/Bits';
 import { Icon } from '../components/ui/Icon';
@@ -17,9 +21,11 @@ type Phase = 'compose' | 'thinking' | 'review' | 'working' | 'done';
  * anything we got wrong, then choose how it gets made: instantly by CIP, or
  * properly by your pod. The difference is stated plainly, never implied.
  */
-export function AskSection({ seed, onNote }: { seed?: AskSeed; onNote: (s: string) => void }) {
-  const { tenant } = useTenant();
-  const { go } = useNav();
+export function AskSection() {
+  const workspace = useWorkspace();
+  const { go } = useNavigate();
+  const { seed } = useAskSeed();
+  const { note: onNote } = useToast();
   const [draft, setDraft] = useState(seed?.text ?? '');
   const [phase, setPhase] = useState<Phase>('compose');
   const [mode, setMode] = useState<AskMode>(seed?.mode ?? 'pod');
@@ -31,7 +37,7 @@ export function AskSection({ seed, onNote }: { seed?: AskSeed; onNote: (s: strin
     if (!text.trim()) return;
     setMode(m);
     setPhase('thinking');
-    const result = interpret(text, tenant);
+    const result = interpret(text, workspace);
     setTimeout(() => {
       setU(result);
       setItems(result.items);
@@ -70,7 +76,7 @@ export function AskSection({ seed, onNote }: { seed?: AskSeed; onNote: (s: strin
     return mode === 'instant' ? (
       <InstantDrafts understanding={u} onSendToPod={() => { setMode('pod'); setPhase('done'); onNote('Sent to your pod'); }} onAgain={restart} />
     ) : (
-      <SentToPod understanding={u} items={items} onTrack={() => go('trust')} onAgain={restart} />
+      <SentToPod understanding={u} items={items} onTrack={() => go('/trust')} onAgain={restart} />
     );
   }
 
@@ -85,13 +91,13 @@ export function AskSection({ seed, onNote }: { seed?: AskSeed; onNote: (s: strin
         value={draft}
         onChange={setDraft}
         onSubmit={(m) => run(draft, m)}
-        placeholder={tenant.composerPlaceholder}
+        placeholder={workspace.composerPlaceholder}
         autoFocus
       />
 
       {phase === 'compose' && (
         <PromptSuggestions
-          items={tenant.promptSuggestions}
+          items={workspace.promptSuggestions}
           onPick={(s) => {
             setDraft(s);
             run(s, 'pod');
@@ -104,7 +110,7 @@ export function AskSection({ seed, onNote }: { seed?: AskSeed; onNote: (s: strin
           <span className="pulse" />
           <span className="pulse" />
           <span className="pulse" />
-          Reading your request against everything we know about {tenant.name}...
+          Reading your request against everything we know about {workspace.name}...
         </div>
       )}
 
@@ -112,7 +118,7 @@ export function AskSection({ seed, onNote }: { seed?: AskSeed; onNote: (s: strin
         <div className="understanding">
           <Card className="u-card">
             <div className="u-lead">
-              <Avatar initials="CIP" tint={[tenant.branding.primary, tenant.branding.deep]} size="lg" />
+              <Avatar initials="CIP" tint={[workspace.branding.primary, workspace.branding.deep]} size="lg" />
               <div>
                 <p className="u-said">{u.headline}</p>
                 <p className="u-sub">Change anything we got wrong — nothing starts until you say so.</p>
@@ -277,14 +283,14 @@ function Plan({
 }
 
 function Working() {
-  const { tenant } = useTenant();
+  const workspace = useWorkspace();
   return (
     <div className="ask-wrap rise">
       <div className="thinking" style={{ padding: '120px 0' }}>
         <span className="pulse" />
         <span className="pulse" />
         <span className="pulse" />
-        Writing your drafts in {tenant.name}&apos;s voice...
+        Writing your drafts in {workspace.name}&apos;s voice...
       </div>
     </div>
   );
@@ -300,7 +306,7 @@ function InstantDrafts({
   onSendToPod: () => void;
   onAgain: () => void;
 }) {
-  const { tenant } = useTenant();
+  const workspace = useWorkspace();
   const drafts = u.deliverables.filter((d) => d.id !== 'd-check');
 
   return (
@@ -311,7 +317,7 @@ function InstantDrafts({
         </span>
         <h1>Your drafts are ready.</h1>
         <p className="lede">
-          Written in {tenant.name}&apos;s voice, from everything we know about your brand. Have a look before anyone
+          Written in {workspace.name}&apos;s voice, from everything we know about your brand. Have a look before anyone
           else does.
         </p>
       </header>
@@ -368,7 +374,8 @@ function SentToPod({
   onTrack: () => void;
   onAgain: () => void;
 }) {
-  const { tenant } = useTenant();
+  const workspace = useWorkspace();
+  const leadName = workspace.pod.members[0]?.name ?? 'Your pod';
   const plan = u.plans.pod;
   const firstDrafts = plan.timeline.note.replace('First drafts reach you in ', '').replace('.', '');
 
@@ -380,7 +387,7 @@ function SentToPod({
         </span>
         <h1>We are on it.</h1>
         <p className="lede">
-          {tenant.pod.members[0].name} and your pod have your request. You will hear from us before anything
+          {leadName} and your pod have your request. You will hear from us before anything
           is published.
         </p>
       </header>
@@ -419,7 +426,7 @@ function SentToPod({
           <div className="plan-stat">
             <p className="ps-label">Working on it</p>
             <p className="ps-value row gap-6" style={{ marginTop: 10 }}>
-              {tenant.pod.members.slice(0, 3).map((m) => (
+              {workspace.pod.members.slice(0, 3).map((m) => (
                 <Avatar key={m.id} initials={m.initials} tint={m.tint} size="sm" title={m.name} />
               ))}
             </p>

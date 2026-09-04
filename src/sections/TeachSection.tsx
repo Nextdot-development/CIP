@@ -1,5 +1,8 @@
+'use client';
+
 import { useState } from 'react';
-import { useTenant } from '../context/tenantStore';
+import { useWorkspace } from '@/context/workspace';
+import { useToast } from '@/context/toast';
 import { Card, EmptyState, Progress } from '../components/ui/Bits';
 import { Icon } from '../components/ui/Icon';
 import type { IconName } from '../components/ui/Icon';
@@ -9,9 +12,10 @@ import type { IconName } from '../components/ui/Icon';
  * Deliberately free of anything technical: no confidence scores, no graph,
  * no model talk. Just what we know, what we are missing and what that unlocks.
  */
-export function TeachSection({ onNote }: { onNote: (s: string) => void }) {
-  const { tenant } = useTenant();
-  const bb = tenant.brandBrain;
+export function TeachSection() {
+  const workspace = useWorkspace();
+  const { note: onNote } = useToast();
+  const bb = workspace.brandBrain;
   const [answered, setAnswered] = useState<string[]>([]);
 
   const pending = bb.confirmations.filter((c) => !answered.includes(c.id));
@@ -22,7 +26,7 @@ export function TeachSection({ onNote }: { onNote: (s: string) => void }) {
         <p className="eyebrow">Teach</p>
         <h1>Your brand, in our hands</h1>
         <p className="lede">
-          The more we understand about {tenant.name}, the better and faster everything we make for you gets.
+          The more we understand about {workspace.name}, the better and faster everything we make for you gets.
         </p>
       </header>
 
@@ -140,13 +144,13 @@ export function TeachSection({ onNote }: { onNote: (s: string) => void }) {
       <Card className="pad">
         <div className="voice-grid">
           <div className="voice-col yes">
-            <p className="vc-head"><Icon name="check" size={15} /> {tenant.name} sounds like</p>
+            <p className="vc-head"><Icon name="check" size={15} /> {workspace.name} sounds like</p>
             {bb.voice.sounds.map((s) => (
               <p className="voice-line" key={s}>{s}</p>
             ))}
           </div>
           <div className="voice-col no">
-            <p className="vc-head"><Icon name="x" size={15} /> {tenant.name} never sounds like</p>
+            <p className="vc-head"><Icon name="x" size={15} /> {workspace.name} never sounds like</p>
             {bb.voice.neverSounds.map((s) => (
               <p className="voice-line" key={s}>{s}</p>
             ))}

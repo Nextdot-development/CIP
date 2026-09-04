@@ -1,10 +1,12 @@
+'use client';
+
 import type { CSSProperties } from 'react';
-import { useTenant } from '../context/tenantStore';
+import { useWorkspace } from '@/context/workspace';
 import { Card } from './ui/Bits';
 import { Icon } from './ui/Icon';
-import type { Metric } from '../data/types';
+import type { MetricView } from '@/lib/presentation';
 
-const TONE: Record<Metric['tone'], { bg: string; fg: string }> = {
+const TONE: Record<MetricView['tone'], { bg: string; fg: string }> = {
   brand: { bg: 'var(--brand-soft)', fg: 'var(--brand-deep)' },
   ok: { bg: 'var(--ok-050)', fg: 'var(--ok-700)' },
   warn: { bg: 'var(--warn-050)', fg: 'var(--warn-700)' },
@@ -14,8 +16,8 @@ const TONE: Record<Metric['tone'], { bg: string; fg: string }> = {
 
 /** Business numbers only. No tokens, no model costs, no telemetry. */
 export function MonthlySummary() {
-  const { tenant } = useTenant();
-  const m = tenant.month;
+  const workspace = useWorkspace();
+  const m = workspace.month;
 
   return (
     <Card
@@ -24,7 +26,7 @@ export function MonthlySummary() {
     >
       <div className="metrics">
         {m.metrics.map((k) => {
-          const tone = TONE[k.tone];
+          const tone = TONE[k.tone] ?? TONE.neutral;
           return (
             <div className="metric" key={k.label}>
               <span className="m-icon" style={{ background: tone.bg, color: tone.fg } as CSSProperties}>

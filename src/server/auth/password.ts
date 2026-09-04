@@ -1,8 +1,12 @@
 import 'server-only';
 import { randomBytes, scrypt as scryptCb, timingSafeEqual } from 'node:crypto';
-import { promisify } from 'node:util';
+import type { ScryptOptions } from 'node:crypto';
 
-const scrypt = promisify(scryptCb);
+function scrypt(secret: string, salt: Buffer, keylen: number, options: ScryptOptions): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    scryptCb(secret, salt, keylen, options, (err, key) => (err ? reject(err) : resolve(key)));
+  });
+}
 
 /**
  * Password hashing with scrypt from Node's standard library.
@@ -22,7 +26,7 @@ export async function hashPassword(plain: string): Promise<string> {
     throw new Error('Password must be at least 12 characters.');
   }
   const salt = randomBytes(SALT_LENGTH);
-  const key = (await scrypt(plain.normalize('NFKC'), salt, KEY_LENGTH, { N, r, p })) as Buffer;
+  const key = await scrypt(plain.normalize('NFKC'), salt, KEY_LENGTH, { N, r, p });
   return ['scrypt', N, r, p, salt.toString('base64'), key.toString('base64')].join('$');
 }
 
@@ -46,11 +50,11 @@ export async function verifyPassword(plain: string, stored: string): Promise<boo
   if (salt.length === 0 || expected.length === 0) return false;
 
   try {
-    const actual = (await scrypt(plain.normalize('NFKC'), salt, expected.length, {
+    const actual = await scrypt(plain.normalize('NFKC'), salt, expected.length, {
       N: cost,
       r: block,
       p: par,
-    })) as Buffer;
+    });
     return actual.length === expected.length && timingSafeEqual(actual, expected);
   } catch {
     return false;

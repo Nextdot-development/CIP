@@ -1,7 +1,7 @@
 import type { CSSProperties, ReactNode } from 'react';
 import { Icon } from './Icon';
 import type { IconName } from './Icon';
-import type { Status } from '../../data/types';
+import type { WorkStatus } from '@/types/workspace';
 
 /* ---------- Avatar ---------- */
 export function Avatar({
@@ -24,38 +24,43 @@ export function Avatar({
 }
 
 /* ---------- Company logo mark ----------
-   Each tenant gets a drawn mark, not a stock image, so the workspace looks
-   like the company the moment it loads. */
+   An uploaded logo when the company has one, and a drawn monogram until it
+   does. The old version switched on a hardcoded union of company names, which
+   meant a third company needed a code change. */
 export function LogoMark({
-  logo,
+  name,
+  logoUrl,
   bg,
   fg,
   size = 'md',
 }: {
-  logo: 'moments' | 'health' | 'monogram';
+  name: string;
+  logoUrl?: string | null;
   bg: string;
   fg: string;
   size?: 'sm' | 'md' | 'lg';
 }) {
-  const px = size === 'sm' ? 18 : size === 'lg' ? 28 : 22;
   const style = { '--mark-bg': bg, '--mark-fg': fg } as CSSProperties;
+
+  if (logoUrl) {
+    return (
+      <span className={`logo-mark ${size}`} style={style}>
+        <img src={logoUrl} alt="" className="logo-img" />
+      </span>
+    );
+  }
+
+  const letters = name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((w) => w[0])
+    .join('')
+    .toUpperCase();
+
   return (
-    <span className={`logo-mark ${size}`} style={style}>
-      {logo === 'health' ? (
-        <svg width={px} height={px} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-          <path d="M10 3h4v3.6l3.1-1.8 2 3.5-3.1 1.8 3.1 1.8-2 3.5L14 13.6V21h-4v-7.4l-3.1 1.8-2-3.5L8 10.1 4.9 8.3l2-3.5L10 6.6z" />
-        </svg>
-      ) : logo === 'moments' ? (
-        <svg width={px} height={px} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M12 4v5" />
-          <path d="M8.5 3.2 12 8.6l3.5-5.4" />
-          <path d="M9 9h6l1.6 4.6a4.8 4.8 0 0 1-4.6 6.4 4.8 4.8 0 0 1-4.6-6.4z" />
-        </svg>
-      ) : (
-        <svg width={px} height={px} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true">
-          <path d="M16 8a5.5 5.5 0 1 0 0 8" />
-        </svg>
-      )}
+    <span className={`logo-mark ${size}`} style={style} aria-hidden="true">
+      <span className="logo-letters">{letters}</span>
     </span>
   );
 }
@@ -63,7 +68,7 @@ export function LogoMark({
 /* ---------- Status ----------
    The colour rule lives here so it cannot drift:
    red only ever means "this cannot be shipped". */
-const STATUS: Record<Status, { label: string; cls: string }> = {
+const STATUS: Record<WorkStatus, { label: string; cls: string }> = {
   completed: { label: 'Completed', cls: 'pill-ok' },
   in_progress: { label: 'In Progress', cls: 'pill-info' },
   in_review: { label: 'In Review', cls: 'pill-warn' },
@@ -71,8 +76,8 @@ const STATUS: Record<Status, { label: string; cls: string }> = {
   scheduled: { label: 'Scheduled', cls: 'pill-neutral' },
 };
 
-export function StatusPill({ status }: { status: Status }) {
-  const s = STATUS[status];
+export function StatusPill({ status }: { status: WorkStatus }) {
+  const s = STATUS[status] ?? STATUS.scheduled;
   return <span className={`pill ${s.cls}`}>{s.label}</span>;
 }
 

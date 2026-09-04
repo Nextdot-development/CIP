@@ -1,4 +1,4 @@
-import type { Tenant } from '../data/types';
+import type { WorkspaceView } from './presentation';
 import type { AskMode } from '../context/NavContext';
 import type { IconName } from '../components/ui/Icon';
 
@@ -45,7 +45,7 @@ function findOccasion(text: string): string | null {
   return null;
 }
 
-export function interpret(input: string, tenant: Tenant): Understanding {
+export function interpret(input: string, workspace: WorkspaceView): Understanding {
   const text = input.toLowerCase();
   const occasion = findOccasion(text);
 
@@ -107,7 +107,7 @@ export function interpret(input: string, tenant: Tenant): Understanding {
   deliverables.push({
     id: 'd-check',
     title: 'Brand and compliance check',
-    note: `Reviewed by ${tenant.pod.members.find((m) => m.craft.includes('Compliance') || m.craft.includes('Medical'))?.name ?? 'your pod'}`,
+    note: `Reviewed by ${workspace.pod.members.find((m: { craft: string }) => m.craft.includes('Compliance') || m.craft.includes('Medical'))?.name ?? 'your pod'}`,
     icon: 'shield',
   });
 
@@ -122,7 +122,7 @@ export function interpret(input: string, tenant: Tenant): Understanding {
   return {
     headline: 'Here is what we understood',
     items,
-    basis: `Based on your existing brand${tenant.requests.length ? ' and your previous campaigns' : ''}.`,
+    basis: `Based on your existing brand${workspace.requests.length ? ' and your previous campaigns' : ''}.`,
     deliverables,
     plans: {
       instant: {
