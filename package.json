@@ -15,7 +15,10 @@
     "db:local": "node --env-file-if-exists=.env.local --import tsx scripts/local-db.ts",
     "prove": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/prove-isolation.ts",
     "check:bundle": "tsx scripts/check-bundle.ts",
-    "prove:drive": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/prove-drive.ts"
+    "prove:drive": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/prove-drive.ts",
+    "storage:migrate": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/migrate-storage.ts",
+    "storage:gc": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/storage-gc.ts",
+    "test:storage": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx --test tests/storage.test.ts"
   },
   "dependencies": {
     "next": "^16.3.4",

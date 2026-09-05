@@ -130,13 +130,42 @@ effect on the next request, not the next sign-in.
 
 `GET /api/workspace` takes no company parameter. Adding one would be the bug.
 
+### A note on the service role key
+
+`SUPABASE_SERVICE_ROLE_KEY` bypasses row-level security completely — it is the
+one credential that can read every company's data at once. It is server-only:
+never import it into a client component, and `npm run check:bundle` fails the
+build if it, or `service_role`, ever appears in client output.
+
+Supabase Storage policies are written against Supabase Auth JWTs (`auth.uid()`),
+and CIP issues its own sessions, so a bucket policy cannot tell one CIP company
+from another. That is why the bucket is **private with no policies at all** and
+every byte is served through `/api/drive/files/[id]/content`, which checks the
+session and the company first. The `drive_files` row — which is under row-level
+security — is what decides whether a key may be read.
+
 ### Proving it
 
 ```bash
-npm test              # 39 assertions against a real PostgreSQL
+npm test              # 45 assertions, no network needed
+npm run test:storage  # 7 more against the real Supabase bucket
 npm run prove         # workspace isolation over HTTP, needs the dev server up
 npm run prove:drive   # Drive isolation over HTTP, needs the dev server up
-npm run check:bundle  # fails if company data reached the client bundle
+npm run check:bundle  # fails if company data or a secret reached the bundle
+npm run storage:gc    # reports stored objects with no database row
+```
+
+### Storage housekeeping
+
+Rows and objects can drift apart: a `truncate companies cascade` during a
+re-seed, or any raw SQL delete, drops the row and leaves the bytes. Bytes that
+outlive their row are invisible in the UI but still exist, which is both a cost
+and a privacy problem.
+
+```bash
+npm run storage:gc              # report
+npm run storage:gc -- --delete  # remove orphaned objects
+npm run storage:migrate         # copy local-disk objects into Supabase Storage
 ```
 
 ---
@@ -162,9 +191,11 @@ and reference parents through a **composite foreign key** on
 not merely refused, it is unrepresentable: the referential constraint rejects it
 before any policy is consulted.
 
-**Storage.** `src/server/drive/storage.ts` is an adapter. The shipped driver
-writes to local disk under `CIP_STORAGE_DIR` (`./.storage`, gitignored) and is
-what the tests run against. Object keys are always
+**Storage.** `src/server/drive/storage.ts` is an adapter with two drivers.
+Supabase Storage is used when `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are
+set; local disk under `CIP_STORAGE_DIR` (`./.storage`, gitignored) otherwise,
+which is what the offline tests run against. `GET /api/health` reports which one
+is live. Object keys are always
 `companies/<company_id>/<file_id>.<ext>`, so a mis-scoped read is wrong in the
 object store too. Nothing is ever served from storage directly: there is no
 public bucket and no signed URL, and every byte leaves through
@@ -229,9 +260,10 @@ columns, and none of them constrain what the API can be used for later.
   set; uploads wait for Supabase Storage.
 - **No rate limiting on sign-in.** Failures are constant-time and generic, but
   nothing throttles repeated attempts yet.
-- **Drive storage is local disk.** Fine for one server; a Supabase Storage
-  driver is a drop-in replacement for `DriveStorage` and needs
-  `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`, which are not set.
+- **Deleting a row does not delete its bytes** unless it goes through the
+  service. `npm run storage:gc` finds the strays; nothing runs it on a schedule.
+- **Uploads are not resumable** and the whole file is buffered in memory, so
+  the 50 MB cap is also a practical memory limit per request.
 - **Archived files are not purged automatically.** They keep their bytes until
   someone deletes them permanently, and there is no archive screen yet —
   `GET /api/drive/archive` lists them.

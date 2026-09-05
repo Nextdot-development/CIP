@@ -177,7 +177,10 @@ async function main() {
 
   // Leave the Drive as we found it. Everything this script made carries the
   // run stamp, so nothing a person created is touched.
-  await admin`delete from drive_files  where name like ${'%' + String(stamp) + '%'}`;
+  // Delete through the API so the service removes the stored bytes too. A raw
+  // SQL delete would drop the row and leave the object orphaned in the bucket.
+  await api(nh, `/api/drive/files/${nhFileId}?permanent=1`, { method: 'DELETE' });
+  await api(mm, `/api/drive/files/${mmFileId}?permanent=1`, { method: 'DELETE' });
   await admin`delete from drive_folders where name like ${'%' + String(stamp) + '%'}`;
   console.log('  (cleaned up the folders and files this run created)');
 

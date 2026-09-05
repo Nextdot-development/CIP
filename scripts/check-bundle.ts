@@ -18,6 +18,9 @@ const FORBIDDEN = [
   '@narayanahealth.test',
   'DATABASE_URL',
   'SESSION_SECRET',
+  'SUPABASE_SERVICE_ROLE_KEY',
+  'service_role',
+  'CIP_APP_DB_PASSWORD',
 ];
 
 const ROOT = join(process.cwd(), '.next', 'static');

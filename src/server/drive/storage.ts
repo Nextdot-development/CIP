@@ -2,6 +2,7 @@ import 'server-only';
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve, sep } from 'node:path';
+import { SupabaseStorage } from './supabaseStorage';
 
 /**
  * Where file bytes live.
@@ -75,8 +76,26 @@ class LocalDiskStorage implements DriveStorage {
 
 let cached: DriveStorage | null = null;
 
+/**
+ * Supabase Storage when it is configured, local disk otherwise.
+ *
+ * Both are private and both are reached only from the server, so the isolation
+ * story does not change with the driver — only where the bytes sit. Set
+ * CIP_FORCE_LOCAL_STORAGE=true to keep tests off the network.
+ */
 export function driveStorage(): DriveStorage {
   if (cached) return cached;
+
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const bucket = process.env.SUPABASE_STORAGE_BUCKET ?? 'cip-drive';
+  const forceLocal = process.env.CIP_FORCE_LOCAL_STORAGE === 'true';
+
+  if (url && key && !forceLocal) {
+    cached = new SupabaseStorage(url, key, bucket);
+    return cached;
+  }
+
   cached = new LocalDiskStorage(process.env.CIP_STORAGE_DIR ?? join(process.cwd(), '.storage'));
   return cached;
 }

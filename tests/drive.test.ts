@@ -42,6 +42,9 @@ before(async () => {
   process.env.SESSION_SECRET = 'test-session-secret-at-least-32-characters-long';
   process.env.CIP_SEED_PASSWORD = PASSWORD;
   process.env.CIP_STORAGE_DIR = storageDir;
+  // Keep this suite on disk even when Supabase credentials are in the shell,
+  // so it stays deterministic and needs no network.
+  process.env.CIP_FORCE_LOCAL_STORAGE = 'true';
 
   const { migrate } = await import('../src/server/migrate');
   await migrate(() => {});
@@ -352,6 +355,47 @@ describe('one company cannot reach another', () => {
       `,
       /foreign key|violates/i,
     );
+  });
+
+
+  it('12. cannot reach the other company storage object', async () => {
+    // The object store itself is deliberately dumb — it knows keys, not
+    // companies. The gate is the drive_files row, which is under row-level
+    // security, so the question that matters is whether company A can ever
+    // come into possession of company B key.
+    const [row] = await adminSql<{ storage_key: string }[]>`
+      select storage_key from drive_files where id = ${nhFile.id}
+    `;
+    assert.ok(row, 'expected the Narayana file to exist');
+
+    // Nothing the API returns carries a storage key.
+    const listing = JSON.stringify(await drive.listFolder(mm, null));
+    const searched = JSON.stringify(await drive.search(mm, 'consent'));
+    const archived = JSON.stringify(await drive.listArchived(mm));
+    for (const payload of [listing, searched, archived]) {
+      assert.ok(!payload.includes('storage_key') && !payload.includes('storageKey'),
+        'a storage key was exposed to the client');
+      assert.ok(!payload.includes(row.storage_key), 'the other company storage key leaked');
+    }
+
+    // And the one path that reads bytes refuses first, so the key is never used.
+    await assert.rejects(() => drive.readFile(mm, nhFile.id), /could not be found/i);
+
+    // The key names its owning company, so even a leaked key is auditable.
+    assert.ok(row.storage_key.startsWith(`companies/${nh.companyId}/`));
+    assert.ok(!row.storage_key.includes(mm.companyId));
+  });
+
+  it('13. a forged scope for a company with no membership sees nothing', async () => {
+    // The worst case: someone who can call the service directly and invents a
+    // scope. Scopes only ever come from a verified session, but if one were
+    // fabricated for a company that does not exist, it still yields nothing.
+    const forged = { companyId: '00000000-0000-0000-0000-000000000000', userId: mm.userId, role: 'owner' as const };
+    const listing = await drive.listFolder(forged, null);
+    assert.equal(listing.folders.length, 0);
+    assert.equal(listing.files.length, 0);
+    await assert.rejects(() => drive.readFile(forged, nhFile.id), /could not be found/i);
+    await assert.rejects(() => drive.listFolder(forged, nhFolder.id), /could not be found/i);
   });
 
   it('8. an unscoped query returns nothing, and a scoped one stays in its lane', async () => {

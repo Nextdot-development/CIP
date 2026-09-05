@@ -1,4 +1,5 @@
 import { isRowLevelSecurityBinding, sql } from '@/server/db';
+import { driveStorage } from '@/server/drive/storage';
 
 /**
  * GET /api/health
@@ -23,6 +24,7 @@ export async function GET() {
       {
         status: rlsBinding ? 'ok' : 'degraded',
         database: { connected: true, time: now.toISOString() },
+        storage: { driver: driveStorage().name },
         isolation: {
           serviceLayer: 'active',
           rowLevelSecurity: rlsBinding ? 'binding' : 'bypassed',
