@@ -57,10 +57,31 @@ pod, requests, metrics, compliance record — and neither can reach the other.
 
 ### Pointing at Supabase
 
-Replace the two connection strings. `DATABASE_ADMIN_URL` is the one from
-Project Settings → Database and is used only by `db:migrate` and `db:seed`.
-`DATABASE_URL` must be the `cip_app` role that migration 0003 creates, because
-Supabase's `postgres` role can read through row-level security.
+```
+DATABASE_ADMIN_URL=postgresql://postgres:<password>@db.<ref>.supabase.co:5432/postgres?sslmode=require
+DATABASE_URL=postgresql://cip_app:<app-password>@db.<ref>.supabase.co:5432/postgres?sslmode=require
+CIP_APP_DB_PASSWORD=<app-password>
+```
+
+`DATABASE_ADMIN_URL` is the string from Project Settings → Database, used only
+by `db:migrate` and `db:seed`. `DATABASE_URL` must be the `cip_app` role that
+migration 0003 creates: Supabase's `postgres` role has `rolbypassrls = true`
+and would read straight through row-level security.
+
+Then `npm run db:migrate` (which creates `cip_app` and sets its password from
+`CIP_APP_DB_PASSWORD`) followed by `npm run db:seed`.
+
+Three things that will bite you:
+
+- **Percent-encode the password.** A `@`, `#`, `/` or `:` in it will otherwise
+  be parsed as URL structure. `p@ssw0rd` becomes `p%40ssw0rd`.
+- **`?sslmode=require` is mandatory.** Supabase refuses plaintext connections;
+  the driver reads this from the URL, so no code change is needed.
+- **`db.<ref>.supabase.co` resolves to IPv6 only.** It works from a machine
+  with IPv6, but an IPv4-only host or CI runner needs the pooler host from
+  Project Settings → Database → Connection pooling instead. Use *session* mode
+  (port 5432); transaction mode also works but needs `prepare: false` on the
+  driver.
 
 Check it took: **`GET /api/health`** reports `rowLevelSecurity: "binding"` when
 the running app cannot bypass RLS, and returns 503 with a warning when it can.
