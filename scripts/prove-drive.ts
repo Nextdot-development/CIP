@@ -179,8 +179,7 @@ async function main() {
   // run stamp, so nothing a person created is touched.
   await admin`delete from drive_files  where name like ${'%' + String(stamp) + '%'}`;
   await admin`delete from drive_folders where name like ${'%' + String(stamp) + '%'}`;
-  console.log('
-  (cleaned up the folders and files this run created)');
+  console.log('  (cleaned up the folders and files this run created)');
 
   await sql.end();
   await admin.end();
