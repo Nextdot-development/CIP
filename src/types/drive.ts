@@ -14,18 +14,29 @@ export type DriveFolderDTO = {
 
 export type DriveFileDTO = {
   id: string;
+  /** The display name, which a rename changes. */
   name: string;
-  extension: string;
+  /** What the file was called when it was uploaded. Never changes. */
+  originalFilename: string;
+  /** The extension we store and trust, e.g. "pdf". Set at upload, immutable. */
+  fileType: string;
   mimeType: string;
   kind: FileKind;
-  sizeBytes: number;
+  fileSize: number;
   previewable: boolean;
   createdAt: string;
   updatedAt: string;
-  uploadedBy: string | null;
+  /** Who uploaded it. Null once that user is deleted. */
+  uploadedBy: { id: string; name: string } | null;
   /** Reserved for the Brand Brain. Always 'pending' in Phase 2. */
   processingStatus: ProcessingStatus;
 };
+
+/**
+ * storage_path is deliberately absent from every DTO. It is an internal
+ * pointer into a private bucket; a client has no use for it and exposing it
+ * would widen the surface for nothing.
+ */
 
 export type BreadcrumbDTO = { id: string | null; name: string };
 

@@ -152,7 +152,7 @@ describe('files', () => {
 
     assert.equal(file.name, 'logo.png');
     assert.equal(file.kind, 'image');
-    assert.equal(file.sizeBytes, PNG.length);
+    assert.equal(file.fileSize, PNG.length);
     // The ingestion pipeline has not been built; everything waits in the queue.
     assert.equal(file.processingStatus, 'pending');
 
@@ -260,7 +260,7 @@ describe('search', () => {
 
     const images = await drive.search(mm, 'kindfilter', 'image');
     assert.equal(images.files.length, 1);
-    assert.equal(images.files[0]!.extension, 'png');
+    assert.equal(images.files[0]!.fileType, 'png');
   });
 
   it('treats a wildcard in the query as a literal', async () => {
@@ -334,8 +334,8 @@ describe('one company cannot reach another', () => {
       () => appSql.begin(async (tx) => {
         await tx`select set_config('cip.company_id', ${mm.companyId}, true)`;
         return tx`
-          insert into drive_files (company_id, name, original_name, extension, mime_type,
-                                   size_bytes, storage_key)
+          insert into drive_files (company_id, name, original_filename, file_type, mime_type,
+                                   file_size, storage_path)
           values (${nh.companyId}, 'planted.txt', 'planted.txt', 'txt', 'text/plain', 1,
                   ${'companies/' + nh.companyId + '/planted'})
         `;
@@ -348,8 +348,8 @@ describe('one company cannot reach another', () => {
     // Even bypassing row-level security entirely, referential integrity holds.
     await assert.rejects(
       () => adminSql`
-        insert into drive_files (company_id, folder_id, name, original_name, extension,
-                                 mime_type, size_bytes, storage_key)
+        insert into drive_files (company_id, folder_id, name, original_filename, file_type,
+                                 mime_type, file_size, storage_path)
         values (${mm.companyId}, ${nhFolder.id}, 'crossed.txt', 'crossed.txt', 'txt',
                 'text/plain', 1, ${'companies/' + mm.companyId + '/crossed'})
       `,
@@ -363,8 +363,8 @@ describe('one company cannot reach another', () => {
     // companies. The gate is the drive_files row, which is under row-level
     // security, so the question that matters is whether company A can ever
     // come into possession of company B key.
-    const [row] = await adminSql<{ storage_key: string }[]>`
-      select storage_key from drive_files where id = ${nhFile.id}
+    const [row] = await adminSql<{ storage_path: string }[]>`
+      select storage_path from drive_files where id = ${nhFile.id}
     `;
     assert.ok(row, 'expected the Narayana file to exist');
 
@@ -373,17 +373,17 @@ describe('one company cannot reach another', () => {
     const searched = JSON.stringify(await drive.search(mm, 'consent'));
     const archived = JSON.stringify(await drive.listArchived(mm));
     for (const payload of [listing, searched, archived]) {
-      assert.ok(!payload.includes('storage_key') && !payload.includes('storageKey'),
+      assert.ok(!payload.includes('storage_path') && !payload.includes('storagePath'),
         'a storage key was exposed to the client');
-      assert.ok(!payload.includes(row.storage_key), 'the other company storage key leaked');
+      assert.ok(!payload.includes(row.storage_path), 'the other company storage path leaked');
     }
 
     // And the one path that reads bytes refuses first, so the key is never used.
     await assert.rejects(() => drive.readFile(mm, nhFile.id), /could not be found/i);
 
     // The key names its owning company, so even a leaked key is auditable.
-    assert.ok(row.storage_key.startsWith(`companies/${nh.companyId}/`));
-    assert.ok(!row.storage_key.includes(mm.companyId));
+    assert.ok(row.storage_path.startsWith(`companies/${nh.companyId}/`));
+    assert.ok(!row.storage_path.includes(mm.companyId));
   });
 
   it('13. a forged scope for a company with no membership sees nothing', async () => {
@@ -416,13 +416,13 @@ describe('one company cannot reach another', () => {
   });
 
   it('the storage key of every file names its owning company', async () => {
-    const rows = await adminSql<{ company_id: string; storage_key: string }[]>`
-      select company_id, storage_key from drive_files
+    const rows = await adminSql<{ company_id: string; storage_path: string }[]>`
+      select company_id, storage_path from drive_files
     `;
     for (const row of rows) {
       assert.ok(
-        row.storage_key.startsWith(`companies/${row.company_id}/`),
-        `storage key ${row.storage_key} does not sit under its company`,
+        row.storage_path.startsWith(`companies/${row.company_id}/`),
+        `storage path ${row.storage_path} does not sit under its company`,
       );
     }
   });

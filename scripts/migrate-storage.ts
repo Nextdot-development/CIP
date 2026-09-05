@@ -28,8 +28,8 @@ async function main() {
   const sql = postgres(process.env.DATABASE_ADMIN_URL ?? process.env.DATABASE_URL!, { onnotice: () => {} });
 
   try {
-    const files = await sql<{ storage_key: string; mime_type: string; name: string }[]>`
-      select storage_key, mime_type, name from drive_files order by created_at
+    const files = await sql<{ storage_path: string; mime_type: string; name: string }[]>`
+      select storage_path, mime_type, name from drive_files order by created_at
     `;
     console.log(`Found ${files.length} file(s) recorded in the database.`);
 
@@ -39,7 +39,7 @@ async function main() {
 
     for (const file of files) {
       try {
-        await store.get(file.storage_key);
+        await store.get(file.storage_path);
         already += 1;
         console.log(`  have  ${file.name}`);
         continue;
@@ -48,13 +48,13 @@ async function main() {
       }
 
       try {
-        const body = await readFile(join(root, file.storage_key));
-        await store.put(file.storage_key, body, file.mime_type);
+        const body = await readFile(join(root, file.storage_path));
+        await store.put(file.storage_path, body, file.mime_type);
         copied += 1;
         console.log(`  copy  ${file.name} (${body.length} bytes)`);
       } catch {
         missing += 1;
-        console.log(`  MISS  ${file.name} — no local copy at ${file.storage_key}`);
+        console.log(`  MISS  ${file.name} — no local copy at ${file.storage_path}`);
       }
     }
 

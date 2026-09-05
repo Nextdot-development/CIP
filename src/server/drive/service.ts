@@ -50,9 +50,10 @@ type FolderRow = {
 };
 
 type FileRow = {
-  id: string; name: string; extension: string; mime_type: string;
-  size_bytes: string; created_at: Date; updated_at: Date;
-  uploaded_by: string | null; processing_status: D.ProcessingStatus;
+  id: string; name: string; original_filename: string; file_type: string;
+  mime_type: string; file_size: string; created_at: Date; updated_at: Date;
+  uploaded_by_id: string | null; uploaded_by_name: string | null;
+  processing_status: D.ProcessingStatus;
 };
 
 function toFolder(r: FolderRow): D.DriveFolderDTO {
@@ -66,18 +67,21 @@ function toFolder(r: FolderRow): D.DriveFolderDTO {
 }
 
 function toFile(r: FileRow): D.DriveFileDTO {
-  const spec = specFor(`x.${r.extension}`);
+  // file_type holds the extension we settled on at upload, so the spec lookup
+  // goes through a synthetic filename rather than trusting anything stored.
+  const spec = specFor(`x.${r.file_type}`);
   return {
     id: r.id,
     name: r.name,
-    extension: r.extension,
+    originalFilename: r.original_filename,
+    fileType: r.file_type,
     mimeType: r.mime_type,
     kind: (spec?.kind ?? 'document') as FileKind,
-    sizeBytes: Number(r.size_bytes),
+    fileSize: Number(r.file_size),
     previewable: spec ? spec.previewable : false,
     createdAt: r.created_at.toISOString(),
     updatedAt: r.updated_at.toISOString(),
-    uploadedBy: r.uploaded_by,
+    uploadedBy: r.uploaded_by_id ? { id: r.uploaded_by_id, name: r.uploaded_by_name ?? 'Someone' } : null,
     processingStatus: r.processing_status,
   };
 }
@@ -140,11 +144,11 @@ export async function listFolder(
          order by lower(name)
       `,
       tx<FileRow[]>`
-        select f.id, f.name, f.extension, f.mime_type, f.size_bytes,
+        select f.id, f.name, f.original_filename, f.file_type, f.mime_type, f.file_size,
                f.created_at, f.updated_at, f.processing_status,
-               u.full_name as uploaded_by
+               f.uploaded_by as uploaded_by_id, u.full_name as uploaded_by_name
           from drive_files f
-          left join users u on u.id = f.created_by
+          left join users u on u.id = f.uploaded_by
          where f.company_id = ${scope.companyId}
            and coalesce(f.folder_id, ${ROOT_SENTINEL}) = coalesce(${folderId}::uuid, ${ROOT_SENTINEL})
            and f.archived_at is null
@@ -268,7 +272,7 @@ export async function uploadFile(scope: CompanyScope, input: UploadInput): Promi
     : spec.mimeTypes[0]!;
 
   const fileId = randomUUID();
-  const storageKey = storageKeyFor(scope.companyId, fileId, spec.extension);
+  const storagePath = storageKeyFor(scope.companyId, fileId, spec.extension);
   const checksum = sha256(input.body);
 
   const row = await withCompanyScope(scope, async (tx) => {
@@ -276,14 +280,15 @@ export async function uploadFile(scope: CompanyScope, input: UploadInput): Promi
     try {
       const rows = await tx<FileRow[]>`
         insert into drive_files (
-          id, company_id, folder_id, name, original_name, extension, mime_type,
-          size_bytes, checksum_sha256, storage_key, created_by
+          id, company_id, folder_id, name, original_filename, file_type, mime_type,
+          file_size, checksum_sha256, storage_path, uploaded_by
         ) values (
           ${fileId}, ${scope.companyId}, ${input.folderId}, ${name}, ${input.filename},
-          ${spec.extension}, ${mimeType}, ${input.body.length}, ${checksum}, ${storageKey}, ${scope.userId}
+          ${spec.extension}, ${mimeType}, ${input.body.length}, ${checksum}, ${storagePath}, ${scope.userId}
         )
-        returning id, name, extension, mime_type, size_bytes, created_at, updated_at,
-                  processing_status, null::text as uploaded_by
+        returning id, name, original_filename, file_type, mime_type, file_size,
+                  created_at, updated_at, processing_status,
+                  uploaded_by as uploaded_by_id, null::text as uploaded_by_name
       `;
       return rows[0]!;
     } catch (error) {
@@ -294,7 +299,7 @@ export async function uploadFile(scope: CompanyScope, input: UploadInput): Promi
   // Bytes land only after the row committed. A crash here leaves a row with no
   // object, which reads as a broken download; the reverse would leave an
   // orphaned object nobody can see or clean up.
-  await driveStorage().put(storageKey, input.body, mimeType);
+  await driveStorage().put(storagePath, input.body, mimeType);
 
   return toFile(row);
 }
@@ -310,11 +315,11 @@ export async function renameFile(
   // Renaming must not smuggle a file into a type we do not accept, so the
   // extension is fixed to whatever was uploaded.
   return withCompanyScope(scope, async (tx) => {
-    const current = await tx<{ extension: string }[]>`
-      select extension from drive_files
+    const current = await tx<{ file_type: string }[]>`
+      select file_type from drive_files
        where id = ${fileId} and company_id = ${scope.companyId} and archived_at is null
     `;
-    const ext = current[0]?.extension;
+    const ext = current[0]?.file_type;
     if (!ext) throw new DriveNotFound('That file');
 
     const base = name.toLowerCase().endsWith(`.${ext}`) ? name.slice(0, -(ext.length + 1)) : name;
@@ -326,9 +331,9 @@ export async function renameFile(
            set name = ${finalName}, updated_at = now()
           from (select 1) as _
          where f.id = ${fileId} and f.company_id = ${scope.companyId} and f.archived_at is null
-        returning f.id, f.name, f.extension, f.mime_type, f.size_bytes,
+        returning f.id, f.name, f.original_filename, f.file_type, f.mime_type, f.file_size,
                   f.created_at, f.updated_at, f.processing_status,
-                  null::text as uploaded_by
+                  f.uploaded_by as uploaded_by_id, null::text as uploaded_by_name
       `;
       const row = rows[0];
       if (!row) throw new DriveNotFound('That file');
@@ -366,14 +371,14 @@ export async function restoreFile(scope: CompanyScope, fileId: string): Promise<
 /** Permanent. Removes the row and the bytes. */
 export async function deleteFileForever(scope: CompanyScope, fileId: string): Promise<void> {
   const key = await withCompanyScope(scope, async (tx) => {
-    const rows = await tx<{ storage_key: string }[]>`
+    const rows = await tx<{ storage_path: string }[]>`
       delete from drive_files
        where id = ${fileId} and company_id = ${scope.companyId}
-      returning storage_key
+      returning storage_path
     `;
     const row = rows[0];
     if (!row) throw new DriveNotFound('That file');
-    return row.storage_key;
+    return row.storage_path;
   });
 
   await driveStorage().remove(key);
@@ -388,9 +393,10 @@ export type FileForDownload = {
 
 export async function readFile(scope: CompanyScope, fileId: string): Promise<FileForDownload> {
   const row = await withCompanyScope(scope, async (tx) => {
-    const rows = await tx<(FileRow & { storage_key: string })[]>`
-      select id, name, extension, mime_type, size_bytes, created_at, updated_at,
-             processing_status, storage_key, null::text as uploaded_by
+    const rows = await tx<(FileRow & { storage_path: string })[]>`
+      select id, name, original_filename, file_type, mime_type, file_size,
+             created_at, updated_at, processing_status, storage_path,
+             uploaded_by as uploaded_by_id, null::text as uploaded_by_name
         from drive_files
        where id = ${fileId} and company_id = ${scope.companyId} and archived_at is null
     `;
@@ -401,18 +407,18 @@ export async function readFile(scope: CompanyScope, fileId: string): Promise<Fil
 
   // The key is read back from the row we just proved belongs to this company,
   // never assembled from anything the caller sent.
-  const body = await driveStorage().get(row.storage_key);
+  const body = await driveStorage().get(row.storage_path);
   return { file: toFile(row), body, filename: row.name };
 }
 
 export async function listArchived(scope: CompanyScope): Promise<D.DriveFileDTO[]> {
   return withCompanyScope(scope, async (tx) => {
     const rows = await tx<FileRow[]>`
-      select f.id, f.name, f.extension, f.mime_type, f.size_bytes,
+      select f.id, f.name, f.original_filename, f.file_type, f.mime_type, f.file_size,
              f.created_at, f.updated_at, f.processing_status,
-             u.full_name as uploaded_by
+             f.uploaded_by as uploaded_by_id, u.full_name as uploaded_by_name
         from drive_files f
-        left join users u on u.id = f.created_by
+        left join users u on u.id = f.uploaded_by
        where f.company_id = ${scope.companyId} and f.archived_at is not null
        order by f.archived_at desc
     `;
@@ -439,13 +445,13 @@ export async function search(
   return withCompanyScope(scope, async (tx) => {
     const [files, folders] = await Promise.all([
       tx<(FileRow & { folder_id: string | null; folder_name: string | null })[]>`
-        select f.id, f.name, f.extension, f.mime_type, f.size_bytes,
+        select f.id, f.name, f.original_filename, f.file_type, f.mime_type, f.file_size,
                f.created_at, f.updated_at, f.processing_status,
                f.folder_id, d.name as folder_name,
-               u.full_name as uploaded_by
+               f.uploaded_by as uploaded_by_id, u.full_name as uploaded_by_name
           from drive_files f
           left join drive_folders d on d.id = f.folder_id
-          left join users u on u.id = f.created_by
+          left join users u on u.id = f.uploaded_by
          where f.company_id = ${scope.companyId}
            and f.archived_at is null
            and f.name ilike ${pattern}

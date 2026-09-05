@@ -50,7 +50,7 @@ export function FilePreview({ file, onClose }: { file: DriveFileDTO; onClose: ()
           <span className="stack grow">
             <span className="p-title truncate">{file.name}</span>
             <span className="p-meta">
-              {spec?.label ?? file.extension.toUpperCase()} · {humanSize(file.sizeBytes)}
+              {spec?.label ?? file.fileType.toUpperCase()} · {humanSize(file.fileSize)}
             </span>
           </span>
           <span className="p-actions">

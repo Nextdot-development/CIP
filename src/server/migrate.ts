@@ -58,6 +58,59 @@ export async function migrate(log: (m: string) => void = console.log): Promise<s
   }
 }
 
+/**
+ * Undoes the most recently applied migrations, newest first.
+ *
+ * Every migration has a matching file in migrations/down/. A migration with no
+ * down file cannot be rolled back, and this refuses rather than leaving the
+ * schema half-undone.
+ *
+ * Note that rolling back 0003 drops the cip_app role, which the running
+ * application connects as — stop the app first.
+ */
+export async function rollback(steps = 1, log: (m: string) => void = console.log): Promise<string[]> {
+  const sql = adminSql();
+  const undone: string[] = [];
+
+  try {
+    const dir = join(dirname(fileURLToPath(import.meta.url)), 'migrations', 'down');
+    const available = new Set(
+      await readdir(dir).catch(() => [] as string[]),
+    );
+
+    const applied = await sql<{ name: string }[]>`
+      select name from _cip_migrations order by name desc limit ${steps}
+    `;
+
+    if (applied.length === 0) {
+      log('  nothing to roll back');
+      return undone;
+    }
+
+    // Check every step before running any of them.
+    for (const row of applied) {
+      if (!available.has(row.name)) {
+        throw new Error(
+          `${row.name} has no down migration (expected migrations/down/${row.name}). ` +
+            'Refusing to roll back part-way.',
+        );
+      }
+    }
+
+    for (const row of applied) {
+      const body = await readFile(join(dir, row.name), 'utf8');
+      await sql.unsafe(body).simple();
+      await sql`delete from _cip_migrations where name = ${row.name}`;
+      log(`  undo  ${row.name}`);
+      undone.push(row.name);
+    }
+
+    return undone;
+  } finally {
+    await sql.end();
+  }
+}
+
 /** ALTER ROLE will not take a bind parameter, so the literal is escaped here. */
 function literal(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
@@ -67,6 +120,21 @@ const isDirectRun =
   process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 
 if (isDirectRun) {
+  const stepsArg = process.argv.find((a) => a.startsWith('--steps='));
+  const steps = stepsArg ? Number(stepsArg.split('=')[1]) : 1;
+
+  if (process.argv.includes('--down')) {
+    console.log(`Rolling back ${steps} migration(s)...`);
+    rollback(steps)
+      .then((undone) => {
+        console.log(undone.length ? `Done — ${undone.length} rolled back.` : 'Nothing to do.');
+        process.exit(0);
+      })
+      .catch((err) => {
+        console.error('Rollback failed:', err instanceof Error ? err.message : err);
+        process.exit(1);
+      });
+  } else {
   console.log('Running migrations...');
   migrate()
     .then((applied) => {
@@ -77,4 +145,5 @@ if (isDirectRun) {
       console.error('Migration failed:', err instanceof Error ? err.message : err);
       process.exit(1);
     });
+  }
 }

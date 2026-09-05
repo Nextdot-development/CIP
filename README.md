@@ -180,6 +180,13 @@ the folder id in the URL, which is checked against the session before anything
 loads — a pasted link to another company's folder renders "not found", the same
 as an id that never existed.
 
+**File metadata.** `drive_files` carries `id`, `company_id`, `folder_id`, `name`,
+`original_filename`, `file_type`, `mime_type`, `file_size`, `storage_path`,
+`uploaded_by`, `created_at`, `updated_at`, `archived_at` and
+`processing_status`, plus `checksum_sha256`, `processing_attempts`,
+`processing_error`, `processed_at` and a `metadata` JSONB column.
+`storage_path` and `checksum_sha256` are internal and appear in no API response.
+
 **Accepted types** (`src/lib/fileTypes.ts`, 50 MB each): PDF, DOC/DOCX,
 XLS/XLSX, PPT/PPTX, CSV, TXT, JPG/JPEG, PNG, WEBP, SVG, MP4, MOV, MP3, WAV.
 The extension decides the stored MIME type — a browser's Content-Type is a hint,
@@ -207,6 +214,27 @@ own origin.
 **Not built yet.** `processing_status` on every file is always `pending`. It is
 the queue the Brand Brain will read; nothing writes to it, and no file is parsed,
 extracted or embedded.
+
+---
+
+## Migrations
+
+Forward-only by default, reversible on demand. Every migration in
+`src/server/migrations/` has a matching file in `src/server/migrations/down/`,
+and the runner refuses to roll back a migration that has no down file rather
+than leaving the schema half-undone.
+
+```bash
+npm run db:migrate                    # apply everything outstanding
+npm run db:rollback                   # undo the most recent migration
+npm run db:rollback -- --steps=3      # undo the last three
+```
+
+`tests/migrations.test.ts` walks the whole chain down and back up and asserts
+the schema comes back identical.
+
+Rolling back `0003_isolation` drops the `cip_app` role, which the running
+application connects as — stop the app first, or the drop fails.
 
 ---
 

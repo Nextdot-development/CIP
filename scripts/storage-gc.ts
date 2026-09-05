@@ -45,18 +45,18 @@ async function listBucketKeys(): Promise<string[]> {
 async function main() {
   const sql = postgres(process.env.DATABASE_ADMIN_URL ?? process.env.DATABASE_URL!, { onnotice: () => {} });
   try {
-    const rows = await sql<{ storage_key: string }[]>`select storage_key from drive_files`;
-    const known = new Set(rows.map((r) => r.storage_key));
+    const rows = await sql<{ storage_path: string }[]>`select storage_path from drive_files`;
+    const known = new Set(rows.map((r) => r.storage_path));
     const stored = await listBucketKeys();
 
     const orphans = stored.filter((k) => !known.has(k));
-    const dangling = rows.filter((r) => !stored.includes(r.storage_key));
+    const dangling = rows.filter((r) => !stored.includes(r.storage_path));
 
     console.log(`\n${stored.length} object(s) stored, ${known.size} referenced by a row.`);
 
     if (dangling.length > 0) {
       console.log(`\n${dangling.length} row(s) point at an object that is not there:`);
-      for (const d of dangling) console.log(`  ${d.storage_key}`);
+      for (const d of dangling) console.log(`  ${d.storage_path}`);
       console.log('These will fail to download. Re-upload them, or archive the rows.');
     }
 

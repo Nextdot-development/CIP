@@ -399,8 +399,8 @@ export function DriveSection({ listing }: { listing: DriveListingDTO }) {
                     </button>
                   )}
                   <span className="fr-meta">
-                    {humanSize(f.sizeBytes)} · Added {relativeDay(f.createdAt)}
-                    {f.uploadedBy ? ` by ${f.uploadedBy}` : ''}
+                    {humanSize(f.fileSize)} · Added {relativeDay(f.createdAt)}
+                    {f.uploadedBy ? ` by ${f.uploadedBy.name}` : ''}
                     {searching && where ? ` · in ${where}` : ''}
                   </span>
                 </span>
