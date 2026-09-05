@@ -147,7 +147,8 @@ security — is what decides whether a key may be read.
 ### Proving it
 
 ```bash
-npm test              # 45 assertions, no network needed
+npm test              # 50 assertions, no network needed (runs serially:
+                      # each DB-backed file starts its own PostgreSQL)
 npm run test:storage  # 7 more against the real Supabase bucket
 npm run prove         # workspace isolation over HTTP, needs the dev server up
 npm run prove:drive   # Drive isolation over HTTP, needs the dev server up

@@ -11,14 +11,14 @@
     "db:migrate": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx src/server/migrate.ts",
     "db:seed": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx src/server/seed.ts",
     "db:reset": "npm run db:migrate && npm run db:seed",
-    "test": "node --conditions=react-server --import tsx --test tests/*.test.ts",
+    "test": "node --conditions=react-server --import tsx --test --test-concurrency=1 tests/*.test.ts",
     "db:local": "node --env-file-if-exists=.env.local --import tsx scripts/local-db.ts",
     "prove": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/prove-isolation.ts",
     "check:bundle": "tsx scripts/check-bundle.ts",
     "prove:drive": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/prove-drive.ts",
     "storage:migrate": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/migrate-storage.ts",
     "storage:gc": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/storage-gc.ts",
-    "test:storage": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx --test tests/storage.test.ts",
+    "test:storage": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx --test --test-concurrency=1 tests/storage.test.ts",
     "db:rollback": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx src/server/migrate.ts --down"
   },
   "dependencies": {
