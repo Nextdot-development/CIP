@@ -7,7 +7,9 @@ export type IconName =
   | 'sparkle' | 'image' | 'video' | 'doc' | 'grid'
   | 'megaphone' | 'alert' | 'bolt' | 'trend' | 'palette' | 'book' | 'voice' | 'box'
   | 'link' | 'clock' | 'shield' | 'close' | 'people' | 'lock' | 'unlock'
-  | 'x' | 'signout';
+  | 'x' | 'signout'
+  | 'drive' | 'folder' | 'folder-plus' | 'upload' | 'download' | 'trash'
+  | 'restore' | 'music' | 'sheet' | 'slides' | 'search' | 'chevron-right' | 'dots';
 
 const P: Record<IconName, string> = {
   home: 'M3 10.2 12 3l9 7.2V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z',
@@ -39,6 +41,19 @@ const P: Record<IconName, string> = {
   shield: 'M12 3l7.5 3v5.6c0 4.3-3 8.2-7.5 9.4-4.5-1.2-7.5-5.1-7.5-9.4V6z',
   close: 'M6 6l12 12 M18 6 6 18',
   x: 'M6 6l12 12 M18 6 6 18',
+  drive: 'M4 7.5A1.5 1.5 0 0 1 5.5 6h3.2a1.5 1.5 0 0 1 1.2.6l1 1.4h7.6A1.5 1.5 0 0 1 20 9.5v8A1.5 1.5 0 0 1 18.5 19h-13A1.5 1.5 0 0 1 4 17.5z M4 11.5h16',
+  folder: 'M4 7.5A1.5 1.5 0 0 1 5.5 6h3.2a1.5 1.5 0 0 1 1.2.6l1 1.4h7.6A1.5 1.5 0 0 1 20 9.5v8A1.5 1.5 0 0 1 18.5 19h-13A1.5 1.5 0 0 1 4 17.5z',
+  'folder-plus': 'M4 7.5A1.5 1.5 0 0 1 5.5 6h3.2a1.5 1.5 0 0 1 1.2.6l1 1.4h7.6A1.5 1.5 0 0 1 20 9.5v8A1.5 1.5 0 0 1 18.5 19h-13A1.5 1.5 0 0 1 4 17.5z M12 11v5 M9.5 13.5h5',
+  upload: 'M12 16V4 M8 8l4-4 4 4 M4 15v3.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V15',
+  download: 'M12 4v12 M8 12l4 4 4-4 M4 15v3.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V15',
+  trash: 'M5 7h14 M9.5 7V5.5a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1V7 M6.5 7l.8 12a1 1 0 0 0 1 1h7.4a1 1 0 0 0 1-1L17.5 7 M10.5 11v6 M13.5 11v6',
+  restore: 'M4 12a8 8 0 1 0 2.6-5.9 M4 4.5V10h5.5',
+  music: 'M9 18V6l10-2v12 M9 18a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0z M19 16a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0z',
+  sheet: 'M4.5 5.5A1 1 0 0 1 5.5 4.5h13a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-13a1 1 0 0 1-1-1z M4.5 9.5h15 M4.5 14.5h15 M10 9.5v10 M15 9.5v10',
+  slides: 'M4.5 5.5A1 1 0 0 1 5.5 4.5h13a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1h-13a1 1 0 0 1-1-1z M12 15.5V20 M9 20h6',
+  search: 'M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14z M20 20l-4-4',
+  'chevron-right': 'M9.5 6l6 6-6 6',
+  dots: 'M12 6.5v.01 M12 12v.01 M12 17.5v.01',
   signout: 'M15.5 8.5V6a1 1 0 0 0-1-1h-8a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-2.5 M10.5 12h10 M18 9l3 3-3 3',
   people: 'M9 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z M2.5 20a6.5 6.5 0 0 1 13 0 M16 4.5a3.5 3.5 0 0 1 0 7 M17 14.2a6.5 6.5 0 0 1 4.5 5.8',
   lock: 'M7 10.5V8a5 5 0 0 1 10 0v2.5 M5.5 10.5h13a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1h-13a1 1 0 0 1-1-1v-8a1 1 0 0 1 1-1z',

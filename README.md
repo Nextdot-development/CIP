@@ -98,6 +98,7 @@ the running app cannot bypass RLS, and returns 503 with a warning when it can.
 | `SESSION_SECRET` | yes | 32+ characters. Keys the HMAC over session tokens. |
 | `CIP_SEED_PASSWORD` | no | Overrides the seeded test password. |
 | `CIP_ALLOW_PROD_SEED` | no | The seed refuses to run with `NODE_ENV=production` unless this is `true`. |
+| `CIP_STORAGE_DIR` | no | Where Drive file bytes are written. Defaults to `./.storage`. |
 
 `.env.local` is gitignored. `.env.example` is the template.
 
@@ -132,10 +133,49 @@ effect on the next request, not the next sign-in.
 ### Proving it
 
 ```bash
-npm test              # 17 assertions against a real PostgreSQL
-npm run prove         # end-to-end over HTTP, needs the dev server running
+npm test              # 39 assertions against a real PostgreSQL
+npm run prove         # workspace isolation over HTTP, needs the dev server up
+npm run prove:drive   # Drive isolation over HTTP, needs the dev server up
 npm run check:bundle  # fails if company data reached the client bundle
 ```
+
+---
+
+## Company Drive
+
+Folders and files, owned by exactly one company. `/drive` in the workspace.
+
+Browse and nest folders, upload (drag-and-drop or picker), rename, archive and
+restore, download, preview, search and filter by file type. Breadcrumbs carry
+the folder id in the URL, which is checked against the session before anything
+loads — a pasted link to another company's folder renders "not found", the same
+as an id that never existed.
+
+**Accepted types** (`src/lib/fileTypes.ts`, 50 MB each): PDF, DOC/DOCX,
+XLS/XLSX, PPT/PPTX, CSV, TXT, JPG/JPEG, PNG, WEBP, SVG, MP4, MOV, MP3, WAV.
+The extension decides the stored MIME type — a browser's Content-Type is a hint,
+not evidence — and renaming cannot change it.
+
+**Isolation beyond the policy.** Both Drive tables carry `UNIQUE (id, company_id)`
+and reference parents through a **composite foreign key** on
+`(parent_id, company_id)`. A file in company A inside a folder from company B is
+not merely refused, it is unrepresentable: the referential constraint rejects it
+before any policy is consulted.
+
+**Storage.** `src/server/drive/storage.ts` is an adapter. The shipped driver
+writes to local disk under `CIP_STORAGE_DIR` (`./.storage`, gitignored) and is
+what the tests run against. Object keys are always
+`companies/<company_id>/<file_id>.<ext>`, so a mis-scoped read is wrong in the
+object store too. Nothing is ever served from storage directly: there is no
+public bucket and no signed URL, and every byte leaves through
+`/api/drive/files/[id]/content`, which proves the session and the company first.
+Downloads carry `X-Content-Type-Options: nosniff` and a `default-src 'none'; sandbox`
+CSP; SVG is never rendered inline, because it can carry script and this is our
+own origin.
+
+**Not built yet.** `processing_status` on every file is always `pending`. It is
+the queue the Brand Brain will read; nothing writes to it, and no file is parsed,
+extracted or embedded.
 
 ---
 
@@ -152,7 +192,8 @@ src/
     actions.ts            sign-in and sign-out server actions
   server/                 never reachable from a client component
     db.ts                 connection, CompanyScope, withCompanyScope
-    migrations/           0001 core · 0002 workspace · 0003 isolation
+    migrations/           0001 core · 0002 workspace · 0003 isolation · 0004 drive
+    drive/                service, storage adapter, HTTP wrapper
     auth/                 password, session, membership, credentials, guards
     workspace/service.ts  every company-scoped read
     seed.ts, seed-data.ts development data
@@ -160,7 +201,8 @@ src/
   lib/                    presentation and formatting, derived in the browser
   types/workspace.ts      the wire contract
   proxy.ts                signed-out redirect (a convenience, not the boundary)
-tests/isolation.test.ts   the test that matters most
+tests/isolation.test.ts   workspace isolation
+tests/drive.test.ts       Drive behaviour and isolation
 ```
 
 ### The data contract
@@ -187,6 +229,13 @@ columns, and none of them constrain what the API can be used for later.
   set; uploads wait for Supabase Storage.
 - **No rate limiting on sign-in.** Failures are constant-time and generic, but
   nothing throttles repeated attempts yet.
+- **Drive storage is local disk.** Fine for one server; a Supabase Storage
+  driver is a drop-in replacement for `DriveStorage` and needs
+  `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`, which are not set.
+- **Archived files are not purged automatically.** They keep their bytes until
+  someone deletes them permanently, and there is no archive screen yet —
+  `GET /api/drive/archive` lists them.
+- **No file versioning, moving between folders, or sharing.**
 - **`embedded-postgres` is a beta package,** used only by `npm test` and
   `npm run db:local`. Set `TEST_DATABASE_ADMIN_URL` to test against a real
   server instead.

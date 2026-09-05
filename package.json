@@ -14,7 +14,8 @@
     "test": "node --conditions=react-server --import tsx --test tests/*.test.ts",
     "db:local": "node --env-file-if-exists=.env.local --import tsx scripts/local-db.ts",
     "prove": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/prove-isolation.ts",
-    "check:bundle": "tsx scripts/check-bundle.ts"
+    "check:bundle": "tsx scripts/check-bundle.ts",
+    "prove:drive": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/prove-drive.ts"
   },
   "dependencies": {
     "next": "^16.3.4",

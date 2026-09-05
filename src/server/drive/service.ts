@@ -1,0 +1,482 @@
+import 'server-only';
+import { randomUUID } from 'node:crypto';
+import type { TransactionSql } from 'postgres';
+import { withCompanyScope } from '../db';
+import type { CompanyScope } from '../db';
+import { driveStorage, sha256, storageKeyFor } from './storage';
+import { MAX_FILE_BYTES, sanitiseFilename, specFor } from '@/lib/fileTypes';
+import type { FileKind } from '@/lib/fileTypes';
+import type * as D from '@/types/drive';
+
+/**
+ * Every Drive read and write.
+ *
+ * The only way in is a CompanyScope, which can be built only from a verified
+ * session. Each query also filters on company_id explicitly and runs inside
+ * withCompanyScope, so row-level security applies too — a query that lost its
+ * WHERE clause returns nothing rather than another company's folders.
+ *
+ * Missing and forbidden are the same answer on purpose. Asking for another
+ * company's file id gets DriveNotFound, exactly like an id that never existed,
+ * so ids cannot be probed for existence.
+ */
+
+export class DriveNotFound extends Error {
+  constructor(what = 'That item') {
+    super(`${what} could not be found.`);
+    this.name = 'DriveNotFound';
+  }
+}
+
+export class DriveConflict extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DriveConflict';
+  }
+}
+
+export class DriveRejected extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DriveRejected';
+  }
+}
+
+const ROOT_SENTINEL = '00000000-0000-0000-0000-000000000000';
+
+type FolderRow = {
+  id: string; name: string; parent_id: string | null;
+  created_at: Date; updated_at: Date;
+};
+
+type FileRow = {
+  id: string; name: string; extension: string; mime_type: string;
+  size_bytes: string; created_at: Date; updated_at: Date;
+  uploaded_by: string | null; processing_status: D.ProcessingStatus;
+};
+
+function toFolder(r: FolderRow): D.DriveFolderDTO {
+  return {
+    id: r.id,
+    name: r.name,
+    parentId: r.parent_id,
+    createdAt: r.created_at.toISOString(),
+    updatedAt: r.updated_at.toISOString(),
+  };
+}
+
+function toFile(r: FileRow): D.DriveFileDTO {
+  const spec = specFor(`x.${r.extension}`);
+  return {
+    id: r.id,
+    name: r.name,
+    extension: r.extension,
+    mimeType: r.mime_type,
+    kind: (spec?.kind ?? 'document') as FileKind,
+    sizeBytes: Number(r.size_bytes),
+    previewable: spec ? spec.previewable : false,
+    createdAt: r.created_at.toISOString(),
+    updatedAt: r.updated_at.toISOString(),
+    uploadedBy: r.uploaded_by,
+    processingStatus: r.processing_status,
+  };
+}
+
+/** Confirms a folder belongs to this company, or refuses. Null means the root. */
+async function requireFolder(
+  tx: TransactionSql,
+  scope: CompanyScope,
+  folderId: string | null,
+): Promise<FolderRow | null> {
+  if (folderId === null) return null;
+  const rows = await tx<FolderRow[]>`
+    select id, name, parent_id, created_at, updated_at
+      from drive_folders
+     where id = ${folderId} and company_id = ${scope.companyId} and archived_at is null
+  `;
+  const row = rows[0];
+  if (!row) throw new DriveNotFound('That folder');
+  return row;
+}
+
+async function breadcrumbsFor(
+  tx: TransactionSql,
+  scope: CompanyScope,
+  folderId: string | null,
+): Promise<D.BreadcrumbDTO[]> {
+  const crumbs: D.BreadcrumbDTO[] = [{ id: null, name: 'Drive' }];
+  if (folderId === null) return crumbs;
+
+  const rows = await tx<{ id: string; name: string; depth: number }[]>`
+    with recursive up as (
+      select id, name, parent_id, 0 as depth
+        from drive_folders
+       where id = ${folderId} and company_id = ${scope.companyId}
+      union all
+      select f.id, f.name, f.parent_id, up.depth + 1
+        from drive_folders f
+        join up on f.id = up.parent_id
+       where f.company_id = ${scope.companyId}
+    )
+    select id, name, depth from up order by depth desc
+  `;
+  return [...crumbs, ...rows.map((r) => ({ id: r.id, name: r.name }))];
+}
+
+export async function listFolder(
+  scope: CompanyScope,
+  folderId: string | null,
+): Promise<D.DriveListingDTO> {
+  return withCompanyScope(scope, async (tx) => {
+    const folder = await requireFolder(tx, scope, folderId);
+
+    const [folders, files, crumbs] = await Promise.all([
+      tx<FolderRow[]>`
+        select id, name, parent_id, created_at, updated_at
+          from drive_folders
+         where company_id = ${scope.companyId}
+           and coalesce(parent_id, ${ROOT_SENTINEL}) = coalesce(${folderId}::uuid, ${ROOT_SENTINEL})
+           and archived_at is null
+         order by lower(name)
+      `,
+      tx<FileRow[]>`
+        select f.id, f.name, f.extension, f.mime_type, f.size_bytes,
+               f.created_at, f.updated_at, f.processing_status,
+               u.full_name as uploaded_by
+          from drive_files f
+          left join users u on u.id = f.created_by
+         where f.company_id = ${scope.companyId}
+           and coalesce(f.folder_id, ${ROOT_SENTINEL}) = coalesce(${folderId}::uuid, ${ROOT_SENTINEL})
+           and f.archived_at is null
+         order by lower(f.name)
+      `,
+      breadcrumbsFor(tx, scope, folderId),
+    ]);
+
+    return {
+      folder: folder ? { id: folder.id, name: folder.name, parentId: folder.parent_id } : null,
+      breadcrumbs: crumbs,
+      folders: folders.map(toFolder),
+      files: files.map(toFile),
+    };
+  });
+}
+
+export async function createFolder(
+  scope: CompanyScope,
+  parentId: string | null,
+  rawName: string,
+): Promise<D.DriveFolderDTO> {
+  const name = rawName.trim();
+  if (!name || name.length > 200) throw new DriveRejected('A folder needs a name of 200 characters or fewer.');
+
+  return withCompanyScope(scope, async (tx) => {
+    await requireFolder(tx, scope, parentId);
+    try {
+      const rows = await tx<FolderRow[]>`
+        insert into drive_folders (company_id, parent_id, name, created_by)
+        values (${scope.companyId}, ${parentId}, ${name}, ${scope.userId})
+        returning id, name, parent_id, created_at, updated_at
+      `;
+      return toFolder(rows[0]!);
+    } catch (error) {
+      throw translate(error, `A folder called "${name}" is already here.`);
+    }
+  });
+}
+
+export async function renameFolder(
+  scope: CompanyScope,
+  folderId: string,
+  rawName: string,
+): Promise<D.DriveFolderDTO> {
+  const name = rawName.trim();
+  if (!name || name.length > 200) throw new DriveRejected('A folder needs a name of 200 characters or fewer.');
+
+  return withCompanyScope(scope, async (tx) => {
+    try {
+      const rows = await tx<FolderRow[]>`
+        update drive_folders
+           set name = ${name}, updated_at = now()
+         where id = ${folderId} and company_id = ${scope.companyId} and archived_at is null
+        returning id, name, parent_id, created_at, updated_at
+      `;
+      const row = rows[0];
+      if (!row) throw new DriveNotFound('That folder');
+      return toFolder(row);
+    } catch (error) {
+      if (error instanceof DriveNotFound) throw error;
+      throw translate(error, `A folder called "${name}" is already here.`);
+    }
+  });
+}
+
+/** Archiving a folder archives everything inside it, however deep. */
+export async function archiveFolder(scope: CompanyScope, folderId: string): Promise<void> {
+  await withCompanyScope(scope, async (tx) => {
+    await requireFolder(tx, scope, folderId);
+
+    const descendants = await tx<{ id: string }[]>`
+      with recursive down as (
+        select id from drive_folders
+         where id = ${folderId} and company_id = ${scope.companyId}
+        union all
+        select f.id from drive_folders f
+          join down on f.parent_id = down.id
+         where f.company_id = ${scope.companyId}
+      )
+      select id from down
+    `;
+    const ids = descendants.map((d) => d.id);
+
+    await tx`
+      update drive_files set archived_at = now(), updated_at = now()
+       where company_id = ${scope.companyId} and folder_id = any(${ids}::uuid[]) and archived_at is null
+    `;
+    await tx`
+      update drive_folders set archived_at = now(), updated_at = now()
+       where company_id = ${scope.companyId} and id = any(${ids}::uuid[]) and archived_at is null
+    `;
+  });
+}
+
+export type UploadInput = {
+  folderId: string | null;
+  filename: string;
+  mimeType: string | null;
+  body: Buffer;
+};
+
+export async function uploadFile(scope: CompanyScope, input: UploadInput): Promise<D.DriveFileDTO> {
+  const name = sanitiseFilename(input.filename);
+  const spec = specFor(name);
+
+  if (!spec) {
+    throw new DriveRejected(
+      `We cannot store "${name}" yet. Try a PDF, Office document, CSV, image, video or audio file.`,
+    );
+  }
+  if (input.body.length === 0) throw new DriveRejected('That file is empty.');
+  if (input.body.length > MAX_FILE_BYTES) {
+    throw new DriveRejected('Files need to be 50 MB or smaller.');
+  }
+
+  // The browser's Content-Type is a hint, not evidence. The extension decides,
+  // and the stored type comes from our own list.
+  const mimeType = spec.mimeTypes.includes(input.mimeType ?? '')
+    ? (input.mimeType as string)
+    : spec.mimeTypes[0]!;
+
+  const fileId = randomUUID();
+  const storageKey = storageKeyFor(scope.companyId, fileId, spec.extension);
+  const checksum = sha256(input.body);
+
+  const row = await withCompanyScope(scope, async (tx) => {
+    await requireFolder(tx, scope, input.folderId);
+    try {
+      const rows = await tx<FileRow[]>`
+        insert into drive_files (
+          id, company_id, folder_id, name, original_name, extension, mime_type,
+          size_bytes, checksum_sha256, storage_key, created_by
+        ) values (
+          ${fileId}, ${scope.companyId}, ${input.folderId}, ${name}, ${input.filename},
+          ${spec.extension}, ${mimeType}, ${input.body.length}, ${checksum}, ${storageKey}, ${scope.userId}
+        )
+        returning id, name, extension, mime_type, size_bytes, created_at, updated_at,
+                  processing_status, null::text as uploaded_by
+      `;
+      return rows[0]!;
+    } catch (error) {
+      throw translate(error, `A file called "${name}" is already here.`);
+    }
+  });
+
+  // Bytes land only after the row committed. A crash here leaves a row with no
+  // object, which reads as a broken download; the reverse would leave an
+  // orphaned object nobody can see or clean up.
+  await driveStorage().put(storageKey, input.body, mimeType);
+
+  return toFile(row);
+}
+
+export async function renameFile(
+  scope: CompanyScope,
+  fileId: string,
+  rawName: string,
+): Promise<D.DriveFileDTO> {
+  const name = sanitiseFilename(rawName);
+  if (!name) throw new DriveRejected('A file needs a name.');
+
+  // Renaming must not smuggle a file into a type we do not accept, so the
+  // extension is fixed to whatever was uploaded.
+  return withCompanyScope(scope, async (tx) => {
+    const current = await tx<{ extension: string }[]>`
+      select extension from drive_files
+       where id = ${fileId} and company_id = ${scope.companyId} and archived_at is null
+    `;
+    const ext = current[0]?.extension;
+    if (!ext) throw new DriveNotFound('That file');
+
+    const base = name.toLowerCase().endsWith(`.${ext}`) ? name.slice(0, -(ext.length + 1)) : name;
+    const finalName = `${base.trim() || 'untitled'}.${ext}`;
+
+    try {
+      const rows = await tx<FileRow[]>`
+        update drive_files f
+           set name = ${finalName}, updated_at = now()
+          from (select 1) as _
+         where f.id = ${fileId} and f.company_id = ${scope.companyId} and f.archived_at is null
+        returning f.id, f.name, f.extension, f.mime_type, f.size_bytes,
+                  f.created_at, f.updated_at, f.processing_status,
+                  null::text as uploaded_by
+      `;
+      const row = rows[0];
+      if (!row) throw new DriveNotFound('That file');
+      return toFile(row);
+    } catch (error) {
+      if (error instanceof DriveNotFound) throw error;
+      throw translate(error, `A file called "${finalName}" is already here.`);
+    }
+  });
+}
+
+/** Soft delete. The bytes stay until someone purges the archive. */
+export async function archiveFile(scope: CompanyScope, fileId: string): Promise<void> {
+  await withCompanyScope(scope, async (tx) => {
+    const rows = await tx<{ id: string }[]>`
+      update drive_files set archived_at = now(), updated_at = now()
+       where id = ${fileId} and company_id = ${scope.companyId} and archived_at is null
+      returning id
+    `;
+    if (!rows[0]) throw new DriveNotFound('That file');
+  });
+}
+
+export async function restoreFile(scope: CompanyScope, fileId: string): Promise<void> {
+  await withCompanyScope(scope, async (tx) => {
+    const rows = await tx<{ id: string }[]>`
+      update drive_files set archived_at = null, updated_at = now()
+       where id = ${fileId} and company_id = ${scope.companyId} and archived_at is not null
+      returning id
+    `;
+    if (!rows[0]) throw new DriveNotFound('That file');
+  });
+}
+
+/** Permanent. Removes the row and the bytes. */
+export async function deleteFileForever(scope: CompanyScope, fileId: string): Promise<void> {
+  const key = await withCompanyScope(scope, async (tx) => {
+    const rows = await tx<{ storage_key: string }[]>`
+      delete from drive_files
+       where id = ${fileId} and company_id = ${scope.companyId}
+      returning storage_key
+    `;
+    const row = rows[0];
+    if (!row) throw new DriveNotFound('That file');
+    return row.storage_key;
+  });
+
+  await driveStorage().remove(key);
+}
+
+export type FileForDownload = {
+  file: D.DriveFileDTO;
+  body: Buffer;
+  /** The download name, sanitised, with the real extension. */
+  filename: string;
+};
+
+export async function readFile(scope: CompanyScope, fileId: string): Promise<FileForDownload> {
+  const row = await withCompanyScope(scope, async (tx) => {
+    const rows = await tx<(FileRow & { storage_key: string })[]>`
+      select id, name, extension, mime_type, size_bytes, created_at, updated_at,
+             processing_status, storage_key, null::text as uploaded_by
+        from drive_files
+       where id = ${fileId} and company_id = ${scope.companyId} and archived_at is null
+    `;
+    const found = rows[0];
+    if (!found) throw new DriveNotFound('That file');
+    return found;
+  });
+
+  // The key is read back from the row we just proved belongs to this company,
+  // never assembled from anything the caller sent.
+  const body = await driveStorage().get(row.storage_key);
+  return { file: toFile(row), body, filename: row.name };
+}
+
+export async function listArchived(scope: CompanyScope): Promise<D.DriveFileDTO[]> {
+  return withCompanyScope(scope, async (tx) => {
+    const rows = await tx<FileRow[]>`
+      select f.id, f.name, f.extension, f.mime_type, f.size_bytes,
+             f.created_at, f.updated_at, f.processing_status,
+             u.full_name as uploaded_by
+        from drive_files f
+        left join users u on u.id = f.created_by
+       where f.company_id = ${scope.companyId} and f.archived_at is not null
+       order by f.archived_at desc
+    `;
+    return rows.map(toFile);
+  });
+}
+
+export async function search(
+  scope: CompanyScope,
+  query: string,
+  kind: FileKind | null = null,
+): Promise<D.DriveSearchResultDTO> {
+  const term = query.trim();
+  if (term.length < 2) return { query: term, files: [], folders: [] };
+
+  // Escape the LIKE wildcards so a search for "100%" means what it says.
+  const BACKSLASH = String.fromCharCode(92);
+  const escaped = term
+    .split(BACKSLASH).join(BACKSLASH + BACKSLASH)
+    .split('%').join(BACKSLASH + '%')
+    .split('_').join(BACKSLASH + '_');
+  const pattern = `%${escaped}%`;
+
+  return withCompanyScope(scope, async (tx) => {
+    const [files, folders] = await Promise.all([
+      tx<(FileRow & { folder_id: string | null; folder_name: string | null })[]>`
+        select f.id, f.name, f.extension, f.mime_type, f.size_bytes,
+               f.created_at, f.updated_at, f.processing_status,
+               f.folder_id, d.name as folder_name,
+               u.full_name as uploaded_by
+          from drive_files f
+          left join drive_folders d on d.id = f.folder_id
+          left join users u on u.id = f.created_by
+         where f.company_id = ${scope.companyId}
+           and f.archived_at is null
+           and f.name ilike ${pattern}
+         order by lower(f.name)
+         limit 100
+      `,
+      tx<FolderRow[]>`
+        select id, name, parent_id, created_at, updated_at
+          from drive_folders
+         where company_id = ${scope.companyId}
+           and archived_at is null
+           and name ilike ${pattern}
+         order by lower(name)
+         limit 50
+      `,
+    ]);
+
+    const mapped = files
+      .map((r) => ({ ...toFile(r), folderId: r.folder_id, folderName: r.folder_name }))
+      .filter((f) => (kind ? f.kind === kind : true));
+
+    return { query: term, files: mapped, folders: folders.map(toFolder) };
+  });
+}
+
+/** Turns a Postgres constraint violation into something a person can act on. */
+function translate(error: unknown, duplicateMessage: string): Error {
+  const code = (error as { code?: string } | null)?.code;
+  if (code === '23505') return new DriveConflict(duplicateMessage);
+  // 23503: the composite foreign key refused a parent in another company.
+  if (code === '23503') return new DriveNotFound('That folder');
+  if (code === '42501') return new DriveNotFound('That item');
+  return error instanceof Error ? error : new Error(String(error));
+}
