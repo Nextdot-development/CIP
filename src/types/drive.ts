@@ -52,3 +52,20 @@ export type DriveSearchResultDTO = {
   files: (DriveFileDTO & { folderId: string | null; folderName: string | null })[];
   folders: DriveFolderDTO[];
 };
+
+/** What the extraction endpoint returns. Chunks are summarised, not dumped. */
+export type ExtractionDTO = {
+  fileId: string;
+  kind: 'text' | 'ocr' | 'transcript' | 'caption';
+  extractor: string;
+  extractorVersion: string;
+  /** The full length, even when `content` below was shortened for transport. */
+  contentChars: number;
+  content: string;
+  contentTruncated: boolean;
+  pageCount: number | null;
+  warnings: string[];
+  chunkCount: number;
+  chunkerVersion: string | null;
+  createdAt: string;
+};

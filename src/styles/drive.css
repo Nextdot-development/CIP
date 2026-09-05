@@ -111,3 +111,12 @@
 }
 .file-row .file-open { border: 0; background: transparent; text-align: left; padding: 0; cursor: pointer; }
 .fr-actions.always { opacity: 1; }
+
+/* Processing status — a label on the existing row, not a new layout */
+.proc { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 600; padding: 2px 8px; border-radius: var(--r-pill); white-space: nowrap; }
+.proc-ready   { background: var(--ok-050);   color: var(--ok-700); }
+.proc-waiting { background: var(--ink-050);  color: var(--ink-500); }
+.proc-reading { background: var(--brand-soft); color: var(--brand-deep); }
+.proc-failed  { background: var(--warn-050); color: var(--warn-700); }
+.proc-none    { background: transparent;     color: var(--ink-400); }
+.proc .spin { width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid currentColor; border-top-color: transparent; animation: spin .9s linear infinite; }

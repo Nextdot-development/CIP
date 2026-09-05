@@ -154,6 +154,25 @@ async function main() {
     forged.status === 201 && owner[0]?.slug === 'magic-moments',
     `HTTP ${forged.status}, landed in ${owner[0]?.slug ?? 'nowhere'}: ${forged.text.slice(0, 120)}`);
 
+  // --- Knowledge Layer endpoints ----------------------------------------
+  const anonExtraction = await api(null, `/api/drive/files/${nhFileId}/extraction`);
+  check('K. extraction refuses an anonymous caller', anonExtraction.status === 401, `HTTP ${anonExtraction.status}`);
+
+  const anonReprocess = await api(null, `/api/drive/files/${nhFileId}/reprocess`, { method: 'POST' });
+  check('K. reprocess refuses an anonymous caller', anonReprocess.status === 401, `HTTP ${anonReprocess.status}`);
+
+  const crossExtraction = await api(mm, `/api/drive/files/${nhFileId}/extraction`);
+  check('K. reading the other company extracted text returns 404',
+    crossExtraction.status === 404, `HTTP ${crossExtraction.status}`);
+  check('K. and no extracted text came back', !crossExtraction.text.includes('patient consent'));
+
+  const crossReprocess = await api(mm, `/api/drive/files/${nhFileId}/reprocess`, { method: 'POST' });
+  check('K. reprocessing the other company file returns 404',
+    crossReprocess.status === 404, `HTTP ${crossReprocess.status}`);
+
+  const ownReprocess = await api(mm, `/api/drive/files/${mmFileId}/reprocess`, { method: 'POST' });
+  check('K. a company can reprocess its own file', ownReprocess.status === 200, `HTTP ${ownReprocess.status}`);
+
   // --- 7. search ---------------------------------------------------------
   const search = await api(mm, `/api/drive/search?q=nh-secret-${stamp}`);
   const hits = (search.json?.files as unknown[] | undefined) ?? [];

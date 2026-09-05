@@ -1,5 +1,7 @@
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import postgres from 'postgres';
 import { startTestDatabase } from './harness';
 import type { TestDb } from './harness';
@@ -15,6 +17,9 @@ import type { TestDb } from './harness';
 let db: TestDb;
 let sql: postgres.Sql;
 let migrate: typeof import('../src/server/migrate')['migrate'];
+/** Read from disk, so adding a migration does not break these tests. */
+const MIGRATION_DIR = join(process.cwd(), 'src', 'server', 'migrations');
+const upFiles = () => readdirSync(MIGRATION_DIR).filter((f) => f.endsWith('.sql')).sort();
 let rollback: typeof import('../src/server/migrate')['rollback'];
 
 const DRIVE_COLUMNS = async () =>
@@ -47,8 +52,9 @@ after(async () => {
 
 describe('migrations run forwards and backwards', () => {
   it('applies the whole chain', async () => {
+    const expected = upFiles();
     const applied = await migrate(() => {});
-    assert.equal(applied.length, 5, 'expected five migrations');
+    assert.deepEqual(applied, expected, 'not every migration was applied');
 
     const tables = await tableNames();
     for (const t of ['companies', 'users', 'memberships', 'sessions', 'drive_folders', 'drive_files']) {
@@ -66,16 +72,25 @@ describe('migrations run forwards and backwards', () => {
     }
   });
 
-  it('rolls 0005 back and forward again, restoring the same columns', async () => {
+  it('rolls the newest migration back and forward, restoring the schema', async () => {
     const before = await DRIVE_COLUMNS();
+    const newest = upFiles().at(-1)!;
 
     await rollback(1, () => {});
     const reverted = await DRIVE_COLUMNS();
-    assert.ok(reverted.includes('storage_key'), 'down migration did not restore the old name');
-    assert.ok(!reverted.includes('storage_path'));
+    assert.notDeepEqual(reverted, before, `${newest} down migration changed nothing`);
 
     await migrate(() => {});
     assert.deepEqual(await DRIVE_COLUMNS(), before, 'schema did not come back identical');
+  });
+
+  it('every migration has a down file', () => {
+    const downs = new Set(
+      readdirSync(join(MIGRATION_DIR, 'down')).filter((f) => f.endsWith('.sql')),
+    );
+    for (const up of upFiles()) {
+      assert.ok(downs.has(up), `${up} has no down migration`);
+    }
   });
 
   it('refuses to roll back a migration with no down file', async () => {
@@ -87,10 +102,11 @@ describe('migrations run forwards and backwards', () => {
   });
 
   it('unwinds the entire chain, leaving no CIP tables behind', async () => {
-    await rollback(5, () => {});
+    await rollback(upFiles().length, () => {});
 
     const tables = await tableNames();
-    for (const t of ['drive_files', 'drive_folders', 'companies', 'users', 'memberships', 'sessions']) {
+    for (const t of ['drive_file_chunks', 'drive_file_extractions', 'drive_files', 'drive_folders',
+                     'companies', 'users', 'memberships', 'sessions']) {
       assert.ok(!tables.includes(t), `${t} survived the rollback`);
     }
 
@@ -99,7 +115,9 @@ describe('migrations run forwards and backwards', () => {
 
     // and it all comes back
     const reapplied = await migrate(() => {});
-    assert.equal(reapplied.length, 5);
-    assert.ok((await tableNames()).includes('drive_files'));
+    assert.deepEqual(reapplied, upFiles());
+    const back = await tableNames();
+    assert.ok(back.includes('drive_files'));
+    assert.ok(back.includes('drive_file_chunks'));
   });
 });

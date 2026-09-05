@@ -19,10 +19,13 @@
     "storage:migrate": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/migrate-storage.ts",
     "storage:gc": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/storage-gc.ts",
     "test:storage": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx --test --test-concurrency=1 tests/storage.test.ts",
-    "db:rollback": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx src/server/migrate.ts --down"
+    "db:rollback": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx src/server/migrate.ts --down",
+    "drive:worker": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/drive-worker.ts"
   },
   "dependencies": {
+    "mammoth": "^1.12.2",
     "next": "^16.3.4",
+    "pdfjs-dist": "^6.3.289",
     "postgres": "^3.4.9",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",

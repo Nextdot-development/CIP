@@ -40,6 +40,19 @@ export const ACCEPTED_TYPES: FileTypeSpec[] = [
 
 export const MAX_FILE_BYTES = 50 * 1024 * 1024;
 
+/**
+ * The types the Knowledge Layer reads today. Everything else is stored and
+ * listed normally; it is simply not extracted yet, and the UI says so rather
+ * than leaving it looking stuck in a queue.
+ *
+ * src/server/drive/extraction asserts its registry matches this exactly.
+ */
+export const EXTRACTABLE_FILE_TYPES = ['pdf', 'docx', 'txt', 'csv'] as const;
+
+export function isExtractable(fileType: string): boolean {
+  return (EXTRACTABLE_FILE_TYPES as readonly string[]).includes(fileType.toLowerCase());
+}
+
 const BY_EXTENSION = new Map(ACCEPTED_TYPES.map((t) => [t.extension, t]));
 
 export function extensionOf(filename: string): string {

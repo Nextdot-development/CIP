@@ -212,9 +212,45 @@ Downloads carry `X-Content-Type-Options: nosniff` and a `default-src 'none'; san
 CSP; SVG is never rendered inline, because it can carry script and this is our
 own origin.
 
-**Not built yet.** `processing_status` on every file is always `pending`. It is
-the queue the Brand Brain will read; nothing writes to it, and no file is parsed,
-extracted or embedded.
+---
+
+## Knowledge Layer
+
+Deterministic text extraction. No AI, no embeddings, no retrieval — this phase
+turns stored files into text and ordered chunks, and stops there.
+
+**What is read:** PDF (pdf.js), DOCX (mammoth), TXT (UTF-8 and UTF-16), CSV.
+Everything else is stored and listed normally and shows as "Not read yet"
+rather than sitting in a queue that will never move.
+
+**The worker.** `npm run drive:worker` drains the queue once; `-- --watch`
+keeps it running. It is a separate process on purpose: Next.js has no durable
+background work, so anything started after a response can be killed the moment
+that response is flushed. Two workers can run side by side — claiming uses
+`FOR UPDATE SKIP LOCKED`, so they never take the same file.
+
+Finding work is the one operation that must look across companies, and it is
+the only one that does: a single admin statement returns a file id and its
+company id. **Everything after that runs inside `withCompanyScope` for that one
+company**, under the app role, so row-level security applies to every read and
+write the extraction performs.
+
+**Failure handling.** Three attempts with growing backoff (2, 4, 8 minutes),
+then `failed` with a plain reason. A row left in `processing` for more than 15
+minutes is assumed to be from a dead worker and reclaimed. A per-file timeout,
+a 5M character cap and a 2,000 page cap stop one pathological file exhausting
+the worker.
+
+**Chunking** is deterministic and model-agnostic: paragraph-aware, ~1000
+characters with ~200 of overlap, every chunk carrying exact offsets into the
+extraction. `chunker_version` allows re-chunking from the stored text without
+re-reading the file. `token_estimate` is chars÷4, not a model tokeniser — that
+answer belongs to whichever embedding model is chosen later.
+
+**Still not built:** embeddings, retrieval, semantic search, OCR, and image,
+audio or video analysis. `drive_file_embeddings` will key off `chunk_id` and
+`company_id` when a model is chosen; pgvector is available on Supabase but not
+installed.
 
 ---
 

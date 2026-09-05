@@ -7,7 +7,7 @@ import { Icon } from '@/components/ui/Icon';
 import type { IconName } from '@/components/ui/Icon';
 import { FilePreview } from '@/components/drive/FilePreview';
 import { useToast } from '@/context/toast';
-import { ACCEPT_ATTRIBUTE, humanSize } from '@/lib/fileTypes';
+import { ACCEPT_ATTRIBUTE, humanSize, isExtractable } from '@/lib/fileTypes';
 import type { FileKind } from '@/lib/fileTypes';
 import { relativeDay } from '@/lib/format';
 import type { DriveFileDTO, DriveListingDTO, DriveSearchResultDTO } from '@/types/drive';
@@ -50,6 +50,33 @@ const KINDS: { id: FileKind; label: string }[] = [
   { id: 'presentation', label: 'Presentations' },
   { id: 'data', label: 'Data' },
 ];
+
+/**
+ * What the Knowledge Layer has made of a file.
+ *
+ * A failed read is amber, not red: it needs attention, but it does not stop
+ * anything shipping. Types we do not read yet say so, rather than sitting in
+ * a queue that will never move.
+ */
+function ProcessingChip({ file }: { file: DriveFileDTO }) {
+  if (!isExtractable(file.fileType)) {
+    return <span className="proc proc-none" title="We do not read this file type yet">Not read yet</span>;
+  }
+  switch (file.processingStatus) {
+    case 'processed':
+      return <span className="proc proc-ready">Text ready</span>;
+    case 'processing':
+      return (
+        <span className="proc proc-reading">
+          <span className="spin" aria-hidden="true" /> Reading
+        </span>
+      );
+    case 'failed':
+      return <span className="proc proc-failed">Could not read</span>;
+    default:
+      return <span className="proc proc-waiting">Waiting to be read</span>;
+  }
+}
 
 type Upload = { id: string; name: string; status: 'uploading' | 'failed'; message?: string };
 type Renaming = { id: string; type: 'file' | 'folder'; value: string };
@@ -144,6 +171,11 @@ export function DriveSection({ listing }: { listing: DriveListingDTO }) {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ name: value }),
     });
+  };
+
+  const reprocess = async (id: string, name: string) => {
+    const ok = await call(`/api/drive/files/${id}/reprocess`, { method: 'POST' });
+    if (ok) note(`${name} is back in the queue`);
   };
 
   const archive = async (id: string, type: 'file' | 'folder', name: string) => {
@@ -398,13 +430,27 @@ export function DriveSection({ listing }: { listing: DriveListingDTO }) {
                       {f.name}
                     </button>
                   )}
-                  <span className="fr-meta">
-                    {humanSize(f.fileSize)} · Added {relativeDay(f.createdAt)}
-                    {f.uploadedBy ? ` by ${f.uploadedBy.name}` : ''}
-                    {searching && where ? ` · in ${where}` : ''}
+                  <span className="fr-meta row gap-8" style={{ flexWrap: 'wrap' }}>
+                    <span>
+                      {humanSize(f.fileSize)} · Added {relativeDay(f.createdAt)}
+                      {f.uploadedBy ? ` by ${f.uploadedBy.name}` : ''}
+                      {searching && where ? ` · in ${where}` : ''}
+                    </span>
+                    <ProcessingChip file={f} />
                   </span>
                 </span>
                 <span className="fr-actions">
+                  {f.processingStatus === 'failed' && isExtractable(f.fileType) && (
+                    <button
+                      type="button"
+                      className="fr-btn"
+                      onClick={() => reprocess(f.id, f.name)}
+                      aria-label={`Try reading ${f.name} again`}
+                      title="Try reading this file again"
+                    >
+                      <Icon name="restore" size={15} />
+                    </button>
+                  )}
                   <button type="button" className="fr-btn" onClick={() => setPreview(f)} aria-label={`Preview ${f.name}`}>
                     <Icon name="search" size={15} />
                   </button>
