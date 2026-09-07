@@ -15,6 +15,7 @@ const NAV: { href: Route; label: string; sub?: string; icon: IconName }[] = [
   { href: '/teach', label: 'Teach', sub: 'Your brand', icon: 'teach' },
   { href: '/ask', label: 'Ask', sub: 'Create with CIP', icon: 'ask' },
   { href: '/drive', label: 'Drive', sub: 'Your files', icon: 'drive' },
+  { href: '/media', label: 'Media', sub: 'Images & video', icon: 'image' },
   { href: '/trust', label: 'Trust', sub: 'Track & review', icon: 'trust' },
 ];
 

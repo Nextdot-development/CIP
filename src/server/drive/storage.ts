@@ -22,9 +22,28 @@ export interface DriveStorage {
   readonly name: string;
 }
 
-/** Keys are generated from UUIDs, but never trust that on the way to a path. */
+/**
+ * Keys are generated from UUIDs, but never trust that on the way to a path.
+ *
+ * Two shapes are allowed and nothing else:
+ *
+ *   companies/{companyId}/{fileId}.ext                     an uploaded file
+ *   companies/{companyId}/media/{generationId}/{assetId}.ext  a generated one
+ *
+ * Both start with the owning company, so a key that has drifted from its row
+ * is wrong here too, and neither can contain a path segment that did not come
+ * from a UUID we generated. Adding a shape means adding it here on purpose,
+ * which is the point of an allow-list.
+ */
+const UUID = '[0-9a-f-]{36}';
+const EXTENSION = '(\\.[a-z0-9]{1,10})?';
+const SAFE_KEY = new RegExp(
+  `^companies\\/${UUID}\\/(${UUID}|media\\/${UUID}\\/${UUID})${EXTENSION}$`,
+  'i',
+);
+
 export function assertSafeKey(key: string): void {
-  if (!/^companies\/[0-9a-f-]{36}\/[0-9a-f-]{36}(\.[a-z0-9]{1,10})?$/i.test(key)) {
+  if (!SAFE_KEY.test(key)) {
     throw new Error(`Refusing to touch an unexpected storage key: ${key}`);
   }
 }

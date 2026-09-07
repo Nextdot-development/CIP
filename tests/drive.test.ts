@@ -47,7 +47,7 @@ before(async () => {
   process.env.CIP_FORCE_LOCAL_STORAGE = 'true';
 
   const { migrate } = await import('../src/server/migrate');
-  await migrate(() => {}, { upTo: db.migrateUpTo });
+  await migrate(() => {}, { skip: db.skipMigrations });
   const { seed } = await import('../src/server/seed');
   await seed(() => {});
 

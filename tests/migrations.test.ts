@@ -34,19 +34,14 @@ const DRIVE_COLUMNS = async () =>
  * The migrations this database can actually run.
  *
  * 0007 installs pgvector, which the embedded PostgreSQL does not ship, so on
- * such a database the chain stops at the last migration before it. Everything
- * below is written against this rather than the directory listing, so the same
- * assertions hold in both places and neither one quietly tests less than it
- * claims.
+ * such a database that one migration is left out — and only that one, so 0008
+ * and everything after it are still exercised. The assertions below are
+ * written against this rather than the directory listing, so they hold in both
+ * places and neither one quietly tests less than it claims.
  */
-const chain = () => {
-  const all = upFiles();
-  if (!db.migrateUpTo) return all;
-  const stop = all.indexOf(db.migrateUpTo);
-  return stop === -1 ? all : all.slice(0, stop + 1);
-};
+const chain = () => upFiles().filter((f) => !db.skipMigrations.includes(f));
 
-const applyChain = () => migrate(() => {}, { upTo: db.migrateUpTo });
+const applyChain = () => migrate(() => {}, { skip: db.skipMigrations });
 
 /**
  * Every column of every table, as one comparable list.

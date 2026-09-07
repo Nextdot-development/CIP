@@ -263,6 +263,89 @@ async function main() {
   check('8. rate limiting engages under a burst', limited > 0, `${limited} of 40 refused`);
   check('8. and it says how long to wait', lastRetryAfter !== null, `retry-after: ${lastRetryAfter ?? 'absent'}`);
 
+  // --- 9. media generation ----------------------------------------------
+  // The fake providers stand in unless keys are configured, so these run
+  // either way. What is being proved is the boundary, not the provider.
+  for (const [label, path, init] of [
+    ['image generate', '/api/media/images/generate', { method: 'POST', body: JSON.stringify({ prompt: 'x' }) }],
+    ['video generate', '/api/media/videos/generate', { method: 'POST', body: JSON.stringify({ prompt: 'x' }) }],
+    ['generations list', '/api/media/generations', {}],
+  ] as [string, string, RequestInit][]) {
+    const r = await api(null, path, init);
+    check(`9. ${label} refuses an anonymous caller`, r.status === 401, `HTTP ${r.status}`);
+  }
+
+  // Narayana makes something; Magic Moments must not be able to reach it.
+  const theirImage = await api(nh, '/api/media/images/generate', {
+    method: 'POST',
+    body: JSON.stringify({ prompt: `nh-only-media-${stamp}` }),
+  });
+  check('9. a company can generate its own image', theirImage.status === 201, `HTTP ${theirImage.status}`);
+
+  const theirId = String(
+    (theirImage.json?.generation as { id?: string } | undefined)?.id ?? '',
+  );
+
+  const anonAsset = await api(null, `/api/media/generations/${theirId}/asset`);
+  check('9. the asset route refuses an anonymous caller', anonAsset.status === 401, `HTTP ${anonAsset.status}`);
+
+  const crossRead = await api(mm, `/api/media/generations/${theirId}`);
+  check('9. reading the other company generation returns 404', crossRead.status === 404, `HTTP ${crossRead.status}`);
+
+  const crossAsset = await api(mm, `/api/media/generations/${theirId}/asset`);
+  check('9. downloading the other company media returns 404', crossAsset.status === 404, `HTTP ${crossAsset.status}`);
+  check('9. and no bytes came back', crossAsset.text.length < 500);
+
+  const crossRetry = await api(mm, `/api/media/generations/${theirId}/retry`, { method: 'POST' });
+  check('9. retrying the other company generation returns 404', crossRetry.status === 404, `HTTP ${crossRetry.status}`);
+
+  const crossCancel = await api(mm, `/api/media/generations/${theirId}/cancel`, { method: 'POST' });
+  check('9. cancelling the other company generation returns 404', crossCancel.status === 404, `HTTP ${crossCancel.status}`);
+
+  const mmList = await api(mm, '/api/media/generations?limit=100');
+  check('9. the other company work is absent from this company history',
+    !mmList.text.includes(`nh-only-media-${stamp}`) && !mmList.text.includes(theirId));
+
+  // A Drive file from the other company must not become a reference image.
+  const crossReference = await api(mm, '/api/media/images/generate', {
+    method: 'POST',
+    body: JSON.stringify({ prompt: 'borrow their logo', referenceFileIds: [nhFileId] }),
+  });
+  check('9. a cross-company reference image is not found',
+    crossReference.status === 404, `HTTP ${crossReference.status}`);
+
+  // A company id in the body must be ignored, not honoured.
+  const forgedMedia = await api(mm, '/api/media/images/generate', {
+    method: 'POST',
+    body: JSON.stringify({ prompt: `forged-media-${stamp}`, companyId: nhCompanyId, company_id: nhCompanyId }),
+  });
+  const forgedId = String((forgedMedia.json?.generation as { id?: string } | undefined)?.id ?? '');
+  const landedWith = await admin<{ company_id: string }[]>`
+    select company_id from media_generations where id = ${forgedId}
+  `;
+  check('9. a company id in the request body is ignored',
+    forgedMedia.status === 201 && landedWith[0]?.company_id !== nhCompanyId,
+    `landed in ${landedWith[0]?.company_id === nhCompanyId ? 'the WRONG company' : 'the caller own company'}`);
+
+  check('9. no media response carried a forbidden field',
+    !mmList.text.includes('storage_path') && !mmList.text.includes('storagePath') &&
+    !mmList.text.includes('company_id') && !mmList.text.includes('companyId') &&
+    !mmList.text.includes('companies/'),
+    'checked storage_path, storagePath, company_id, companyId, companies/');
+
+  // Rate limiting is mandatory on the paid endpoints, so prove it engages.
+  let mediaLimited = 0;
+  let mediaRetryAfter: string | null = null;
+  for (let i = 0; i < 30; i += 1) {
+    const r = await api(mm, '/api/media/images/generate', {
+      method: 'POST',
+      body: JSON.stringify({ prompt: `burst-media-${stamp}-${i}` }),
+    });
+    if (r.status === 429) { mediaLimited += 1; mediaRetryAfter = r.headers.get('retry-after'); }
+  }
+  check('9. image generation is rate limited', mediaLimited > 0, `${mediaLimited} of 30 refused`);
+  check('9. and it says how long to wait', mediaRetryAfter !== null, `retry-after: ${mediaRetryAfter ?? 'absent'}`);
+
   // --- the other company is untouched throughout ------------------------
   const nhStill = await api(nh, `/api/drive/files/${nhFileId}/content`);
   check('Narayana still has its file, unchanged',
@@ -278,6 +361,16 @@ async function main() {
   await api(nh, `/api/drive/files/${nhFileId}?permanent=1`, { method: 'DELETE' });
   await api(mm, `/api/drive/files/${mmFileId}?permanent=1`, { method: 'DELETE' });
   await admin`delete from drive_folders where name like ${'%' + String(stamp) + '%'}`;
+  // Generated media too, including the objects, so a proof run does not leave
+  // bytes behind in the bucket.
+  const strays = await admin<{ storage_path: string }[]>`
+    select a.storage_path from media_generation_assets a
+      join media_generations g on g.id = a.generation_id
+     where g.prompt like ${'%' + String(stamp) + '%'}
+  `;
+  const { driveStorage } = await import('../src/server/drive/storage');
+  for (const stray of strays) await driveStorage().remove(stray.storage_path).catch(() => {});
+  await admin`delete from media_generations where prompt like ${'%' + String(stamp) + '%'}`;
   console.log('  (cleaned up the folders and files this run created)');
 
   await sql.end();

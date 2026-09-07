@@ -1,6 +1,7 @@
 import { isRowLevelSecurityBinding, sql } from '@/server/db';
 import { driveStorage } from '@/server/drive/storage';
 import { embedder } from '@/server/drive/embedding';
+import { providerStatus } from '@/server/media/providers';
 
 /**
  * GET /api/health
@@ -38,6 +39,10 @@ export async function GET() {
           dimensions: embedder().dimensions,
           pgvector: vectorInstalled ? 'installed' : 'missing',
         },
+        // Whether real credentials are present, never the credentials. A
+        // provider standing in with its fake reports configured: false, so a
+        // deployment that quietly generates placeholder images is visible.
+        media: providerStatus(),
         isolation: {
           serviceLayer: 'active',
           rowLevelSecurity: rlsBinding ? 'binding' : 'bypassed',

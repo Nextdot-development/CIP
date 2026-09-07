@@ -10,7 +10,7 @@ import { adminSql } from './db-admin';
  */
 export async function migrate(
   log: (m: string) => void = console.log,
-  options: { upTo?: string } = {},
+  options: { skip?: readonly string[] } = {},
 ): Promise<string[]> {
   const sql = adminSql();
   const applied: string[] = [];
@@ -26,14 +26,21 @@ export async function migrate(
     const dir = join(dirname(fileURLToPath(import.meta.url)), 'migrations');
     let files = (await readdir(dir)).filter((f) => f.endsWith('.sql')).sort();
 
-    // `upTo` exists for one reason: migration 0007 needs pgvector, and the
-    // PostgreSQL the offline tests run against does not have it. Phase 1-3
-    // tests stop at the last migration their database can apply rather than
-    // failing on an extension they never use.
-    if (options.upTo) {
-      const cut = files.indexOf(options.upTo);
-      if (cut === -1) throw new Error(`upTo names a migration that does not exist: ${options.upTo}`);
-      files = files.slice(0, cut + 1);
+    // `skip` exists for one reason: migration 0007 needs pgvector, and the
+    // PostgreSQL the offline tests run against does not have it.
+    //
+    // It names the migrations to leave out rather than a point to stop at.
+    // Stopping would also withhold every later migration, which is not what is
+    // meant: 0008 does not depend on 0007, and a database without pgvector can
+    // apply it perfectly well. Skipping keeps the offline suite testing
+    // everything except the one thing it genuinely cannot run.
+    if (options.skip && options.skip.length > 0) {
+      for (const name of options.skip) {
+        if (!files.includes(name)) {
+          throw new Error(`skip names a migration that does not exist: ${name}`);
+        }
+      }
+      files = files.filter((f) => !options.skip!.includes(f));
     }
 
     const done = await sql<{ name: string }[]>`select name from _cip_migrations`;

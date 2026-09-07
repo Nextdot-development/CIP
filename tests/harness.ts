@@ -45,8 +45,8 @@ export type TestDb = {
   appPassword: string;
   /** Whether this database can create the pgvector extension. */
   hasVector: boolean;
-  /** The last migration this database can apply, for migrate({ upTo }). */
-  migrateUpTo: string | undefined;
+  /** Migrations this database cannot run, for migrate({ skip }). */
+  skipMigrations: readonly string[];
   stop: () => Promise<void>;
 };
 
@@ -56,7 +56,7 @@ export type TestDb = {
  * Phase 4 suites skip with a reason rather than failing on a missing
  * extension deep inside a migration.
  */
-export const LAST_MIGRATION_WITHOUT_VECTOR = '0006_knowledge_layer.sql';
+export const MIGRATIONS_NEEDING_VECTOR = ['0007_embeddings.sql'] as const;
 
 /**
  * Replaces the hostname in a connection URL with a literal address.
@@ -141,7 +141,7 @@ export async function startTestDatabase(): Promise<TestDb> {
       appUrl: appUrl.toString(),
       appPassword,
       hasVector,
-      migrateUpTo: hasVector ? undefined : LAST_MIGRATION_WITHOUT_VECTOR,
+      skipMigrations: hasVector ? [] : MIGRATIONS_NEEDING_VECTOR,
       stop: async () => {},
     };
   }
@@ -168,7 +168,7 @@ export async function startTestDatabase(): Promise<TestDb> {
     appUrl: `postgres://cip_app:${APP_PASSWORD}@localhost:${port}/cip_test`,
     appPassword: APP_PASSWORD,
     hasVector,
-    migrateUpTo: hasVector ? undefined : LAST_MIGRATION_WITHOUT_VECTOR,
+    skipMigrations: hasVector ? [] : MIGRATIONS_NEEDING_VECTOR,
     stop: async () => {
       await pg.stop();
       try {

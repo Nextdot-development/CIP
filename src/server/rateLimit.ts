@@ -68,6 +68,38 @@ export function rateLimit(key: string, options: RateLimitOptions): RateLimitResu
 /** Semantic search: 20 in a burst, then a sustained 30 a minute. */
 export const SEMANTIC_SEARCH_LIMIT: RateLimitOptions = { capacity: 20, refillPerSecond: 0.5 };
 
+/**
+ * Generation is the expensive one.
+ *
+ * An embedding call costs a fraction of a cent; an image is cents and a video
+ * is more, so these ceilings are much lower and are applied per user and per
+ * company. The company bucket is what stops five colleagues each running a
+ * script overnight and nobody noticing until the invoice.
+ *
+ * Deliberately configurable: the right number depends on the plan somebody is
+ * paying for, and hard-coding it would mean a deploy to change it.
+ */
+function fromEnv(name: string, fallback: RateLimitOptions): RateLimitOptions {
+  const capacity = Number(process.env[`${name}_CAPACITY`]);
+  const refill = Number(process.env[`${name}_REFILL_PER_SECOND`]);
+  return {
+    capacity: Number.isFinite(capacity) && capacity > 0 ? capacity : fallback.capacity,
+    refillPerSecond: Number.isFinite(refill) && refill > 0 ? refill : fallback.refillPerSecond,
+  };
+}
+
+/** Images, per user: 5 at once, then one every 12 seconds. */
+export const IMAGE_GENERATION_LIMIT = (): RateLimitOptions =>
+  fromEnv('CIP_IMAGE_RATE', { capacity: 5, refillPerSecond: 1 / 12 });
+
+/** Videos, per user: 2 at once, then one a minute. Videos cost more. */
+export const VIDEO_GENERATION_LIMIT = (): RateLimitOptions =>
+  fromEnv('CIP_VIDEO_RATE', { capacity: 2, refillPerSecond: 1 / 60 });
+
+/** Everything the company generates, across all its users. */
+export const COMPANY_GENERATION_LIMIT = (): RateLimitOptions =>
+  fromEnv('CIP_COMPANY_RATE', { capacity: 20, refillPerSecond: 1 / 6 });
+
 /** Tests need a clean slate between cases. */
 export function __resetRateLimits(): void {
   buckets.clear();

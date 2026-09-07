@@ -21,9 +21,12 @@
     "test:storage": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx --test --test-concurrency=1 tests/storage.test.ts",
     "db:rollback": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx src/server/migrate.ts --down",
     "drive:worker": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/drive-worker.ts",
-    "test:embeddings": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx --test --test-concurrency=1 tests/embeddings.test.ts"
+    "test:embeddings": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx --test --test-concurrency=1 tests/embeddings.test.ts",
+    "media:worker": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/media-worker.ts",
+    "test:media": "node --conditions=react-server --import tsx --test --test-concurrency=1 tests/media.test.ts"
   },
   "dependencies": {
+    "@google/genai": "^2.21.0",
     "mammoth": "^1.12.2",
     "next": "^16.3.4",
     "pdfjs-dist": "^6.3.289",
