@@ -30,6 +30,43 @@ const DRIVE_COLUMNS = async () =>
     `
   ).map((r) => r.column_name);
 
+/**
+ * The migrations this database can actually run.
+ *
+ * 0007 installs pgvector, which the embedded PostgreSQL does not ship, so on
+ * such a database the chain stops at the last migration before it. Everything
+ * below is written against this rather than the directory listing, so the same
+ * assertions hold in both places and neither one quietly tests less than it
+ * claims.
+ */
+const chain = () => {
+  const all = upFiles();
+  if (!db.migrateUpTo) return all;
+  const stop = all.indexOf(db.migrateUpTo);
+  return stop === -1 ? all : all.slice(0, stop + 1);
+};
+
+const applyChain = () => migrate(() => {}, { upTo: db.migrateUpTo });
+
+/**
+ * Every column of every table, as one comparable list.
+ *
+ * Rolling a migration back has to change the schema and rolling it forward has
+ * to restore it exactly. Watching drive_files alone only worked while the
+ * newest migration happened to touch drive_files — 0007 touches
+ * drive_file_chunks and drive_file_embeddings, so that assumption stopped
+ * holding the moment Phase 4 landed. The whole schema cannot go stale that way.
+ */
+const schemaFingerprint = async () =>
+  (
+    await sql<{ entry: string }[]>`
+      select table_name || '.' || column_name || ':' || data_type as entry
+        from information_schema.columns
+       where table_schema = 'public'
+       order by entry
+    `
+  ).map((r) => r.entry);
+
 const tableNames = async () =>
   (
     await sql<{ tablename: string }[]>`
@@ -52,8 +89,8 @@ after(async () => {
 
 describe('migrations run forwards and backwards', () => {
   it('applies the whole chain', async () => {
-    const expected = upFiles();
-    const applied = await migrate(() => {});
+    const expected = chain();
+    const applied = await applyChain();
     assert.deepEqual(applied, expected, 'not every migration was applied');
 
     const tables = await tableNames();
@@ -73,15 +110,15 @@ describe('migrations run forwards and backwards', () => {
   });
 
   it('rolls the newest migration back and forward, restoring the schema', async () => {
-    const before = await DRIVE_COLUMNS();
-    const newest = upFiles().at(-1)!;
+    const before = await schemaFingerprint();
+    const newest = chain().at(-1)!;
 
     await rollback(1, () => {});
-    const reverted = await DRIVE_COLUMNS();
+    const reverted = await schemaFingerprint();
     assert.notDeepEqual(reverted, before, `${newest} down migration changed nothing`);
 
-    await migrate(() => {});
-    assert.deepEqual(await DRIVE_COLUMNS(), before, 'schema did not come back identical');
+    await applyChain();
+    assert.deepEqual(await schemaFingerprint(), before, 'schema did not come back identical');
   });
 
   it('every migration has a down file', () => {
@@ -102,7 +139,7 @@ describe('migrations run forwards and backwards', () => {
   });
 
   it('unwinds the entire chain, leaving no CIP tables behind', async () => {
-    await rollback(upFiles().length, () => {});
+    await rollback(chain().length, () => {});
 
     const tables = await tableNames();
     for (const t of ['drive_file_chunks', 'drive_file_extractions', 'drive_files', 'drive_folders',
@@ -114,8 +151,8 @@ describe('migrations run forwards and backwards', () => {
     assert.equal(roles.length, 0, 'the cip_app role survived the rollback');
 
     // and it all comes back
-    const reapplied = await migrate(() => {});
-    assert.deepEqual(reapplied, upFiles());
+    const reapplied = await applyChain();
+    assert.deepEqual(reapplied, chain());
     const back = await tableNames();
     assert.ok(back.includes('drive_files'));
     assert.ok(back.includes('drive_file_chunks'));
