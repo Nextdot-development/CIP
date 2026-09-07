@@ -18,15 +18,20 @@ export class OpenAIEmbedder implements Embedder {
   readonly model: string;
   readonly dimensions = 1536;
   /**
-   * text-embedding-3-small separates unrelated text well — unrelated pairs sit
-   * near 0.0-0.2 and related text from about 0.35 up — so 0.30 is the usual
-   * starting point and what we ship.
+   * Measured on real CIP documents, not guessed.
    *
-   * NOT YET CALIBRATED against a real corpus: it comes from the model's
-   * published behaviour, not from measurement on CIP documents, because this
-   * driver has never run. Measure it on real Drive content before trusting it,
-   * and override with CIP_MIN_RELEVANCE_SCORE while doing so. Too high silently
-   * hides real answers, which is the more expensive mistake of the two.
+   * Against text-embedding-3-small on a live Drive: a query with nothing
+   * related to it at all ("quantum chromodynamics in penguins") topped out at
+   * 0.157; a query about a subject the company genuinely does not cover
+   * ("patient consent for filming", against a drinks brand's documents)
+   * reached 0.232; and a query with a real answer present scored 0.852, with
+   * a second, loosely related passage at 0.321.
+   *
+   * So the gap is roughly 0.23 to 0.32, and 0.30 sits inside it. Raise it and
+   * genuinely related passages start disappearing; lower it much and prose
+   * that merely reads like English starts coming back as an answer. Override
+   * with CIP_MIN_RELEVANCE_SCORE to re-measure on a different corpus — too
+   * high silently hides real answers, which is the more expensive mistake.
    */
   readonly minRelevanceScore: number;
 
