@@ -58,3 +58,8 @@ textarea.field-input { resize: vertical; line-height: 1.55; }
   border: 1px solid var(--line); border-radius: var(--r-sm);
   background: var(--surface-2); display: block;
 }
+
+/* Connected-source facts on the Knowledge page */
+.conn-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin: 4px 0 16px; }
+.conn-facts dt { font-size: 12px; color: var(--ink-500); margin-bottom: 3px; }
+.conn-facts dd { font-size: 14px; color: var(--ink-900); margin: 0; }

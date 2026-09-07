@@ -96,6 +96,15 @@ export const IMAGE_GENERATION_LIMIT = (): RateLimitOptions =>
 export const VIDEO_GENERATION_LIMIT = (): RateLimitOptions =>
   fromEnv('CIP_VIDEO_RATE', { capacity: 2, refillPerSecond: 1 / 60 });
 
+/**
+ * Google Drive sync, per company: 3 in a burst, then one every two minutes.
+ *
+ * A sync walks somebody else's API and Google's quotas are per project, so one
+ * company leaning on the button spends every company's allowance.
+ */
+export const GOOGLE_SYNC_LIMIT = (): RateLimitOptions =>
+  fromEnv('CIP_GDRIVE_SYNC_RATE', { capacity: 3, refillPerSecond: 1 / 120 });
+
 /** Everything the company generates, across all its users. */
 export const COMPANY_GENERATION_LIMIT = (): RateLimitOptions =>
   fromEnv('CIP_COMPANY_RATE', { capacity: 20, refillPerSecond: 1 / 6 });

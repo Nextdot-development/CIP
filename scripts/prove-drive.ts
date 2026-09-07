@@ -346,6 +346,57 @@ async function main() {
   check('9. image generation is rate limited', mediaLimited > 0, `${mediaLimited} of 30 refused`);
   check('9. and it says how long to wait', mediaRetryAfter !== null, `retry-after: ${mediaRetryAfter ?? 'absent'}`);
 
+  // --- 10. connected Google Drive ---------------------------------------
+  // No OAuth client is needed for these: what is being proved is the boundary
+  // and the guards, not that Google answers.
+  for (const [label, path, init] of [
+    ['status', '/api/integrations/google-drive', {}],
+    ['files', '/api/integrations/google-drive/files', {}],
+    ['connect', '/api/integrations/google-drive/connect', {}],
+    ['folder', '/api/integrations/google-drive/folder', { method: 'POST', body: JSON.stringify({ folderId: 'x' }) }],
+    ['sync', '/api/integrations/google-drive/sync', { method: 'POST' }],
+    ['disconnect', '/api/integrations/google-drive/disconnect', { method: 'POST' }],
+    ['callback', '/api/integrations/google-drive/callback?code=x&state=y', {}],
+  ] as [string, string, RequestInit][]) {
+    const r = await api(null, path, init);
+    check(`10. google-drive ${label} refuses an anonymous caller`, r.status === 401, `HTTP ${r.status}`);
+  }
+
+  const gdStatus = await api(mm, '/api/integrations/google-drive');
+  check('10. a company can read its own connection status', gdStatus.status === 200, `HTTP ${gdStatus.status}`);
+  check('10. and it is not connected to anything by default',
+    (gdStatus.json?.connection as { status?: string } | undefined)?.status === 'disconnected',
+    String((gdStatus.json?.connection as { status?: string } | undefined)?.status));
+
+  check('10. the connection carries no token, company id or storage path',
+    !gdStatus.text.includes('access_token') && !gdStatus.text.includes('refresh_token') &&
+    !gdStatus.text.includes('accessToken') && !gdStatus.text.includes('refreshToken') &&
+    !gdStatus.text.includes('company_id') && !gdStatus.text.includes('companyId') &&
+    !gdStatus.text.includes('storage_path') && !gdStatus.text.includes(nhCompanyId),
+    'checked access_token, refresh_token, company_id, storage_path');
+
+  // A company id in the body must be ignored, and a nonsense folder refused.
+  const gdFolder = await api(mm, '/api/integrations/google-drive/folder', {
+    method: 'POST',
+    body: JSON.stringify({ folderId: 'https://drive.google.com/drive/folders/abc', companyId: nhCompanyId }),
+  });
+  check('10. a Drive URL is refused as a folder id', gdFolder.status === 422, `HTTP ${gdFolder.status}`);
+
+  // Syncing with nothing connected must say so rather than pretending.
+  const gdSync = await api(mm, '/api/integrations/google-drive/sync', { method: 'POST' });
+  check('10. syncing with nothing connected is refused honestly',
+    gdSync.status === 409 && gdSync.text.includes('connected'), `HTTP ${gdSync.status}`);
+
+  // Neither company has a connection, so neither can see one.
+  const gdOther = await api(nh, '/api/integrations/google-drive');
+  check('10. each company sees only its own connection',
+    (gdOther.json?.connection as { folderId?: string | null } | undefined)?.folderId === null,
+    'a folder from another company was visible');
+
+  const gdFiles = await api(mm, '/api/integrations/google-drive/files');
+  check('10. the synced-file listing is scoped to this company',
+    gdFiles.status === 200 && Array.isArray(gdFiles.json?.files), `HTTP ${gdFiles.status}`);
+
   // --- the other company is untouched throughout ------------------------
   const nhStill = await api(nh, `/api/drive/files/${nhFileId}/content`);
   check('Narayana still has its file, unchanged',
@@ -371,6 +422,10 @@ async function main() {
   const { driveStorage } = await import('../src/server/drive/storage');
   for (const stray of strays) await driveStorage().remove(stray.storage_path).catch(() => {});
   await admin`delete from media_generations where prompt like ${'%' + String(stamp) + '%'}`;
+  // Nothing above connects a Drive, but clear any connection state a previous
+  // run of this script may have left so the checks stay meaningful.
+  await admin`delete from google_drive_files`;
+  await admin`delete from google_drive_connections`;
   console.log('  (cleaned up the folders and files this run created)');
 
   await sql.end();

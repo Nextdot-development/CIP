@@ -4,6 +4,12 @@ import type { FileKind } from '@/lib/fileTypes';
 
 export type ProcessingStatus = 'pending' | 'processing' | 'processed' | 'failed';
 
+/**
+ * Where a file came from. Uploaded by hand, or synced from a connected Google
+ * Drive. Safe to show: it names the integration, never the account or folder.
+ */
+export type DriveSourceType = 'cip_drive' | 'google_drive';
+
 export type DriveFolderDTO = {
   id: string;
   name: string;
@@ -30,6 +36,7 @@ export type DriveFileDTO = {
   uploadedBy: { id: string; name: string } | null;
   /** Reserved for the Brand Brain. Always 'pending' in Phase 2. */
   processingStatus: ProcessingStatus;
+  sourceType: DriveSourceType;
 };
 
 /**
@@ -78,6 +85,7 @@ export type ExtractionDTO = {
  * Phase 5 cite a source rather than paraphrase one.
  */
 export type SemanticHitDTO = {
+  sourceType: DriveSourceType;
   chunkId: string;
   fileId: string;
   fileName: string;

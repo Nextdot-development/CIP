@@ -95,12 +95,14 @@ export async function semanticSearch(
         chunk_id: string; file_id: string; file_name: string; file_type: string;
         folder_id: string | null; folder_name: string | null; heading: string | null;
         ordinal: number; char_start: number; char_end: number; content: string; score: string;
+        source_type: string;
       }[]
     >`
       select k.id            as chunk_id,
              k.file_id,
              f.name          as file_name,
              f.file_type,
+             f.source_type,
              f.folder_id,
              d.name          as folder_name,
              k.heading,
@@ -144,6 +146,9 @@ export async function semanticSearch(
       charEnd: h.char_end,
       snippet: h.content.slice(0, SNIPPET_CHARS),
       score: Number(h.score),
+      // Which source the passage came from, so a result set spanning the
+      // Company Drive and a connected Google Drive is legible.
+      sourceType: (h.source_type ?? 'cip_drive') as 'cip_drive' | 'google_drive',
     })),
   };
 }

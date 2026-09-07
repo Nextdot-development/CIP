@@ -54,6 +54,7 @@ type FileRow = {
   mime_type: string; file_size: string; created_at: Date; updated_at: Date;
   uploaded_by_id: string | null; uploaded_by_name: string | null;
   processing_status: D.ProcessingStatus;
+  source_type: D.DriveSourceType;
 };
 
 function toFolder(r: FolderRow): D.DriveFolderDTO {
@@ -83,6 +84,9 @@ function toFile(r: FileRow): D.DriveFileDTO {
     updatedAt: r.updated_at.toISOString(),
     uploadedBy: r.uploaded_by_id ? { id: r.uploaded_by_id, name: r.uploaded_by_name ?? 'Someone' } : null,
     processingStatus: r.processing_status,
+    // Which source this came from. Safe to show: it names the integration,
+    // not the account, the folder or anything about another company.
+    sourceType: r.source_type ?? 'cip_drive',
   };
 }
 
@@ -145,7 +149,7 @@ export async function listFolder(
       `,
       tx<FileRow[]>`
         select f.id, f.name, f.original_filename, f.file_type, f.mime_type, f.file_size,
-               f.created_at, f.updated_at, f.processing_status,
+               f.created_at, f.updated_at, f.processing_status, f.source_type,
                f.uploaded_by as uploaded_by_id, u.full_name as uploaded_by_name
           from drive_files f
           left join users u on u.id = f.uploaded_by
@@ -287,7 +291,7 @@ export async function uploadFile(scope: CompanyScope, input: UploadInput): Promi
           ${spec.extension}, ${mimeType}, ${input.body.length}, ${checksum}, ${storagePath}, ${scope.userId}
         )
         returning id, name, original_filename, file_type, mime_type, file_size,
-                  created_at, updated_at, processing_status,
+                  created_at, updated_at, processing_status, source_type,
                   uploaded_by as uploaded_by_id, null::text as uploaded_by_name
       `;
       return rows[0]!;
@@ -332,7 +336,7 @@ export async function renameFile(
           from (select 1) as _
          where f.id = ${fileId} and f.company_id = ${scope.companyId} and f.archived_at is null
         returning f.id, f.name, f.original_filename, f.file_type, f.mime_type, f.file_size,
-                  f.created_at, f.updated_at, f.processing_status,
+                  f.created_at, f.updated_at, f.processing_status, f.source_type,
                   f.uploaded_by as uploaded_by_id, null::text as uploaded_by_name
       `;
       const row = rows[0];
@@ -395,7 +399,7 @@ export async function readFile(scope: CompanyScope, fileId: string): Promise<Fil
   const row = await withCompanyScope(scope, async (tx) => {
     const rows = await tx<(FileRow & { storage_path: string })[]>`
       select id, name, original_filename, file_type, mime_type, file_size,
-             created_at, updated_at, processing_status, storage_path,
+             created_at, updated_at, processing_status, source_type, storage_path,
              uploaded_by as uploaded_by_id, null::text as uploaded_by_name
         from drive_files
        where id = ${fileId} and company_id = ${scope.companyId} and archived_at is null
@@ -415,7 +419,7 @@ export async function listArchived(scope: CompanyScope): Promise<D.DriveFileDTO[
   return withCompanyScope(scope, async (tx) => {
     const rows = await tx<FileRow[]>`
       select f.id, f.name, f.original_filename, f.file_type, f.mime_type, f.file_size,
-             f.created_at, f.updated_at, f.processing_status,
+             f.created_at, f.updated_at, f.processing_status, f.source_type,
              f.uploaded_by as uploaded_by_id, u.full_name as uploaded_by_name
         from drive_files f
         left join users u on u.id = f.uploaded_by
@@ -446,7 +450,7 @@ export async function search(
     const [files, folders] = await Promise.all([
       tx<(FileRow & { folder_id: string | null; folder_name: string | null })[]>`
         select f.id, f.name, f.original_filename, f.file_type, f.mime_type, f.file_size,
-               f.created_at, f.updated_at, f.processing_status,
+               f.created_at, f.updated_at, f.processing_status, f.source_type,
                f.folder_id, d.name as folder_name,
                f.uploaded_by as uploaded_by_id, u.full_name as uploaded_by_name
           from drive_files f

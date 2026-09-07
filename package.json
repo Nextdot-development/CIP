@@ -11,7 +11,7 @@
     "db:migrate": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx src/server/migrate.ts",
     "db:seed": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx src/server/seed.ts",
     "db:reset": "npm run db:migrate && npm run db:seed",
-    "test": "node --conditions=react-server --import tsx --test --test-concurrency=1 tests/*.test.ts",
+    "test": "node scripts/run-tests.mjs",
     "db:local": "node --env-file-if-exists=.env.local --import tsx scripts/local-db.ts",
     "prove": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/prove-isolation.ts",
     "check:bundle": "tsx scripts/check-bundle.ts",
@@ -23,7 +23,9 @@
     "drive:worker": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/drive-worker.ts",
     "test:embeddings": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx --test --test-concurrency=1 tests/embeddings.test.ts",
     "media:worker": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/media-worker.ts",
-    "test:media": "node --conditions=react-server --import tsx --test --test-concurrency=1 tests/media.test.ts"
+    "test:media": "node --conditions=react-server --import tsx --test --test-concurrency=1 tests/media.test.ts",
+    "gdrive:worker": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/gdrive-sync-worker.ts",
+    "test:gdrive": "node --conditions=react-server --import tsx --test --test-concurrency=1 tests/googleDrive.test.ts"
   },
   "dependencies": {
     "@google/genai": "^2.21.0",
