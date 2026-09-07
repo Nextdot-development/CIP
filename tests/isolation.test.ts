@@ -37,7 +37,7 @@ before(async () => {
   process.env.CIP_SEED_PASSWORD = PASSWORD;
 
   const { migrate } = await import('../src/server/migrate');
-  await migrate(() => {});
+  await migrate(() => {}, { upTo: db.migrateUpTo });
 
   const { seed } = await import('../src/server/seed');
   await seed(() => {});

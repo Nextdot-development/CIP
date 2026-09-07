@@ -8,7 +8,10 @@ import { adminSql } from './db-admin';
  * records what it ran. Each file executes in one implicit transaction, so a
  * failure part-way through a file leaves nothing behind.
  */
-export async function migrate(log: (m: string) => void = console.log): Promise<string[]> {
+export async function migrate(
+  log: (m: string) => void = console.log,
+  options: { upTo?: string } = {},
+): Promise<string[]> {
   const sql = adminSql();
   const applied: string[] = [];
 
@@ -21,7 +24,17 @@ export async function migrate(log: (m: string) => void = console.log): Promise<s
     `;
 
     const dir = join(dirname(fileURLToPath(import.meta.url)), 'migrations');
-    const files = (await readdir(dir)).filter((f) => f.endsWith('.sql')).sort();
+    let files = (await readdir(dir)).filter((f) => f.endsWith('.sql')).sort();
+
+    // `upTo` exists for one reason: migration 0007 needs pgvector, and the
+    // PostgreSQL the offline tests run against does not have it. Phase 1-3
+    // tests stop at the last migration their database can apply rather than
+    // failing on an extension they never use.
+    if (options.upTo) {
+      const cut = files.indexOf(options.upTo);
+      if (cut === -1) throw new Error(`upTo names a migration that does not exist: ${options.upTo}`);
+      files = files.slice(0, cut + 1);
+    }
 
     const done = await sql<{ name: string }[]>`select name from _cip_migrations`;
     const already = new Set(done.map((r) => r.name));

@@ -1,5 +1,6 @@
 import { isRowLevelSecurityBinding, sql } from '@/server/db';
 import { driveStorage } from '@/server/drive/storage';
+import { embedder } from '@/server/drive/embedding';
 
 /**
  * GET /api/health
@@ -19,12 +20,24 @@ export async function GET() {
     const rows = await sql<{ now: Date }[]>`select now() as now`;
     const now = rows[0]?.now ?? new Date();
     const rlsBinding = await isRowLevelSecurityBinding();
+    const vector = await sql<{ n: number }[]>`
+      select count(*)::int n from pg_extension where extname = 'vector'
+    `;
+    const vectorInstalled = (vector[0]?.n ?? 0) > 0;
 
     return Response.json(
       {
         status: rlsBinding ? 'ok' : 'degraded',
         database: { connected: true, time: now.toISOString() },
         storage: { driver: driveStorage().name },
+        embeddings: {
+          // Names the driver so a deployment accidentally running the
+          // deterministic fake is visible rather than silently useless.
+          driver: embedder().name,
+          model: embedder().model,
+          dimensions: embedder().dimensions,
+          pgvector: vectorInstalled ? 'installed' : 'missing',
+        },
         isolation: {
           serviceLayer: 'active',
           rowLevelSecurity: rlsBinding ? 'binding' : 'bypassed',

@@ -10,7 +10,7 @@ import { useToast } from '@/context/toast';
 import { ACCEPT_ATTRIBUTE, humanSize, isExtractable } from '@/lib/fileTypes';
 import type { FileKind } from '@/lib/fileTypes';
 import { relativeDay } from '@/lib/format';
-import type { DriveFileDTO, DriveListingDTO, DriveSearchResultDTO } from '@/types/drive';
+import type { DriveFileDTO, DriveListingDTO, DriveSearchResultDTO, SemanticSearchDTO } from '@/types/drive';
 
 /**
  * The Company Drive.
@@ -88,6 +88,9 @@ export function DriveSection({ listing }: { listing: DriveListingDTO }) {
   const [query, setQuery] = useState('');
   const [kind, setKind] = useState<FileKind | null>(null);
   const [results, setResults] = useState<DriveSearchResultDTO | null>(null);
+  const [mode, setMode] = useState<'name' | 'meaning'>('name');
+  const [meaning, setMeaning] = useState<SemanticSearchDTO | null>(null);
+  const [searchingByMeaning, setSearchingByMeaning] = useState(false);
   const [uploads, setUploads] = useState<Upload[]>([]);
   const [preview, setPreview] = useState<DriveFileDTO | null>(null);
   const [renaming, setRenaming] = useState<Renaming | null>(null);
@@ -149,6 +152,31 @@ export function DriveSection({ listing }: { listing: DriveListingDTO }) {
     },
     [folderId, router],
   );
+
+  const runSemanticSearch = useCallback(async () => {
+    const q = query.trim();
+    if (q.length < 2) return;
+    setSearchingByMeaning(true);
+    try {
+      const res = await fetch('/api/drive/search/semantic', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ query: q, limit: 20, folderId, fileTypes: kind ? [kind] : null }),
+      });
+      if (res.status === 429) {
+        note('That is a lot of searching. Give it a moment.');
+        return;
+      }
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({ message: 'Search is unavailable.' }));
+        note(body.message ?? 'Search is unavailable.');
+        return;
+      }
+      setMeaning((await res.json()) as SemanticSearchDTO);
+    } finally {
+      setSearchingByMeaning(false);
+    }
+  }, [query, folderId, kind, note]);
 
   const createFolder = async () => {
     const name = window.prompt('Name this folder');
@@ -265,6 +293,22 @@ export function DriveSection({ listing }: { listing: DriveListingDTO }) {
 
       {searching && (
         <div className="kind-filters">
+          <button
+            type="button"
+            className={`kind-chip ${mode === 'name' ? 'on' : ''}`}
+            onClick={() => { setMode('name'); setMeaning(null); }}
+          >
+            By name
+          </button>
+          <button
+            type="button"
+            className={`kind-chip ${mode === 'meaning' ? 'on' : ''}`}
+            onClick={() => { setMode('meaning'); void runSemanticSearch(); }}
+            title="Find passages that mean the same thing, even in different words"
+          >
+            By meaning
+          </button>
+          <span className="filter-divider" aria-hidden="true" />
           <button type="button" className={`kind-chip ${kind === null ? 'on' : ''}`} onClick={() => setKind(null)}>
             Everything
           </button>
@@ -327,7 +371,39 @@ export function DriveSection({ listing }: { listing: DriveListingDTO }) {
         </div>
       )}
 
-      {searching && (
+      {searching && mode === 'meaning' && (
+        <Card title={`Passages matching "${query.trim()}"`}>
+          {searchingByMeaning ? (
+            <p className="small muted" style={{ padding: '14px 0' }}>Reading your Drive...</p>
+          ) : meaning === null ? (
+            <p className="small muted" style={{ padding: '14px 0' }}>
+              Press <b className="strong">By meaning</b> again to search.
+            </p>
+          ) : meaning.hits.length === 0 ? (
+            <p className="small muted" style={{ padding: '14px 0' }}>
+              Nothing in your Drive covers that yet.
+            </p>
+          ) : (
+            meaning.hits.map((hit) => (
+              <div className="passage" key={hit.chunkId}>
+                <span className="stack grow">
+                  <span className="p-where">
+                    {hit.folderName ? `${hit.folderName} / ` : ''}
+                    <b className="strong">{hit.fileName}</b>
+                    {hit.heading ? ` · ${hit.heading}` : ''}
+                  </span>
+                  <span className="p-text">{hit.snippet}</span>
+                </span>
+                <a className="fr-btn" href={`/api/drive/files/${hit.fileId}/content`} download aria-label={`Download ${hit.fileName}`}>
+                  <Icon name="download" size={15} />
+                </a>
+              </div>
+            ))
+          )}
+        </Card>
+      )}
+
+      {searching && mode === 'name' && (
         <p className="drive-count">
           {matchCount === 0
             ? `Nothing matches "${query.trim()}"`
@@ -335,7 +411,7 @@ export function DriveSection({ listing }: { listing: DriveListingDTO }) {
         </p>
       )}
 
-      {folders.length > 0 && (
+      {(!searching || mode === 'name') && folders.length > 0 && (
         <div className="folder-grid">
           {folders.map((f) => (
             <div key={f.id} className="folder-card">
@@ -384,6 +460,7 @@ export function DriveSection({ listing }: { listing: DriveListingDTO }) {
         </div>
       )}
 
+      {(!searching || mode === 'name') && (
       <Card title={searching ? 'Matching files' : listing.folder ? listing.folder.name : 'Files'}>
         {files.length === 0 ? (
           nothingHere && !searching ? (
@@ -484,6 +561,7 @@ export function DriveSection({ listing }: { listing: DriveListingDTO }) {
           })
         )}
       </Card>
+      )}
 
       {preview && <FilePreview file={preview} onClose={() => setPreview(null)} />}
     </div>

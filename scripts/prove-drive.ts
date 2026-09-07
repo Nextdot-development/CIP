@@ -38,7 +38,11 @@ async function sessionFor(sql: postgres.Sql, email: string): Promise<string> {
 const as = (token: string) => ({ cookie: `cip_session=${token}` });
 
 async function api(token: string | null, path: string, init: RequestInit = {}) {
-  const headers = { ...(init.headers ?? {}), ...(token ? as(token) : {}) };
+  const headers: Record<string, string> = {
+    ...(typeof init.body === 'string' ? { 'content-type': 'application/json' } : {}),
+    ...((init.headers as Record<string, string> | undefined) ?? {}),
+    ...(token ? as(token) : {}),
+  };
   const res = await fetch(`${BASE}${path}`, { ...init, headers });
   const text = await res.text();
   let json: Record<string, unknown> | null = null;
@@ -47,7 +51,7 @@ async function api(token: string | null, path: string, init: RequestInit = {}) {
   } catch {
     /* a download or an empty body */
   }
-  return { status: res.status, text, json };
+  return { status: res.status, text, json, headers: res.headers };
 }
 
 async function upload(token: string, name: string, body: string, folderId?: string) {
@@ -69,6 +73,17 @@ async function main() {
   const mm = await sessionFor(sql, 'sneha@magicmoments.test');
   const nh = await sessionFor(sql, 'rahul@narayanahealth.test');
   const stamp = Date.now();
+
+  // Read with the admin connection: the app role deliberately cannot see
+  // another company, and this id is only here to try to smuggle it in.
+  const [nhCompany] = await admin<{ id: string }[]>`
+    select m.company_id as id
+      from memberships m
+      join users u on u.id = m.user_id
+     where u.email = 'rahul@narayanahealth.test'
+     limit 1
+  `;
+  const nhCompanyId = nhCompany!.id;
 
   // --- 6. nothing without a session -------------------------------------
   for (const path of ['/api/drive', '/api/drive/archive', '/api/drive/search?q=test']) {
@@ -185,6 +200,68 @@ async function main() {
   const ownSearch = await api(mm, `/api/drive/search?q=mm-brief-${stamp}`);
   const ownHits = (ownSearch.json?.files as { name: string }[] | undefined) ?? [];
   check('7. search does find this company own files', ownHits.length === 1, `${ownHits.length} hit(s)`);
+
+  // --- 8. semantic search (Phase 4) --------------------------------------
+  // The endpoint embeds on demand, so these run against whatever vectors the
+  // worker has already produced. The isolation checks below hold either way:
+  // if nothing is embedded yet every search is empty, which cannot be a leak.
+  const anonSemantic = await api(null, '/api/drive/search/semantic', {
+    method: 'POST',
+    body: JSON.stringify({ query: 'patient consent' }),
+  });
+  check('8. semantic search refuses an anonymous caller', anonSemantic.status === 401, `HTTP ${anonSemantic.status}`);
+
+  const getSemantic = await api(mm, '/api/drive/search/semantic');
+  check('8. semantic search refuses GET', getSemantic.status === 405, `HTTP ${getSemantic.status}`);
+
+  // The wording below exists only in Narayana's document. This is the HTTP
+  // form of the isolation test the suite makes against the database.
+  const stolen = await api(mm, '/api/drive/search/semantic', {
+    method: 'POST',
+    body: JSON.stringify({ query: 'patient consent scan', limit: 20 }),
+  });
+  const stolenHits = (stolen.json?.hits as unknown[] | undefined) ?? [];
+  check('8. searching by meaning cannot reach the other company',
+    stolen.status === 200 && stolenHits.length === 0,
+    `HTTP ${stolen.status}, ${stolenHits.length} hit(s)`);
+
+  // A company_id in the body must be ignored, not honoured. The scope comes
+  // from the session and nowhere else.
+  const spoofed = await api(mm, '/api/drive/search/semantic', {
+    method: 'POST',
+    body: JSON.stringify({ query: 'patient consent scan', companyId: nhCompanyId, company_id: nhCompanyId, limit: 20 }),
+  });
+  const spoofedHits = (spoofed.json?.hits as unknown[] | undefined) ?? [];
+  check('8. a company id in the request body is ignored',
+    spoofed.status === 200 && spoofedHits.length === 0,
+    `HTTP ${spoofed.status}, ${spoofedHits.length} hit(s)`);
+
+  const crossFolder = await api(mm, '/api/drive/search/semantic', {
+    method: 'POST',
+    body: JSON.stringify({ query: 'anything at all', folderId: nhFolderId }),
+  });
+  check('8. a cross-company folderId is not found rather than empty',
+    crossFolder.status === 404, `HTTP ${crossFolder.status}`);
+
+  check('8. no response ever carried a forbidden field',
+    !stolen.text.includes('storage_path') && !stolen.text.includes('storagePath') &&
+    !stolen.text.includes('company_id') && !stolen.text.includes('companyId') &&
+    !stolen.text.includes('embedding'),
+    'checked storage_path, storagePath, company_id, companyId, embedding');
+
+  // Rate limiting is a Phase 4 requirement, so prove it actually engages
+  // rather than trusting the configuration.
+  let limited = 0;
+  let lastRetryAfter: string | null = null;
+  for (let i = 0; i < 40; i += 1) {
+    const r = await api(mm, '/api/drive/search/semantic', {
+      method: 'POST',
+      body: JSON.stringify({ query: `burst ${i}` }),
+    });
+    if (r.status === 429) { limited += 1; lastRetryAfter = r.headers.get('retry-after'); }
+  }
+  check('8. rate limiting engages under a burst', limited > 0, `${limited} of 40 refused`);
+  check('8. and it says how long to wait', lastRetryAfter !== null, `retry-after: ${lastRetryAfter ?? 'absent'}`);
 
   // --- the other company is untouched throughout ------------------------
   const nhStill = await api(nh, `/api/drive/files/${nhFileId}/content`);

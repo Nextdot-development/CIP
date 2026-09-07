@@ -69,3 +69,32 @@ export type ExtractionDTO = {
   chunkerVersion: string | null;
   createdAt: string;
 };
+
+/**
+ * One passage matched by meaning.
+ *
+ * Deliberately absent: company_id, storage_path, and the vector itself. The
+ * offsets are what let a caller show the passage in context, and what will let
+ * Phase 5 cite a source rather than paraphrase one.
+ */
+export type SemanticHitDTO = {
+  chunkId: string;
+  fileId: string;
+  fileName: string;
+  fileType: string;
+  folderId: string | null;
+  folderName: string | null;
+  heading: string | null;
+  ordinal: number;
+  charStart: number;
+  charEnd: number;
+  snippet: string;
+  /** 1 - cosine distance, so higher is a better match. */
+  score: number;
+};
+
+export type SemanticSearchDTO = {
+  query: string;
+  model: string;
+  hits: SemanticHitDTO[];
+};

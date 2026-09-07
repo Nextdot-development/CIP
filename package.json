@@ -20,7 +20,8 @@
     "storage:gc": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/storage-gc.ts",
     "test:storage": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx --test --test-concurrency=1 tests/storage.test.ts",
     "db:rollback": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx src/server/migrate.ts --down",
-    "drive:worker": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/drive-worker.ts"
+    "drive:worker": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/drive-worker.ts",
+    "test:embeddings": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx --test --test-concurrency=1 tests/embeddings.test.ts"
   },
   "dependencies": {
     "mammoth": "^1.12.2",

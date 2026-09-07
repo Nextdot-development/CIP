@@ -2,6 +2,11 @@ import { createServer } from 'node:net';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import postgres from 'postgres';
+import { Resolver, promises as dnsPromises } from 'node:dns';
+import { promisify } from 'node:util';
+
+const { lookup } = dnsPromises;
 import EmbeddedPostgres from 'embedded-postgres';
 
 /**
@@ -38,21 +43,105 @@ export type TestDb = {
   adminUrl: string;
   appUrl: string;
   appPassword: string;
+  /** Whether this database can create the pgvector extension. */
+  hasVector: boolean;
+  /** The last migration this database can apply, for migrate({ upTo }). */
+  migrateUpTo: string | undefined;
   stop: () => Promise<void>;
 };
+
+/**
+ * Migration 0007 installs pgvector. The embedded PostgreSQL used for offline
+ * tests does not ship it, so a database without it stops at 0006 and the
+ * Phase 4 suites skip with a reason rather than failing on a missing
+ * extension deep inside a migration.
+ */
+export const LAST_MIGRATION_WITHOUT_VECTOR = '0006_knowledge_layer.sql';
+
+/**
+ * Replaces the hostname in a connection URL with a literal address.
+ *
+ * The machine this is developed on resolves the Supabase host only
+ * intermittently — it is AAAA-only, and the system resolver times out for
+ * minutes at a time while a public resolver answers immediately with the same
+ * address. Whether the Phase 4 isolation tests run at all should not depend on
+ * that, so the harness asks a public resolver when the system one fails and
+ * connects to the address it gets back.
+ *
+ * Only ever applied to TEST_DATABASE_ADMIN_URL, and only after the system
+ * resolver has already failed.
+ */
+async function withResolvedHost(url: string): Promise<string> {
+  const parsed = new URL(url);
+  const host = parsed.hostname;
+  try {
+    await lookup(host);
+    return url;
+  } catch {
+    const resolver = new Resolver();
+    resolver.setServers(['1.1.1.1', '8.8.8.8']);
+    // IPv4 only. postgres.js splits its host string on ':' to find a port, so
+    // an IPv6 literal is torn in half and the connection fails with a NaN port
+    // — worse than the timeout this is trying to avoid. If the host has no A
+    // record, hand back the original URL and let the real error surface.
+    const resolve4 = promisify(resolver.resolve4.bind(resolver));
+    try {
+      const [address] = (await resolve4(host)) as string[];
+      if (address) {
+        parsed.hostname = address;
+        return parsed.toString();
+      }
+    } catch {
+      /* no A record, or the public resolver is unreachable too */
+    }
+    return url;
+  }
+}
+
+async function detectVector(url: string, required: boolean): Promise<boolean> {
+  const sql = postgres(url, { max: 1, connect_timeout: 15, onnotice: () => {} });
+  try {
+    const rows = await sql<{ name: string }[]>`
+      select name from pg_available_extensions where name = 'vector'
+    `;
+    return rows.length > 0;
+  } catch (error) {
+    // Reporting "no pgvector" for what is actually an unreachable host sends
+    // whoever reads it chasing the wrong problem.
+    if (required) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(`Could not reach TEST_DATABASE_ADMIN_URL: ${detail}`);
+    }
+    return false;
+  } finally {
+    await sql.end().catch(() => {});
+  }
+}
 
 const APP_PASSWORD = 'test-app-password';
 
 export async function startTestDatabase(): Promise<TestDb> {
   const external = process.env.TEST_DATABASE_ADMIN_URL;
   if (external) {
+    // PostgreSQL roles are cluster-wide, so cip_app is shared with whatever
+    // else lives on this server. Reuse its real password rather than setting
+    // a test one, or migrating a test database would lock the running
+    // application out of the production database on the same cluster.
+    const appPassword = process.env.CIP_APP_DB_PASSWORD ?? APP_PASSWORD;
     const appUrl = new URL(external);
     appUrl.username = 'cip_app';
-    appUrl.password = APP_PASSWORD;
+    appUrl.password = appPassword;
+    // Resolve once, then use the same address for both roles, so the admin and
+    // application connections cannot end up pointed at different servers.
+    const adminUrl = await withResolvedHost(external);
+    appUrl.hostname = new URL(adminUrl).hostname;
+    const hasVector = await detectVector(adminUrl, true);
     return {
-      adminUrl: external,
+      adminUrl,
       appUrl: appUrl.toString(),
-      appPassword: APP_PASSWORD,
+      appPassword,
+      hasVector,
+      migrateUpTo: hasVector ? undefined : LAST_MIGRATION_WITHOUT_VECTOR,
       stop: async () => {},
     };
   }
@@ -71,10 +160,15 @@ export async function startTestDatabase(): Promise<TestDb> {
   await pg.start();
   await pg.createDatabase('cip_test');
 
+  const adminUrl = `postgres://cip_admin:cip_admin@localhost:${port}/cip_test`;
+  const hasVector = await detectVector(adminUrl, false);
+
   return {
-    adminUrl: `postgres://cip_admin:cip_admin@localhost:${port}/cip_test`,
+    adminUrl,
     appUrl: `postgres://cip_app:${APP_PASSWORD}@localhost:${port}/cip_test`,
     appPassword: APP_PASSWORD,
+    hasVector,
+    migrateUpTo: hasVector ? undefined : LAST_MIGRATION_WITHOUT_VECTOR,
     stop: async () => {
       await pg.stop();
       try {

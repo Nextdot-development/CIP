@@ -4,6 +4,12 @@ import {
   queueDepth,
   recoverStuckFiles,
 } from '../src/server/drive/processing';
+import {
+  claimChunksNeedingEmbedding,
+  embedClaimedChunks,
+  embeddingQueueDepth,
+} from '../src/server/drive/embeddingQueue';
+import { embedder } from '../src/server/drive/embedding';
 
 /**
  * The extraction worker.
@@ -31,6 +37,45 @@ process.on('SIGINT', () => {
 process.on('SIGTERM', () => {
   stopping = true;
 });
+
+/**
+ * Second pass: give every new chunk a vector.
+ *
+ * Runs after extraction rather than in its own process, because chunks only
+ * exist once extraction has finished — two workers would race on freshly
+ * created rows for no benefit.
+ */
+async function drainEmbeddings(): Promise<{ embedded: number; failed: number }> {
+  let embedded = 0;
+  let failed = 0;
+
+  for (;;) {
+    if (stopping) break;
+
+    const claim = await claimChunksNeedingEmbedding();
+    if (!claim) break;
+
+    const started = Date.now();
+    const outcome = await embedClaimedChunks(claim);
+    const ms = Date.now() - started;
+
+    if (outcome.status === 'embedded') {
+      embedded += outcome.count;
+      console.log(`  embed ${outcome.count} chunk(s) in ${ms}ms`);
+    } else {
+      failed += outcome.count;
+      console.log(
+        `  FAIL  ${outcome.count} chunk(s) — ${outcome.message}` +
+          `${outcome.willRetry ? ' (will retry)' : ' (giving up)'}`,
+      );
+      // A failing batch means the provider is unhappy; stop rather than
+      // hammering it with the rest of the queue.
+      break;
+    }
+  }
+
+  return { embedded, failed };
+}
 
 async function drain(): Promise<{ processed: number; failed: number }> {
   let processed = 0;
@@ -68,20 +113,31 @@ async function main() {
   if (reclaimed > 0) console.log(`Reclaimed ${reclaimed} file(s) from a worker that stopped.`);
 
   const depth = await queueDepth();
-  console.log(`Queue: ${JSON.stringify(depth)}`);
+  const waiting = await embeddingQueueDepth();
+  console.log(`Queue: ${JSON.stringify(depth)}, ${waiting.pending} chunk(s) to embed`);
 
   if (!WATCH) {
+    // Two passes, in order: extraction produces the chunks that embedding
+    // then consumes, so one run takes a freshly uploaded file all the way
+    // to searchable rather than leaving it half done until the next.
     const { processed, failed } = await drain();
-    console.log(`\nDone — ${processed} processed, ${failed} failed.`);
+    const embedded = await drainEmbeddings();
+    console.log(
+      `\nDone — ${processed} file(s) extracted, ${failed} failed; ` +
+      `${embedded.embedded} chunk(s) embedded, ${embedded.failed} failed.`,
+    );
     return;
   }
 
-  console.log(`Watching for work every ${POLL_MS / 1000}s. Ctrl+C to stop.\n`);
+  console.log(`Watching for work every ${POLL_MS / 1000}s, embedding with ${embedder().model}. Ctrl+C to stop.\n`);
   while (!stopping) {
     await drain();
+    await drainEmbeddings();
     if (stopping) break;
     await new Promise((r) => setTimeout(r, POLL_MS));
     await recoverStuckFiles();
+    const waiting = await embeddingQueueDepth();
+    if (waiting.pending > 0) console.log(`  ${waiting.pending} chunk(s) waiting to be embedded`);
   }
   console.log('Stopped.');
 }
