@@ -1,448 +1,418 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import Link from 'next/link';
 import { useWorkspace } from '@/context/workspace';
-import { useNavigate } from '@/lib/navigate';
 import { useAskSeed } from '@/context/NavContext';
 import { useToast } from '@/context/toast';
-import type { AskMode } from '@/context/NavContext';
-import { PromptSuggestions, RequestComposer } from '../components/RequestComposer';
-import { Avatar, Card } from '../components/ui/Bits';
+import { Card, EmptyState, Pill } from '../components/ui/Bits';
 import { Icon } from '../components/ui/Icon';
-import { interpret } from '../lib/interpret';
-import type { Understanding } from '../lib/interpret';
-
-type Phase = 'compose' | 'thinking' | 'review' | 'working' | 'done';
+import { relativeDay } from '@/lib/format';
+import { assetUrl, isInFlight } from '@/types/media';
+import type { MediaGenerationDTO, MediaType, ProviderStatusDTO } from '@/types/media';
 
 /**
- * Ask — the heart of the product.
+ * Ask — describe what you want, and CIP makes it out of what it knows.
  *
- * Type it like a message to a colleague, see what we understood, correct
- * anything we got wrong, then choose how it gets made: instantly by CIP, or
- * properly by your pod. The difference is stated plainly, never implied.
+ * This is the real thing now. The version before it ran a keyword matcher over
+ * the typed words, waited 900ms to look like it was thinking, and showed a
+ * made-up plan; nothing left the browser. What happens here instead is
+ * /api/brain/generate: the request is planned against this company's own
+ * memory, the brief that comes out of that is what reaches the generator, and
+ * the plan is shown because a person should be able to see what was decided on
+ * their behalf before they judge the result.
+ *
+ * Media is not a separate place any more. Asking for an image and asking for a
+ * video are the same act with a different answer, and both are asked for here.
  */
-export function AskSection() {
+
+type Phase = 'idle' | 'planning' | 'asking' | 'done';
+
+type PlanSummary = {
+  taskType: string | null;
+  platform: string | null;
+  campaign: string | null;
+  product: string | null;
+  brandRules: string[];
+  learnedPreferences: string[];
+  avoid: string[];
+  references: { fileId: string; fileName: string }[];
+  confidence: number;
+};
+
+type BrainResult =
+  | { status: 'generated'; generation: MediaGenerationDTO; briefId: string; plan: PlanSummary }
+  | { status: 'needs_clarification'; briefId: string; question: string; plan: PlanSummary };
+
+export function AskSection({
+  initial,
+  providers,
+}: {
+  initial: MediaGenerationDTO[];
+  providers: ProviderStatusDTO;
+}) {
   const workspace = useWorkspace();
-  const { go } = useNavigate();
   const { seed } = useAskSeed();
-  const { note: onNote } = useToast();
+  const { note } = useToast();
+
   const [draft, setDraft] = useState(seed?.text ?? '');
-  const [phase, setPhase] = useState<Phase>('compose');
-  const [mode, setMode] = useState<AskMode>(seed?.mode ?? 'pod');
-  const [u, setU] = useState<Understanding | null>(null);
-  const [items, setItems] = useState<string[]>([]);
-  const [editing, setEditing] = useState<number | null>(null);
+  const [mediaType, setMediaType] = useState<MediaType>('image');
+  const [phase, setPhase] = useState<Phase>('idle');
+  const [result, setResult] = useState<BrainResult | null>(null);
+  const [answer, setAnswer] = useState('');
+  const [history, setHistory] = useState(initial);
 
-  const run = (text: string, m: AskMode) => {
-    if (!text.trim()) return;
-    setMode(m);
-    setPhase('thinking');
-    const result = interpret(text, workspace);
-    setTimeout(() => {
-      setU(result);
-      setItems(result.items);
-      setPhase('review');
-    }, 900);
-  };
+  const imageReady = providers.image.configured;
+  const videoReady = providers.video.configured;
+  const ready = mediaType === 'image' ? imageReady : videoReady;
 
-  const confirm = () => {
-    if (mode === 'pod') {
-      setPhase('done');
-      onNote('Sent to your pod');
-      return;
-    }
-    setPhase('working');
-    setTimeout(() => {
-      setPhase('done');
-      onNote('Your drafts are ready');
-    }, 1800);
-  };
+  const refresh = useCallback(async () => {
+    const res = await fetch('/api/media/generations', { cache: 'no-store' });
+    if (!res.ok) return;
+    const body = (await res.json()) as { generations: MediaGenerationDTO[] };
+    setHistory(body.generations);
+  }, []);
 
-  const restart = () => {
-    setPhase('compose');
-    setDraft('');
-    setU(null);
-  };
-
-  // A request typed on Home arrives here already written.
+  // A video is queued rather than returned, so the page has to come back for
+  // it. Polling stops as soon as nothing is in flight.
+  const waiting = history.some((g) => isInFlight(g.status));
   useEffect(() => {
-    if (seed && seed.text.trim()) run(seed.text.trim(), seed.mode);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [seed]);
+    if (!waiting) return;
+    const timer = setInterval(refresh, 4000);
+    return () => clearInterval(timer);
+  }, [waiting, refresh]);
 
-  if (phase === 'working') return <Working />;
+  const send = async (clarification?: string) => {
+    const text = draft.trim();
+    if (!text) return;
 
-  if (phase === 'done' && u) {
-    return mode === 'instant' ? (
-      <InstantDrafts understanding={u} onSendToPod={() => { setMode('pod'); setPhase('done'); onNote('Sent to your pod'); }} onAgain={restart} />
-    ) : (
-      <SentToPod understanding={u} items={items} onTrack={() => go('/trust')} onAgain={restart} />
-    );
-  }
+    setPhase(clarification ? 'asking' : 'planning');
+    try {
+      const res = await fetch('/api/brain/generate', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          request: text,
+          mediaType,
+          ...(clarification ? { clarification } : {}),
+        }),
+      });
+
+      const body = (await res.json()) as Partial<BrainResult> & { message?: string };
+      if (!res.ok || !body.status) {
+        note(body.message ?? 'That could not be made.');
+        setPhase('idle');
+        return;
+      }
+
+      const outcome = body as BrainResult;
+      setResult(outcome);
+      setPhase('done');
+      setAnswer('');
+      if (outcome.status === 'generated') {
+        note(mediaType === 'video' ? 'Queued — this takes a few minutes' : 'Made');
+        void refresh();
+      }
+    } catch {
+      note('That could not be sent.');
+      setPhase('idle');
+    }
+  };
+
+  const busy = phase === 'planning' || phase === 'asking';
 
   return (
-    <div className="ask-wrap rise">
-      <header className="ask-hero">
-        <h1>What would you like to create?</h1>
-        <p className="lede">Say it in your own words. We will read it back before anything starts.</p>
+    <div className="rise">
+      <header className="page-head">
+        <p className="eyebrow">Ask</p>
+        <h1>Make something</h1>
+        <p className="lede">
+          Describe it the way you would to a colleague. CIP writes the brief from what it has
+          learned about {workspace.name}, then makes it.
+        </p>
       </header>
 
-      <RequestComposer
-        value={draft}
-        onChange={setDraft}
-        onSubmit={(m) => run(draft, m)}
-        placeholder={workspace.composerPlaceholder}
-        autoFocus
-      />
+      <Card className="pad">
+        <div className="row" style={{ gap: 8, marginBottom: 14 }}>
+          <button
+            type="button"
+            className={`chip ${mediaType === 'image' ? 'on' : ''}`}
+            onClick={() => setMediaType('image')}
+          >
+            <Icon name="image" size={15} /> Image
+          </button>
+          <button
+            type="button"
+            className={`chip ${mediaType === 'video' ? 'on' : ''}`}
+            onClick={() => setMediaType('video')}
+          >
+            <Icon name="video" size={15} /> Video
+          </button>
+        </div>
 
-      {phase === 'compose' && (
-        <PromptSuggestions
-          items={workspace.promptSuggestions}
-          onPick={(s) => {
-            setDraft(s);
-            run(s, 'pod');
+        <textarea
+          className="field-input"
+          rows={4}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          placeholder={workspace.composerPlaceholder}
+          disabled={busy}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void send();
           }}
         />
-      )}
 
-      {phase === 'thinking' && (
-        <div className="thinking">
-          <span className="pulse" />
-          <span className="pulse" />
-          <span className="pulse" />
-          Reading your request against everything we know about {workspace.name}...
-        </div>
-      )}
-
-      {phase === 'review' && u && (
-        <div className="understanding">
-          <Card className="u-card">
-            <div className="u-lead">
-              <Avatar initials="CIP" tint={[workspace.branding.primary, workspace.branding.deep]} size="lg" />
-              <div>
-                <p className="u-said">{u.headline}</p>
-                <p className="u-sub">Change anything we got wrong — nothing starts until you say so.</p>
-              </div>
-            </div>
-
-            <div className="u-items">
-              {items.map((it, i) => (
-                <div className="u-item" key={i}>
-                  <span className="u-bullet" />
-                  {editing === i ? (
-                    <input
-                      autoFocus
-                      value={it}
-                      onChange={(e) => setItems((a) => a.map((v, j) => (j === i ? e.target.value : v)))}
-                      onBlur={() => setEditing(null)}
-                      onKeyDown={(e) => e.key === 'Enter' && setEditing(null)}
-                      aria-label="Edit this line"
-                    />
-                  ) : (
-                    <span className="u-text">{it}</span>
-                  )}
-                  <span className="u-tools">
-                    <button type="button" className="u-tool" onClick={() => setEditing(i)} aria-label="Edit">
-                      <Icon name="pencil" size={15} />
-                    </button>
-                    <button
-                      type="button"
-                      className="u-tool"
-                      onClick={() => setItems((a) => a.filter((_, j) => j !== i))}
-                      aria-label="Remove"
-                    >
-                      <Icon name="x" size={15} />
-                    </button>
-                  </span>
-                </div>
-              ))}
-              <button
-                type="button"
-                className="u-add"
-                onClick={() => {
-                  setItems((a) => [...a, 'Something else you need']);
-                  setEditing(items.length);
-                }}
-              >
-                <Icon name="plus" size={15} /> Add something we missed
-              </button>
-            </div>
-
-            <p className="u-basis">
-              <Icon name="sparkle" size={15} /> {u.basis}
-            </p>
-
-            <div className="u-actions">
-              <button type="button" className="btn btn-primary" onClick={confirm}>
-                {mode === 'instant' ? 'This is right — generate now' : 'This is right — start it'}
-                <Icon name="arrow-right" size={16} />
-              </button>
-              <button type="button" className="btn btn-quiet" onClick={() => setPhase('compose')}>
-                Let me rewrite it
-              </button>
-            </div>
-          </Card>
-
-          <Plan understanding={u} mode={mode} onMode={setMode} />
-        </div>
-      )}
-    </div>
-  );
-}
-
-/** How it gets made — stated as a choice, with the trade-off in plain words. */
-function ModeSwitch({ mode, onMode }: { mode: AskMode; onMode: (m: AskMode) => void }) {
-  return (
-    <div className="mode-switch">
-      <button type="button" className={`mode-opt ${mode === 'instant' ? 'on' : ''}`} onClick={() => onMode('instant')}>
-        <span className="mo-icon"><Icon name="bolt" size={17} /></span>
-        <span className="stack grow">
-          <span className="mo-title">
-            Generate instantly
-            {mode === 'instant' && <Icon name="check" size={15} className="mo-tick" />}
+        <div className="row" style={{ justifyContent: 'space-between', marginTop: 12 }}>
+          <span className="tiny muted">
+            {ready
+              ? mediaType === 'video'
+                ? 'Video is queued and takes a few minutes.'
+                : 'Usually about a minute.'
+              : `No ${mediaType} provider is configured, so this would fail.`}
           </span>
-          <span className="mo-note">CIP drafts it now, on its own. Good for a first look — not checked yet.</span>
-        </span>
-      </button>
-      <button type="button" className={`mode-opt ${mode === 'pod' ? 'on' : ''}`} onClick={() => onMode('pod')}>
-        <span className="mo-icon"><Icon name="people" size={17} /></span>
-        <span className="stack grow">
-          <span className="mo-title">
-            Create with pod
-            {mode === 'pod' && <Icon name="check" size={15} className="mo-tick" />}
-          </span>
-          <span className="mo-note">Your people make it and check it. Finished work you can publish.</span>
-        </span>
-      </button>
-    </div>
-  );
-}
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={() => void send()}
+            disabled={busy || !draft.trim() || !ready}
+          >
+            {busy ? 'Thinking…' : 'Make it'} <Icon name="arrow-right" size={14} />
+          </button>
+        </div>
+      </Card>
 
-/** What you will get, when, for how much, and where it stands. */
-function Plan({
-  understanding: u,
-  mode,
-  onMode,
-}: {
-  understanding: Understanding;
-  mode: AskMode;
-  onMode: (m: AskMode) => void;
-}) {
-  const plan = u.plans[mode];
-  // An instant draft skips the checks, so we do not list them as if it did not.
-  const deliverables = mode === 'instant' ? u.deliverables.filter((d) => d.id !== 'd-check') : u.deliverables;
+      {/* What CIP decided, before what it produced. Shown either way, because
+          the reasoning is what makes a bad result correctable. */}
+      {result && <Plan plan={result.plan} />}
 
-  return (
-    <Card title="How would you like this made?">
-      <ModeSwitch mode={mode} onMode={onMode} />
-
-      <p className="unlock-title" style={{ marginTop: 24 }}>What you will receive</p>
-      <div className="deliver-list">
-        {deliverables.map((d) => (
-          <div className="deliver" key={d.id}>
-            <span className="d-icon">
-              <Icon name={d.icon} size={17} />
-            </span>
-            <span className="stack grow">
-              <span className="d-title">{d.title}</span>
-              <span className="d-note">{mode === 'instant' ? 'First draft' : d.note}</span>
-            </span>
+      {result?.status === 'needs_clarification' && (
+        <Card className="pad">
+          <p className="strong" style={{ marginBottom: 4 }}>
+            <Icon name="sparkle" size={15} /> CIP needs to know one thing first
+          </p>
+          <p className="small" style={{ marginBottom: 12 }}>{result.question}</p>
+          <textarea
+            className="field-input"
+            rows={2}
+            value={answer}
+            onChange={(e) => setAnswer(e.target.value)}
+            placeholder="Answer in a line or two…"
+          />
+          <div className="row" style={{ justifyContent: 'flex-end', marginTop: 12 }}>
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              onClick={() => void send(answer.trim())}
+              disabled={busy || !answer.trim()}
+            >
+              Carry on
+            </button>
           </div>
-        ))}
+        </Card>
+      )}
+
+      {result?.status === 'generated' && (
+        <Result generation={result.generation} onRated={() => void refresh()} />
+      )}
+
+      <div className="sec-head">
+        <div>
+          <h2>Everything you have made</h2>
+          <p className="hint">Rate anything here and CIP takes it into the next brief.</p>
+        </div>
       </div>
 
-      {mode === 'instant' && (
-        <p className="unchecked-note">
-          <Icon name="alert" size={16} />
-          <span>
-            Instant drafts skip your brand and compliance checks. Have a look, then send anything you like to your
-            pod before it is published.
-          </span>
+      {history.length === 0 ? (
+        <EmptyState
+          icon="sparkle"
+          title="Nothing made yet"
+          copy="Ask for something above. If CIP has not read much of your brand yet, teach it first and the results get sharper."
+          action={
+            <Link className="btn btn-ghost btn-sm" href="/teach">
+              Teach CIP <Icon name="arrow-right" size={14} />
+            </Link>
+          }
+        />
+      ) : (
+        <div className="gen-list">
+          {history.map((g) => (
+            <Result key={g.id} generation={g} compact onRated={() => void refresh()} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** What CIP decided to make, and what it leaned on to decide it. */
+function Plan({ plan }: { plan: PlanSummary }) {
+  const context = [plan.campaign, plan.product, plan.platform].filter(Boolean);
+
+  return (
+    <Card className="pad">
+      <div className="row" style={{ justifyContent: 'space-between', marginBottom: 10 }}>
+        <p className="strong">What CIP understood</p>
+        <Pill tone={plan.confidence >= 0.6 ? 'ok' : 'warn'}>
+          {Math.round(plan.confidence * 100)}% sure
+        </Pill>
+      </div>
+
+      {context.length > 0 && (
+        <p className="small muted" style={{ marginBottom: 10 }}>{context.join(' · ')}</p>
+      )}
+
+      {plan.brandRules.length > 0 && (
+        <div className="plan-block">
+          <p className="tiny muted">From your brand</p>
+          {plan.brandRules.map((rule) => <p className="small" key={rule}>· {rule}</p>)}
+        </div>
+      )}
+
+      {plan.learnedPreferences.length > 0 && (
+        <div className="plan-block">
+          <p className="tiny muted">Learned from your feedback</p>
+          {plan.learnedPreferences.map((p) => <p className="small" key={p}>· {p}</p>)}
+        </div>
+      )}
+
+      {plan.avoid.length > 0 && (
+        <div className="plan-block">
+          <p className="tiny muted">Avoiding</p>
+          {plan.avoid.map((a) => <p className="small" key={a}>· {a}</p>)}
+        </div>
+      )}
+
+      {plan.references.length > 0 && (
+        <p className="tiny muted" style={{ marginTop: 10 }}>
+          Looked at {plan.references.map((r) => r.fileName).join(', ')}
         </p>
       )}
-
-      <div className="plan-grid" style={{ marginTop: 18 }}>
-        <div className="plan-stat">
-          <p className="ps-label">Timeline</p>
-          <p className="ps-value">{plan.timeline.value}</p>
-          <p className="ps-note">{plan.timeline.note}</p>
-        </div>
-        <div className="plan-stat">
-          <p className="ps-label">Estimated cost</p>
-          <p className="ps-value">{plan.cost.value}</p>
-          <p className="ps-note">{plan.cost.note}</p>
-        </div>
-        <div className="plan-stat">
-          <p className="ps-label">Status</p>
-          <p className="ps-value">{plan.status.value}</p>
-          <p className="ps-note">{plan.status.note}</p>
-        </div>
-      </div>
     </Card>
   );
 }
 
-function Working() {
-  const workspace = useWorkspace();
-  return (
-    <div className="ask-wrap rise">
-      <div className="thinking" style={{ padding: '120px 0' }}>
-        <span className="pulse" />
-        <span className="pulse" />
-        <span className="pulse" />
-        Writing your drafts in {workspace.name}&apos;s voice...
-      </div>
-    </div>
-  );
-}
-
-/** Instant path — drafts in hand, and an honest label on them. */
-function InstantDrafts({
-  understanding: u,
-  onSendToPod,
-  onAgain,
+/** One result, with the 0-10 rating that teaches the next one. */
+function Result({
+  generation, compact = false, onRated,
 }: {
-  understanding: Understanding;
-  onSendToPod: () => void;
-  onAgain: () => void;
+  generation: MediaGenerationDTO;
+  compact?: boolean;
+  onRated: () => void;
 }) {
-  const workspace = useWorkspace();
-  const drafts = u.deliverables.filter((d) => d.id !== 'd-check');
+  const { note } = useToast();
+  const [score, setScore] = useState<number | null>(null);
+  const [comment, setComment] = useState('');
+  const [sent, setSent] = useState(false);
+  const [open, setOpen] = useState(!compact);
+  const commentRef = useRef<HTMLInputElement | null>(null);
+
+  const rate = async () => {
+    if (score === null) return;
+    const res = await fetch('/api/brain/feedback', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ generationId: generation.id, score, comment: comment.trim() || null }),
+    });
+    if (!res.ok) {
+      note('That rating could not be saved.');
+      return;
+    }
+    setSent(true);
+    note('CIP will use that next time');
+    onRated();
+  };
 
   return (
-    <div className="ask-wrap rise">
-      <header className="ask-hero">
-        <span className="pill pill-brand" style={{ marginBottom: 14 }}>
-          <Icon name="bolt" size={14} /> Generated instantly
-        </span>
-        <h1>Your drafts are ready.</h1>
-        <p className="lede">
-          Written in {workspace.name}&apos;s voice, from everything we know about your brand. Have a look before anyone
-          else does.
-        </p>
-      </header>
-
-      <Card className="u-card">
-        {drafts.map((d) => (
-          <div className="draft" key={d.id}>
-            <span className="dr-thumb">
-              <Icon name={d.icon} size={22} />
-            </span>
-            <span className="stack grow">
-              <span className="dr-title">{d.title}</span>
-              <span className="dr-note">First draft • not checked yet</span>
-            </span>
-            <span className="dr-actions">
-              <button type="button" className="btn btn-ghost btn-sm">Preview</button>
-              <button type="button" className="btn btn-ghost btn-sm">Download</button>
-            </span>
-          </div>
-        ))}
-
-        <p className="unchecked-note">
-          <Icon name="alert" size={16} />
-          <span>
-            These have not been through your brand and compliance checks. Send them to your pod before you publish
-            anything.
+    <article className="card gen-card">
+      <div className="row" style={{ justifyContent: 'space-between' }}>
+        <span className="stack grow">
+          <span className="gen-prompt">{generation.prompt.slice(0, 160)}</span>
+          <span className="tiny muted">
+            {generation.provider}/{generation.model}
+            {generation.width ? ` · ${generation.width}×${generation.height}` : ''}
+            {' · '}{relativeDay(generation.createdAt)}
           </span>
-        </p>
+        </span>
+        <Pill tone={toneFor(generation.status)}>{labelFor(generation.status)}</Pill>
+      </div>
 
-        <div className="u-actions">
-          <button type="button" className="btn btn-primary" onClick={onSendToPod}>
-            Send to my pod for checks <Icon name="arrow-right" size={16} />
-          </button>
-          <button type="button" className="btn btn-quiet" onClick={onAgain}>
-            Ask for something else
-          </button>
+      {generation.errorMessage && (
+        <p className="small" style={{ marginTop: 8 }}>{generation.errorMessage}</p>
+      )}
+
+      {generation.hasAsset && generation.status === 'completed' && (
+        <div className="gen-asset" style={{ marginTop: 12 }}>
+          {generation.type === 'video' ? (
+            <video src={assetUrl(generation.id)} controls preload="metadata" />
+          ) : (
+            <img src={assetUrl(generation.id)} alt="" loading="lazy" />
+          )}
         </div>
-      </Card>
-    </div>
+      )}
+
+      {generation.status === 'completed' && !sent && (
+        open ? (
+          <div className="rate-row" style={{ marginTop: 12 }}>
+            <span className="tiny muted">How good is it?</span>
+            <div className="row" style={{ gap: 4, flexWrap: 'wrap' }}>
+              {Array.from({ length: 11 }, (_, n) => (
+                <button
+                  key={n}
+                  type="button"
+                  className={`score ${score === n ? 'on' : ''}`}
+                  onClick={() => {
+                    setScore(n);
+                    commentRef.current?.focus();
+                  }}
+                >
+                  {n}
+                </button>
+              ))}
+            </div>
+            <input
+              ref={commentRef}
+              className="field-input"
+              value={comment}
+              onChange={(e) => setComment(e.target.value)}
+              placeholder="What would make it better? (optional)"
+            />
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              onClick={() => void rate()}
+              disabled={score === null}
+            >
+              Save
+            </button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            style={{ marginTop: 10 }}
+            onClick={() => setOpen(true)}
+          >
+            Rate this
+          </button>
+        )
+      )}
+
+      {sent && <p className="tiny muted" style={{ marginTop: 10 }}>Rated. CIP has learned from it.</p>}
+    </article>
   );
 }
 
-const STEPS = ['Understood', 'With your pod', 'In review', 'Ready for you'];
+function toneFor(status: MediaGenerationDTO['status']): 'ok' | 'warn' | 'stop' | 'neutral' {
+  if (status === 'completed') return 'ok';
+  if (status === 'failed') return 'stop';
+  if (status === 'cancelled') return 'neutral';
+  return 'warn';
+}
 
-/** Pod path — people have it, and you can see exactly where it stands. */
-function SentToPod({
-  understanding: u,
-  items,
-  onTrack,
-  onAgain,
-}: {
-  understanding: Understanding;
-  items: string[];
-  onTrack: () => void;
-  onAgain: () => void;
-}) {
-  const workspace = useWorkspace();
-  const leadName = workspace.pod.members[0]?.name ?? 'Your pod';
-  const plan = u.plans.pod;
-  const firstDrafts = plan.timeline.note.replace('First drafts reach you in ', '').replace('.', '');
-
-  return (
-    <div className="ask-wrap rise">
-      <header className="ask-hero">
-        <span className="pill pill-ok" style={{ marginBottom: 14 }}>
-          <Icon name="check" size={14} /> Sent to your pod
-        </span>
-        <h1>We are on it.</h1>
-        <p className="lede">
-          {leadName} and your pod have your request. You will hear from us before anything
-          is published.
-        </p>
-      </header>
-
-      <Card className="u-card">
-        <p className="unlock-title">Your request</p>
-        <div className="u-items">
-          {items.map((it, i) => (
-            <div className="u-item" key={i}>
-              <span className="u-bullet" />
-              <span className="u-text">{it}</span>
-            </div>
-          ))}
-        </div>
-
-        <div className="tracker" style={{ marginTop: 22 }}>
-          {STEPS.map((s, i) => (
-            <div className={`step ${i === 0 ? 'done' : i === 1 ? 'now' : ''}`} key={s}>
-              <span className="bar" />
-              <span className="s-label">{s}</span>
-            </div>
-          ))}
-        </div>
-
-        <div className="plan-grid" style={{ marginTop: 24 }}>
-          <div className="plan-stat">
-            <p className="ps-label">First drafts</p>
-            <p className="ps-value">{firstDrafts}</p>
-            <p className="ps-note">We will let you know the moment they land.</p>
-          </div>
-          <div className="plan-stat">
-            <p className="ps-label">Estimated cost</p>
-            <p className="ps-value">{plan.cost.value}</p>
-            <p className="ps-note">You will see the final figure on delivery.</p>
-          </div>
-          <div className="plan-stat">
-            <p className="ps-label">Working on it</p>
-            <p className="ps-value row gap-6" style={{ marginTop: 10 }}>
-              {workspace.pod.members.slice(0, 3).map((m) => (
-                <Avatar key={m.id} initials={m.initials} tint={m.tint} size="sm" title={m.name} />
-              ))}
-            </p>
-            <p className="ps-note">Real people, checking every step.</p>
-          </div>
-        </div>
-
-        <div className="u-actions">
-          <button type="button" className="btn btn-primary" onClick={onTrack}>
-            Track it in Trust <Icon name="arrow-right" size={16} />
-          </button>
-          <button type="button" className="btn btn-quiet" onClick={onAgain}>
-            Ask for something else
-          </button>
-        </div>
-      </Card>
-    </div>
-  );
+function labelFor(status: MediaGenerationDTO['status']): string {
+  if (status === 'queued') return 'Queued';
+  if (status === 'processing') return 'Making it';
+  if (status === 'completed') return 'Ready';
+  if (status === 'failed') return 'Failed';
+  return 'Cancelled';
 }

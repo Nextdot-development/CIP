@@ -336,8 +336,8 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
           graph.
         </p>
         <div className="row-gap">
-          <a className="btn btn-primary" href="/drive">Open Drive</a>
-          <a className="btn" href="/knowledge">Connect Google Drive</a>
+          <a className="btn btn-primary" href="/teach">Teach CIP</a>
+          <a className="btn" href="/teach">Connect Google Drive</a>
         </div>
       </div>
     );

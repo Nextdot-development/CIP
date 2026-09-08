@@ -18,13 +18,16 @@ import type { GoogleDriveConnectionDTO, SyncedFileDTO } from '@/types/integratio
  * because the endpoints only ever answer for the session's own.
  */
 export function KnowledgeSection({
-  initial,
+  connection: initial,
   initialFiles,
-  outcome,
+  outcome = null,
+  /** Reserved for a standalone rendering; Teach supplies its own heading. */
+  embedded: _embedded = false,
 }: {
-  initial: GoogleDriveConnectionDTO;
+  connection: GoogleDriveConnectionDTO;
   initialFiles: SyncedFileDTO[];
-  outcome: string | null;
+  outcome?: string | null;
+  embedded?: boolean;
 }) {
   const { note } = useToast();
   const [connection, setConnection] = useState(initial);

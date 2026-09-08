@@ -4,22 +4,31 @@ import Link from 'next/link';
 import type { Route } from 'next';
 import { usePathname } from 'next/navigation';
 import { useWorkspace } from '@/context/workspace';
-import { PodCard } from './PodCard';
 import { Avatar, LogoMark } from './ui/Bits';
 import { Icon } from './ui/Icon';
 import type { IconName } from './ui/Icon';
 import { logout } from '@/app/actions';
 
-const NAV: { href: Route; label: string; sub?: string; icon: IconName }[] = [
-  { href: '/', label: 'Home', icon: 'home' },
-  { href: '/teach', label: 'Teach', sub: 'Your brand', icon: 'teach' },
-  { href: '/ask', label: 'Ask', sub: 'Create with CIP', icon: 'ask' },
-  { href: '/drive', label: 'Drive', sub: 'Your files', icon: 'drive' },
-  { href: '/media', label: 'Media', sub: 'Images & video', icon: 'image' },
-  { href: '/knowledge', label: 'Knowledge', sub: 'Connected sources', icon: 'book' },
-  { href: '/knowledge-graph', label: 'Knowledge Graph', sub: 'How it connects', icon: 'grid' },
-  { href: '/brain', label: 'Brain', sub: 'What CIP has learned', icon: 'sparkle' },
-  { href: '/trust', label: 'Trust', sub: 'Track & review', icon: 'trust' },
+/**
+ * Four places, and everything lives inside one of them.
+ *
+ * There were nine. Drive, Media, Knowledge, Knowledge Graph and Brain were
+ * each a real thing, but as separate destinations they asked the reader to
+ * know CIP's internals before they could find anything: to teach it you went
+ * to two different pages, and to see what it had learned, three.
+ *
+ * The four that remain are the four things a person actually does.
+ *
+ *   Home   what CIP knows, at a glance
+ *   Teach  give it more — a folder it syncs, or files you upload
+ *   Ask    have it make something out of what it knows
+ *   Trust  look at everything it has learned, and where each piece came from
+ */
+const NAV: { href: Route; label: string; sub: string; icon: IconName }[] = [
+  { href: '/', label: 'Home', sub: 'Where things stand', icon: 'home' },
+  { href: '/teach', label: 'Teach', sub: 'Feed your brand in', icon: 'teach' },
+  { href: '/ask', label: 'Ask', sub: 'Make something', icon: 'ask' },
+  { href: '/trust', label: 'Trust', sub: 'What CIP knows', icon: 'trust' },
 ];
 
 export function Sidebar() {
@@ -62,18 +71,16 @@ export function Sidebar() {
               <Icon name={item.icon} size={19} className="ico" />
               <span className="stack">
                 <span className="label">{item.label}</span>
-                {item.sub && <span className="sub">{item.sub}</span>}
+                <span className="sub">{item.sub}</span>
               </span>
             </Link>
           );
         })}
       </div>
 
-      <PodCard />
-
       <div className="side-foot">
         <button type="button" className="side-link">
-          <Icon name="bell" size={17} /> Notifications <span className="count">3</span>
+          <Icon name="bell" size={17} /> Notifications
         </button>
         <button type="button" className="side-link">
           <Icon name="help" size={17} /> Help &amp; support

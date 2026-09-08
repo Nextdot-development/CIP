@@ -1,173 +1,90 @@
 'use client';
 
 import { useState } from 'react';
-import { useWorkspace } from '@/context/workspace';
-import { useToast } from '@/context/toast';
-import { Card, EmptyState, Progress } from '../components/ui/Bits';
+import { KnowledgeSection } from './KnowledgeSection';
+import { DriveSection } from './DriveSection';
 import { Icon } from '../components/ui/Icon';
-import type { IconName } from '../components/ui/Icon';
+import type { GoogleDriveConnectionDTO, SyncedFileDTO } from '@/types/integrations';
+import type { DriveListingDTO } from '@/types/drive';
 
 /**
- * Teach — "help CIP understand our brand".
- * Deliberately free of anything technical: no confidence scores, no graph,
- * no model talk. Just what we know, what we are missing and what that unlocks.
+ * Teach — the two ways knowledge gets into CIP.
+ *
+ * Connect a folder and it keeps itself current; upload files and it reads them
+ * straight away. Both end in the same place, so they belong on the same page:
+ * before this they were two separate destinations, and the one thing a person
+ * comes here to do was split across them.
+ *
+ * What used to be on this page — a seeded "62% understood", a list of things
+ * that percentage would unlock, questions to confirm, a voice and a palette —
+ * was all demo data written by the seed and never updated by anything. None of
+ * it moved when a file was uploaded. What CIP has actually learned is on
+ * Trust, counted from the tables that hold it.
  */
-export function TeachSection() {
-  const workspace = useWorkspace();
-  const { note: onNote } = useToast();
-  const bb = workspace.brandBrain;
-  const [answered, setAnswered] = useState<string[]>([]);
 
-  const pending = bb.confirmations.filter((c) => !answered.includes(c.id));
+type Tab = 'connect' | 'upload';
+
+export function TeachSection({
+  connection,
+  syncedFiles,
+  listing,
+  googleOutcome,
+}: {
+  connection: GoogleDriveConnectionDTO;
+  syncedFiles: SyncedFileDTO[];
+  listing: DriveListingDTO;
+  googleOutcome?: string;
+}) {
+  // A connected Drive is the thing most people set up once and leave alone, so
+  // the upload tab opens first when one is already running.
+  const [tab, setTab] = useState<Tab>(
+    connection.status === 'connected' ? 'upload' : 'connect',
+  );
 
   return (
     <div className="rise">
       <header className="page-head">
         <p className="eyebrow">Teach</p>
-        <h1>Your brand, in our hands</h1>
+        <h1>Give CIP something to learn from</h1>
         <p className="lede">
-          The more we understand about {workspace.name}, the better and faster everything we make for you gets.
+          Connect a Google Drive folder and it stays up to date on its own, or upload files here.
+          Either way CIP reads them — documents, images, video and PDFs of posts — and learns what
+          your brand looks and sounds like.
         </p>
       </header>
 
-      <section className="teach-hero">
-        <div>
-          <div className="row" style={{ alignItems: 'baseline' }}>
-            <span className="big-pct">{bb.understanding}%</span>
-            <span className="pct-word">understood</span>
-          </div>
-          <p className="pct-note">{bb.note}</p>
-          <div style={{ marginTop: 20, maxWidth: 480 }}>
-            <Progress value={bb.understanding} goal={bb.unlockAt} />
-            <p className="tiny muted" style={{ marginTop: 8 }}>
-              The marker shows {bb.unlockAt}% — where paid campaigns unlock.
-            </p>
-          </div>
-        </div>
-        <div>
-          <p className="unlock-title">What your progress unlocks</p>
-          <div className="unlock-list">
-            {bb.unlocks.map((u) => {
-              const open = bb.understanding >= u.at;
-              return (
-                <div className={`unlock ${open ? 'open' : ''}`} key={u.label}>
-                  <Icon name={open ? 'unlock' : 'lock'} size={15} />
-                  <span className="u-label">{u.label}</span>
-                  <span className="u-at">{open ? 'Available' : `at ${u.at}%`}</span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      </section>
-
-      <div className="sec-head">
-        <div>
-          <h2>Waiting for you</h2>
-          <p className="hint">A few quick answers move your brand understanding forward the fastest.</p>
-        </div>
+      <div className="tabs" role="tablist">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'connect'}
+          className={`tab ${tab === 'connect' ? 'active' : ''}`}
+          onClick={() => setTab('connect')}
+        >
+          <Icon name="link" size={16} /> Connect a folder
+          {connection.status === 'connected' && <span className="tab-dot" aria-hidden />}
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'upload'}
+          className={`tab ${tab === 'upload' ? 'active' : ''}`}
+          onClick={() => setTab('upload')}
+        >
+          <Icon name="upload" size={16} /> Upload files
+        </button>
       </div>
 
-      <Card>
-        {pending.length === 0 ? (
-          <EmptyState
-            icon="check"
-            title="Nothing needs your answer right now"
-            copy="We will ask here whenever something about your brand is unclear. Add assets or guidelines any time to move faster."
-          />
-        ) : (
-          pending.map((c) => (
-            <div className="confirm-row" key={c.id}>
-              <span className="stack grow">
-                <span className="cr-q">{c.question}</span>
-                <span className="cr-a">{c.context}</span>
-              </span>
-              <span className="cr-actions">
-                <button
-                  type="button"
-                  className="btn btn-primary btn-sm"
-                  onClick={() => {
-                    setAnswered((a) => [...a, c.id]);
-                    onNote(`Saved: ${c.suggestion}`);
-                  }}
-                >
-                  {c.suggestion}
-                </button>
-                <button type="button" className="btn btn-ghost btn-sm" onClick={() => onNote('We will ask again later')}>
-                  Not quite
-                </button>
-              </span>
-            </div>
-          ))
-        )}
-      </Card>
-
-      <div className="sec-head">
-        <div>
-          <h2>What we know so far</h2>
-          <p className="hint">Everything here came from you. Add to any of it whenever you like.</p>
-        </div>
-      </div>
-
-      <div className="teach-grid">
-        {bb.topics.map((t) => (
-          <article className="card teach-card" key={t.id}>
-            <div className="tc-top">
-              <span className="tc-icon"><Icon name={t.icon as IconName} size={19} /></span>
-              <h3>{t.title}</h3>
-            </div>
-            <p className="tc-copy">{t.blurb}</p>
-            <div className="tc-items">
-              {t.items.map((i) => (
-                <span className={`tc-item ${i.done ? '' : 'pending'}`} key={i.label}>
-                  {i.done ? <Icon name="check" size={15} className="tick" /> : <Icon name="plus" size={15} className="todo" />}
-                  {i.label}
-                </span>
-              ))}
-            </div>
-            <div className="tc-foot">
-              <button type="button" className="btn btn-ghost btn-sm" onClick={() => onNote(`${t.cta} — coming next`)}>
-                {t.cta} <Icon name="arrow-right" size={14} />
-              </button>
-            </div>
-          </article>
-        ))}
-      </div>
-
-      <div className="sec-head">
-        <div>
-          <h2>How you sound</h2>
-          <p className="hint">We match this on every line of copy we write for you.</p>
-        </div>
-      </div>
-
-      <Card className="pad">
-        <div className="voice-grid">
-          <div className="voice-col yes">
-            <p className="vc-head"><Icon name="check" size={15} /> {workspace.name} sounds like</p>
-            {bb.voice.sounds.map((s) => (
-              <p className="voice-line" key={s}>{s}</p>
-            ))}
-          </div>
-          <div className="voice-col no">
-            <p className="vc-head"><Icon name="x" size={15} /> {workspace.name} never sounds like</p>
-            {bb.voice.neverSounds.map((s) => (
-              <p className="voice-line" key={s}>{s}</p>
-            ))}
-          </div>
-        </div>
-        <div style={{ marginTop: 26 }}>
-          <p className="unlock-title">Your colours</p>
-          <div className="swatches">
-            {bb.palette.map((p) => (
-              <span className="swatch-chip" key={p.hex}>
-                <i style={{ background: p.hex }} />
-                <span>{p.name}</span>
-              </span>
-            ))}
-          </div>
-        </div>
-      </Card>
+      {tab === 'connect' ? (
+        <KnowledgeSection
+          connection={connection}
+          initialFiles={syncedFiles}
+          outcome={googleOutcome}
+          embedded
+        />
+      ) : (
+        <DriveSection listing={listing} embedded />
+      )}
     </div>
   );
 }

@@ -150,7 +150,7 @@ export function BrainSection({ initial }: { initial: BrainOverviewDTO }) {
                 Analyse new assets
               </button>
             ) : (
-              <a className="btn btn-primary btn-sm" href="/drive">Open Drive</a>
+              <a className="btn btn-primary btn-sm" href="/teach">Teach CIP</a>
             )
           }
         />

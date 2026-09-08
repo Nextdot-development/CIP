@@ -81,7 +81,14 @@ function ProcessingChip({ file }: { file: DriveFileDTO }) {
 type Upload = { id: string; name: string; status: 'uploading' | 'failed'; message?: string };
 type Renaming = { id: string; type: 'file' | 'folder'; value: string };
 
-export function DriveSection({ listing }: { listing: DriveListingDTO }) {
+export function DriveSection({
+  listing,
+  /** Rendered inside Teach, which supplies its own heading. */
+  embedded = false,
+}: {
+  listing: DriveListingDTO;
+  embedded?: boolean;
+}) {
   const router = useRouter();
   const { note } = useToast();
 
@@ -223,13 +230,15 @@ export function DriveSection({ listing }: { listing: DriveListingDTO }) {
 
   return (
     <div className="rise">
-      <header className="page-head">
-        <p className="eyebrow">Drive</p>
-        <h1>Company Drive</h1>
-        <p className="lede">
-          Everything your brand runs on, in one place. Only your company can see any of it.
-        </p>
-      </header>
+      {!embedded && (
+        <header className="page-head">
+          <p className="eyebrow">Drive</p>
+          <h1>Company Drive</h1>
+          <p className="lede">
+            Everything your brand runs on, in one place. Only your company can see any of it.
+          </p>
+        </header>
+      )}
 
       <div className="drive-bar">
         <nav className="crumbs" aria-label="Breadcrumb">
@@ -245,7 +254,7 @@ export function DriveSection({ listing }: { listing: DriveListingDTO }) {
                 <button
                   type="button"
                   className={`crumb ${last ? 'current' : ''}`}
-                  onClick={() => router.push(crumb.id ? `/drive?folder=${crumb.id}` : '/drive')}
+                  onClick={() => router.push(crumb.id ? `/teach?folder=${crumb.id}` : '/teach')}
                   aria-current={last ? 'page' : undefined}
                 >
                   {i === 0 && <Icon name="drive" size={15} />}
@@ -432,7 +441,7 @@ export function DriveSection({ listing }: { listing: DriveListingDTO }) {
                   aria-label="Folder name"
                 />
               ) : (
-                <button type="button" className="folder-open" onClick={() => router.push(`/drive?folder=${f.id}`)}>
+                <button type="button" className="folder-open" onClick={() => router.push(`/teach?folder=${f.id}`)}>
                   <span className="f-name truncate">{f.name}</span>
                   <span className="f-meta">Added {relativeDay(f.createdAt)}</span>
                 </button>

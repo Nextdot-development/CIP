@@ -96,3 +96,23 @@
 .metric .m-label { font-size: 12.5px; color: var(--ink-500); margin-top: 2px; }
 .metric .m-delta { font-size: 11.5px; font-weight: 600; margin-top: 6px; display: inline-flex; align-items: center; gap: 3px; color: var(--ok-700); }
 .metric .m-delta.flat { color: var(--ink-400); }
+
+/* ---------------------------------------------------------------------------
+   What kind of knowledge is in here.
+   One card per kind of file, so "what does CIP have to work with" is answerable
+   at a glance rather than by counting a list.
+   --------------------------------------------------------------------------- */
+.kind-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 12px; margin-top: 4px;
+}
+.kind-card { display: flex; align-items: center; gap: 12px; padding: 14px; }
+.kind-card .kc-icon {
+  width: 34px; height: 34px; border-radius: 10px; flex: 0 0 auto;
+  display: grid; place-items: center;
+  background: var(--surface-2); color: var(--ink-500);
+}
+.kind-card .kc-title { font-size: 14px; font-weight: 600; color: var(--ink-900); }
+.kind-card .kc-sub { font-size: 12.5px; color: var(--ink-500); margin-top: 2px; }
+
+.metric .m-of { font-size: 17px; font-weight: 600; color: var(--ink-400); }
