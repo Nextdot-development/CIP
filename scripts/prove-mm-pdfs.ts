@@ -288,15 +288,28 @@ async function main() {
       }
       console.log('');
 
+      // With --reread there is a claim to report on. Without it there is not,
+      // because the file was understood on an earlier run and nothing is
+      // waiting — so the stored row is the evidence, and "nothing to claim"
+      // is not a failure.
+      const stored = await admin<{ status: string; kind: string }[]>`
+        select status, kind from asset_understanding where file_id = ${pdf.id}
+      `;
+      const storedStatus = stored[0]?.status ?? null;
+
       check(`2. "${pdf.name}" was understood`,
-        outcome?.status === 'understood',
-        outcome === null
-          ? 'never claimed'
-          : outcome.status === 'understood'
-            ? `${outcome.kind}, ${outcome.facts} fact(s)`
-            : outcome.status === 'failed'
-              ? `failed: ${outcome.message}`
-              : `unsupported: ${outcome.reason}`);
+        outcome?.status === 'understood' || storedStatus === 'ready',
+        outcome?.status === 'understood'
+          ? `${outcome.kind}, ${outcome.facts} fact(s) — read on this run`
+          : outcome?.status === 'failed'
+            ? `failed: ${outcome.message}`
+            : outcome?.status === 'unsupported'
+              ? `unsupported: ${outcome.reason}`
+              : storedStatus === 'ready'
+                ? `${stored[0]!.kind}, stored from an earlier read (pass --reread to redo it)`
+                : storedStatus === null
+                  ? 'never understood'
+                  : `stored status is "${storedStatus}"`);
 
       if (summaryRow[0]?.kind === 'pdf_visual') {
         check(`2. "${pdf.name}" every rasterised page was understood`,
