@@ -51,9 +51,28 @@ export type MediaAssetDTO = {
   ordinal: number;
 };
 
+export type ImageProviderChoice = 'openai' | 'gemini';
+
+export type ImageProviderStatusDTO = {
+  choice: ImageProviderChoice;
+  provider: string;
+  model: string;
+  configured: boolean;
+};
+
 export type ProviderStatusDTO = {
+  /** Whichever image provider would answer a request that names none. */
   image: { provider: string; model: string; configured: boolean };
+  /** Every image provider, so the UI can offer a choice and show what is set up. */
+  images: ImageProviderStatusDTO[];
+  defaultImageProvider: ImageProviderChoice;
   video: { provider: string; model: string; configured: boolean; supportsCancel: boolean };
+};
+
+/** What the picker calls each provider. */
+export const IMAGE_PROVIDER_LABELS: Record<ImageProviderChoice, string> = {
+  openai: 'OpenAI',
+  gemini: 'Gemini / Nano Banana 2',
 };
 
 /** The asset route proves the session before it serves a byte. */

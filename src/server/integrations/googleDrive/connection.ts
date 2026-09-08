@@ -222,12 +222,53 @@ export async function saveTokens(scope: CompanyScope, tokens: TokenSet): Promise
   });
 }
 
+const BARE_FOLDER_ID = /^[A-Za-z0-9_-]{10,200}$/;
+
+/**
+ * Gets a folder id out of whatever somebody pasted.
+ *
+ * People copy the link from the address bar, not the id buried inside it, so
+ * a link is the normal input and asking for the id alone is asking them to do
+ * a parsing job we can do here.
+ *
+ * The id is still what gets stored. A URL is a way of naming a folder and it
+ * is not evidence of access — the connected account's permission decides that,
+ * which is checked immediately below by actually reading the folder.
+ */
+export function parseFolderId(input: string): string | null {
+  const trimmed = input.trim();
+  if (trimmed.length === 0) return null;
+  if (BARE_FOLDER_ID.test(trimmed)) return trimmed;
+
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    return null;
+  }
+  if (!/(^|\.)google\.com$/i.test(url.hostname)) return null;
+
+  // .../drive/folders/<id>, .../drive/u/0/folders/<id>, and the same with a
+  // trailing query string, which "Share" always adds.
+  const segments = url.pathname.split('/').filter(Boolean);
+  const afterFolders = segments[segments.indexOf('folders') + 1];
+  if (segments.includes('folders') && afterFolders && BARE_FOLDER_ID.test(afterFolders)) {
+    return afterFolders;
+  }
+
+  // The older ?id= form, still what some Drive menus produce.
+  const queryId = url.searchParams.get('id');
+  if (queryId && BARE_FOLDER_ID.test(queryId)) return queryId;
+
+  return null;
+}
+
 /** Chooses which folder to read. Confirms it exists and is readable first. */
 export async function setFolder(scope: CompanyScope, folderId: string): Promise<GoogleDriveConnectionDTO> {
-  const trimmed = folderId.trim();
-  if (!/^[A-Za-z0-9_-]{10,200}$/.test(trimmed)) {
+  const trimmed = parseFolderId(folderId);
+  if (!trimmed) {
     throw new GoogleDriveRejected(
-      'That does not look like a folder id. Open the folder in Google Drive and copy the id from the address bar.',
+      'That does not look like a Google Drive folder. Paste the folder link from your address bar, or its id.',
     );
   }
 

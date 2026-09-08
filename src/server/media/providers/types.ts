@@ -14,7 +14,18 @@ import 'server-only';
  * contract on each method.
  */
 
-export type ProviderName = 'google' | 'seedance' | 'fake-image' | 'fake-video';
+export type ProviderName = 'google' | 'openai' | 'seedance' | 'fake-image' | 'fake-video';
+
+/**
+ * The image providers a caller may ask for by name.
+ *
+ * Deliberately not the same as ProviderName: these are the words the API and
+ * the UI use, and 'gemini' is what people call the Google model. Keeping them
+ * apart means renaming an internal driver never changes the public API.
+ */
+export type ImageProviderChoice = 'openai' | 'gemini';
+
+export const IMAGE_PROVIDER_CHOICES: readonly ImageProviderChoice[] = ['openai', 'gemini'];
 
 /** Normalised failure codes. A provider's own wording never reaches a caller. */
 export type MediaErrorCode =

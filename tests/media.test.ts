@@ -635,6 +635,343 @@ describe('rate limiting', () => {
   });
 });
 
+describe('OpenAI as a second image provider', () => {
+  /**
+   * A stand-in for OpenAI's HTTP API.
+   *
+   * The suite must never call the real one: it costs money, needs a key, and
+   * would make the tests depend on somebody else's uptime. So fetch is replaced
+   * for the duration of each case and the adapter is exercised against
+   * responses shaped exactly like OpenAI's.
+   */
+  const realFetch = globalThis.fetch;
+
+  /** A one-pixel PNG, so the bytes that come back are a real image. */
+  const PNG = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+    'base64',
+  );
+
+  let captured: { url: string; init: RequestInit | undefined }[] = [];
+
+  function stubFetch(status: number, body: unknown, headers: Record<string, string> = {}) {
+    captured = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      captured.push({ url: String(input), init });
+      return new Response(typeof body === 'string' ? body : JSON.stringify(body), {
+        status,
+        headers: { 'content-type': 'application/json', ...headers },
+      });
+    }) as typeof fetch;
+  }
+
+  function restoreFetch() {
+    globalThis.fetch = realFetch;
+  }
+
+  async function makeProvider(key: string | undefined = 'sk-test-not-a-real-key') {
+    const { OpenAIImageProvider } = await import('../src/server/media/providers/openaiImage');
+    return new OpenAIImageProvider(key);
+  }
+
+  it('initialises from a key and reports the model it will use', async () => {
+    const provider = await makeProvider();
+    assert.equal(provider.name, 'openai');
+    assert.equal(provider.model, 'gpt-image-2');
+    assert.equal(provider.configured, true);
+    assert.ok(provider.aspectRatios.includes('1:1'));
+  });
+
+  it('without a key it reports unconfigured and refuses to call anything', async () => {
+    // Constructed directly rather than through makeProvider: passing undefined
+    // to a parameter with a default gets the default, which would quietly give
+    // this provider a key and test nothing.
+    const { OpenAIImageProvider } = await import('../src/server/media/providers/openaiImage');
+    const provider = new OpenAIImageProvider(undefined);
+    assert.equal(provider.configured, false);
+
+    const reached: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      reached.push(String(input));
+      return new Response('{}');
+    }) as typeof fetch;
+
+    try {
+      await assert.rejects(
+        () => provider.generate({ prompt: 'anything', references: [] }),
+        (error: unknown) => {
+          assert.equal((error as { code: string }).code, 'PROVIDER_NOT_CONFIGURED');
+          assert.equal((error as { kind: string }).kind, 'permanent');
+          return true;
+        },
+      );
+      assert.deepEqual(reached, [], 'an unconfigured provider must not reach the network');
+    } finally {
+      restoreFetch();
+    }
+  });
+
+  it('turns a successful response into image bytes', async () => {
+    const provider = await makeProvider();
+    stubFetch(200, {
+      data: [{ b64_json: PNG.toString('base64') }],
+      usage: { input_tokens: 11, output_tokens: 22 },
+    });
+
+    try {
+      const result = await provider.generate({
+        prompt: 'a brass diya on dark marble',
+        references: [],
+        aspectRatio: '3:2',
+        imageSize: 'high',
+      });
+
+      const asset = result.assets[0]!;
+      assert.equal(result.model, 'gpt-image-2');
+      assert.equal(asset.mimeType, 'image/png', 'the type is read from the bytes, not assumed');
+      assert.deepEqual([...asset.bytes.subarray(0, 4)], [0x89, 0x50, 0x4e, 0x47]);
+      assert.equal(asset.width, 1536);
+      assert.equal(asset.height, 1024);
+      assert.equal(result.usage.inputUnits, 11);
+      assert.equal(result.usage.outputUnits, 22);
+
+      const body = JSON.parse(String(captured[0]!.init!.body)) as Record<string, unknown>;
+      assert.equal(captured[0]!.url, 'https://api.openai.com/v1/images/generations');
+      assert.equal(body.model, 'gpt-image-2');
+      assert.equal(body.size, '1536x1024');
+      assert.equal(body.quality, 'high');
+      // This model rejects response_format as an unknown parameter.
+      assert.ok(!('response_format' in body));
+    } finally {
+      restoreFetch();
+    }
+  });
+
+  it('sends only the prompt and the options, never anything of ours', async () => {
+    const provider = await makeProvider();
+    stubFetch(200, { data: [{ b64_json: PNG.toString('base64') }] });
+
+    try {
+      await provider.generate({ prompt: 'a lantern', references: [] });
+      const sent = String(captured[0]!.init!.body);
+      for (const forbidden of [mm.companyId, mm.userId, 'companies/', 'storage_path']) {
+        assert.ok(!sent.includes(forbidden), 'the provider sent something of ours to OpenAI');
+      }
+    } finally {
+      restoreFetch();
+    }
+  });
+
+  it('uses the edit endpoint when a reference image is given', async () => {
+    const provider = await makeProvider();
+    stubFetch(200, { data: [{ b64_json: PNG.toString('base64') }] });
+
+    try {
+      await provider.generate({
+        prompt: 'put our logo on it',
+        references: [{ bytes: PNG, mimeType: 'image/png' }],
+      });
+      assert.equal(captured[0]!.url, 'https://api.openai.com/v1/images/edits');
+      assert.ok(captured[0]!.init!.body instanceof FormData);
+    } finally {
+      restoreFetch();
+    }
+  });
+
+  it('classifies failures instead of passing the provider wording on', async () => {
+    const cases: [number, unknown, string, string][] = [
+      [401, { error: { code: 'invalid_api_key' } }, 'PROVIDER_NOT_CONFIGURED', 'permanent'],
+      [400, { error: { code: 'invalid_value' } }, 'INVALID_REQUEST', 'permanent'],
+      [429, { error: { code: 'rate_limit_exceeded' } }, 'RATE_LIMITED', 'rate_limited'],
+      [429, { error: { code: 'insufficient_quota' } }, 'PROVIDER_ERROR', 'permanent'],
+      [400, { error: { code: 'moderation_blocked' } }, 'GENERATION_FAILED', 'permanent'],
+      [500, { error: { code: 'server_error' } }, 'PROVIDER_ERROR', 'transient'],
+    ];
+
+    for (const [status, body, code, kind] of cases) {
+      const provider = await makeProvider();
+      stubFetch(status, body);
+      try {
+        await assert.rejects(
+          () => provider.generate({ prompt: 'x', references: [] }),
+          (error: unknown) => {
+            assert.equal((error as { code: string }).code, code, 'status ' + status);
+            assert.equal((error as { kind: string }).kind, kind, 'status ' + status);
+            // The provider's own wording must never survive: it can quote the prompt.
+            assert.ok(!String((error as Error).message).includes('moderation_blocked'));
+            return true;
+          },
+        );
+      } finally {
+        restoreFetch();
+      }
+    }
+  });
+
+  it('a response carrying no image is a failure, not an empty success', async () => {
+    const provider = await makeProvider();
+    stubFetch(200, { data: [] });
+    try {
+      await assert.rejects(
+        () => provider.generate({ prompt: 'x', references: [] }),
+        (error: unknown) => {
+          assert.equal((error as { code: string }).code, 'GENERATION_FAILED');
+          return true;
+        },
+      );
+    } finally {
+      restoreFetch();
+    }
+  });
+
+  it('never puts the key in anything it exposes or throws', async () => {
+    const secret = 'sk-proj-super-secret-value-0000';
+    const provider = await makeProvider(secret);
+    stubFetch(401, { error: { code: 'invalid_api_key', message: 'key ' + secret + ' is bad' } });
+
+    try {
+      await provider.generate({ prompt: 'x', references: [] }).catch((error: unknown) => {
+        const thrown = error as Error;
+        assert.ok(!String(thrown.message).includes(secret), 'the key reached the error message');
+        assert.ok(!JSON.stringify(thrown, Object.getOwnPropertyNames(thrown)).includes(secret));
+      });
+
+      const exposed = JSON.stringify({
+        name: provider.name,
+        model: provider.model,
+        configured: provider.configured,
+        ratios: provider.aspectRatios,
+      });
+      assert.ok(!exposed.includes(secret), 'the key is reachable from the provider');
+    } finally {
+      restoreFetch();
+    }
+  });
+});
+
+describe('choosing which image provider answers', () => {
+  /** Two distinguishable doubles, so which one ran is observable. */
+  class NamedProvider {
+    readonly configured = true;
+    readonly aspectRatios = ['1:1'];
+    readonly imageSizes = ['auto'];
+    calls = 0;
+    constructor(
+      readonly name: 'openai' | 'google',
+      readonly model: string,
+    ) {}
+    async generate() {
+      this.calls += 1;
+      return {
+        assets: [{ bytes: Buffer.from('generated'), mimeType: 'image/png', width: 8, height: 8 }],
+        model: this.model,
+        usage: {},
+      };
+    }
+  }
+
+  type AnyImageProvider = import('../src/server/media/providers').ImageGenerationProvider;
+
+  let openai: NamedProvider;
+  let gemini: NamedProvider;
+
+  beforeEach(() => {
+    openai = new NamedProvider('openai', 'gpt-image-2');
+    gemini = new NamedProvider('google', 'gemini-3.1-flash-image');
+    providers.__setProviders(fakeImage, fakeVideo, {
+      openai: openai as unknown as AnyImageProvider,
+      gemini: gemini as unknown as AnyImageProvider,
+    });
+  });
+
+  after(() => {
+    providers.__setProviders(fakeImage, fakeVideo);
+  });
+
+  it('provider "openai" generates through OpenAI', async () => {
+    const generation = await media.generateImage(mm, { prompt: 'via openai', provider: 'openai' });
+    assert.equal(openai.calls, 1);
+    assert.equal(gemini.calls, 0);
+    assert.equal(generation.provider, 'openai');
+    assert.equal(generation.model, 'gpt-image-2');
+  });
+
+  it('provider "gemini" generates through Gemini', async () => {
+    const generation = await media.generateImage(mm, { prompt: 'via gemini', provider: 'gemini' });
+    assert.equal(gemini.calls, 1);
+    assert.equal(openai.calls, 0);
+    assert.equal(generation.provider, 'google');
+    assert.equal(generation.model, 'gemini-3.1-flash-image');
+  });
+
+  it('refuses a provider name it does not publish', async () => {
+    await assert.rejects(
+      () => media.generateImage(mm, { prompt: 'x', provider: 'midjourney' }),
+      /Provider must be one of/i,
+    );
+    assert.equal(openai.calls + gemini.calls, 0, 'something ran on the way to being refused');
+  });
+
+  it('one company cannot read a generation another made with OpenAI', async () => {
+    const theirs = await media.generateImage(nh, { prompt: 'their openai image', provider: 'openai' });
+    await assert.rejects(() => media.getGeneration(mm, theirs.id), /could not be found/i);
+    await assert.rejects(() => media.readAsset(mm, theirs.id), /could not be found/i);
+
+    const mine = await media.listGenerations(mm, { limit: 100 });
+    assert.ok(!mine.generations.some((g) => g.id === theirs.id));
+  });
+
+  it('stores an OpenAI image in the private store under its own company', async () => {
+    const generation = await media.generateImage(mm, { prompt: 'stored openai', provider: 'openai' });
+
+    const rows = await adminSql<{ storage_path: string; company_id: string }[]>`
+      select storage_path, company_id from media_generation_assets where generation_id = ${generation.id}
+    `;
+    const path = rows[0]!.storage_path;
+    assert.equal(rows[0]!.company_id, mm.companyId);
+    assert.ok(path.startsWith('companies/' + mm.companyId + '/media/' + generation.id + '/'), path);
+
+    // The same private store the Drive uses, reachable only through the service.
+    const asset = await media.readAsset(mm, generation.id);
+    assert.ok(asset.fileSize > 0);
+
+    // And nothing about where it lives reaches a caller.
+    const payload = JSON.stringify(await media.getGeneration(mm, generation.id));
+    for (const forbidden of ['storage_path', 'storagePath', 'companies/', mm.companyId]) {
+      assert.ok(!payload.includes(forbidden), 'a media response leaked ' + forbidden);
+    }
+  });
+
+  it('remembers the chosen provider so a retry does not wander to the other', async () => {
+    const generation = await media.generateImage(mm, { prompt: 'sticky choice', provider: 'openai' });
+    const rows = await adminSql<{ input_metadata: { providerChoice?: string } }[]>`
+      select input_metadata from media_generations where id = ${generation.id}
+    `;
+    // An object, not a JSON string: stringifying before handing it to the
+    // driver encodes it twice and every field reads back undefined.
+    assert.equal(typeof rows[0]!.input_metadata, 'object');
+    assert.equal(rows[0]!.input_metadata.providerChoice, 'openai');
+  });
+
+  it('the options a generation was made with survive into the record', async () => {
+    const generation = await media.generateImage(mm, {
+      prompt: 'round trip',
+      provider: 'openai',
+      aspectRatio: '1:1',
+    });
+    // Reads through the DTO, which is where a double-encoded column showed up
+    // as a quietly missing field rather than an error.
+    const { generation: read } = await media.getGeneration(mm, generation.id);
+    assert.equal(read.aspectRatio, '1:1');
+  });
+
+  it('reports both providers, each with its own configured state', () => {
+    const status = providers.providerStatus();
+    assert.deepEqual(status.images.map((p) => p.choice).sort(), ['gemini', 'openai']);
+    assert.ok(status.defaultImageProvider === 'gemini' || status.defaultImageProvider === 'openai');
+  });
+});
+
 describe('provider configuration is reported honestly', () => {
   it('a fake standing in reports the real provider as unconfigured', () => {
     const status = providers.providerStatus();

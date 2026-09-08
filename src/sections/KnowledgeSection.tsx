@@ -201,13 +201,16 @@ export function KnowledgeSection({
             {connection.folderId === null ? (
               <div className="stack">
                 <label className="field">
-                  <span className="field-label">Folder id</span>
+                  <span className="field-label">Folder link</span>
                   <input
                     className="field-input"
                     value={folderInput}
-                    placeholder="Open the folder in Drive and copy the id from the address bar"
+                    placeholder="Paste the folder link from Google Drive"
                     onChange={(e) => setFolderInput(e.target.value)}
                   />
+                  <span className="small muted">
+                    Open the folder in Drive and copy the address. The id on its own works too.
+                  </span>
                 </label>
                 <button
                   type="button"

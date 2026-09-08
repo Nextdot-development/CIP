@@ -34,6 +34,7 @@ export type ClaimedGeneration = {
   inputMetadata: {
     aspectRatio?: string | null;
     imageSize?: string | null;
+    providerChoice?: 'openai' | 'gemini' | null;
     resolution?: string | null;
     durationSeconds?: number | null;
     referenceFileId?: string | null;
@@ -149,7 +150,9 @@ export async function processGeneration(claim: ClaimedGeneration): Promise<JobOu
 }
 
 async function runImage(scope: CompanyScope, claim: ClaimedGeneration): Promise<JobOutcome> {
-  const provider = imageGenerationProvider();
+  // The provider the request originally chose, so a retry does not wander to
+  // a different one and produce something unlike the first attempt.
+  const provider = imageGenerationProvider(claim.inputMetadata?.providerChoice ?? null);
   const references = await loadReferences(scope, claim.inputMetadata?.referenceFileId ?? null);
 
   await markProcessing(scope, claim.id);

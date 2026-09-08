@@ -206,10 +206,49 @@ describe('the OAuth state ties the callback to the session that began it', () =>
 });
 
 describe('choosing a folder', () => {
+  it('takes the link people actually copy, not just the id', () => {
+    const id = '1DhF_i3XqFK7HjK91e4nN6IA9hSRj6YrJ';
+
+    // Every shape Drive hands out, plus the bare id.
+    for (const input of [
+      id,
+      `https://drive.google.com/drive/folders/${id}`,
+      `https://drive.google.com/drive/folders/${id}?usp=sharing`,
+      `https://drive.google.com/drive/u/0/folders/${id}`,
+      `https://drive.google.com/open?id=${id}`,
+      `  https://drive.google.com/drive/folders/${id}?usp=drive_link  `,
+    ]) {
+      assert.equal(connection.parseFolderId(input), id, `did not understand: ${input}`);
+    }
+  });
+
+  it('refuses something that is not a Drive folder', () => {
+    for (const input of [
+      '',
+      '   ',
+      'not a folder',
+      'https://example.com/drive/folders/1DhF_i3XqFK7HjK91e4nN6IA9hSRj6YrJ',
+      'https://drive.google.com/drive/folders/short',
+      'https://drive.google.com/file/d/1DhF_i3XqFK7HjK91e4nN6IA9hSRj6YrJ/view',
+    ]) {
+      assert.equal(connection.parseFolderId(input), null, `should not have accepted: ${input}`);
+    }
+  });
+
   it('refuses something that is not a folder id', async () => {
     await connection.saveTokens(mm, await fake.exchangeCode());
-    await assert.rejects(() => connection.setFolder(mm, 'https://drive.google.com/drive/folders/abc'), /folder id/i);
-    await assert.rejects(() => connection.setFolder(mm, ''), /folder id/i);
+    await assert.rejects(() => connection.setFolder(mm, 'not a folder at all'), /Google Drive folder/i);
+    await assert.rejects(() => connection.setFolder(mm, ''), /Google Drive folder/i);
+  });
+
+  it('accepts a folder given as a link', async () => {
+    await connect(mm, MM_FOLDER);
+    const dto = await connection.setFolder(
+      mm,
+      `https://drive.google.com/drive/folders/${MM_FOLDER}?usp=sharing`,
+    );
+    // The id is what gets stored, never the URL.
+    assert.equal(dto.folderId, MM_FOLDER);
   });
 
   it('refuses a folder the connected account cannot open', async () => {

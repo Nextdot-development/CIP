@@ -5,8 +5,13 @@ import { Card, EmptyState, Pill } from '@/components/ui/Bits';
 import { Icon } from '@/components/ui/Icon';
 import { useToast } from '@/context/toast';
 import { relativeDay } from '@/lib/format';
-import { assetUrl, isInFlight } from '@/types/media';
-import type { MediaGenerationDTO, MediaType, ProviderStatusDTO } from '@/types/media';
+import { IMAGE_PROVIDER_LABELS, assetUrl, isInFlight } from '@/types/media';
+import type {
+  ImageProviderChoice,
+  MediaGenerationDTO,
+  MediaType,
+  ProviderStatusDTO,
+} from '@/types/media';
 import type { DriveFileDTO } from '@/types/drive';
 
 /**
@@ -51,6 +56,9 @@ export function MediaSection({
   const [prompt, setPrompt] = useState('');
   const [aspectRatio, setAspectRatio] = useState('1:1');
   const [resolution, setResolution] = useState('1280:720');
+  const [imageProvider, setImageProvider] = useState<ImageProviderChoice>(
+    providers.defaultImageProvider,
+  );
   const [referenceId, setReferenceId] = useState('');
 
   // Whichever generation the person is looking at now.
@@ -85,7 +93,8 @@ export function MediaSection({
     };
   }, [generations, refresh]);
 
-  const configured = tab === 'image' ? providers.image.configured : providers.video.configured;
+  const selectedImage = providers.images.find((p) => p.choice === imageProvider);
+  const configured = tab === 'image' ? (selectedImage?.configured ?? false) : providers.video.configured;
 
   const submit = useCallback(async () => {
     const text = prompt.trim();
@@ -99,7 +108,7 @@ export function MediaSection({
       const endpoint = tab === 'image' ? '/api/media/images/generate' : '/api/media/videos/generate';
       const body =
         tab === 'image'
-          ? { prompt: text, aspectRatio, referenceFileIds: referenceId ? [referenceId] : [] }
+          ? { prompt: text, provider: imageProvider, aspectRatio, referenceFileIds: referenceId ? [referenceId] : [] }
           : { prompt: text, resolution, referenceFileId: referenceId || null };
 
       const res = await fetch(endpoint, {
@@ -130,7 +139,7 @@ export function MediaSection({
     } finally {
       setBusy(false);
     }
-  }, [aspectRatio, note, prompt, referenceId, refresh, resolution, tab]);
+  }, [aspectRatio, imageProvider, note, prompt, referenceId, refresh, resolution, tab]);
 
   const act = useCallback(
     async (id: string, action: 'retry' | 'cancel') => {
@@ -176,9 +185,11 @@ export function MediaSection({
           <Icon name="alert" size={15} />
           <span>
             <b className="strong">
-              {tab === 'image' ? 'Image' : 'Video'} generation is not configured.
+              {tab === 'image' ? IMAGE_PROVIDER_LABELS[imageProvider] : 'Video generation'} is not
+              configured.
             </b>{' '}
-            No provider key is set, so nothing real can be generated yet.
+            No key is set for it, so nothing real can be generated with it yet.
+            {tab === 'image' && providers.images.some((p) => p.configured) && ' Pick another provider above.'}
           </span>
         </div>
       )}
@@ -201,6 +212,24 @@ export function MediaSection({
         </label>
 
         <div className="gen-options">
+          {tab === 'image' && (
+            <label className="field">
+              <span className="field-label">Made by</span>
+              <select
+                className="field-input"
+                value={imageProvider}
+                onChange={(e) => setImageProvider(e.target.value as ImageProviderChoice)}
+              >
+                {providers.images.map((p) => (
+                  <option key={p.choice} value={p.choice}>
+                    {IMAGE_PROVIDER_LABELS[p.choice]}
+                    {p.configured ? '' : ' — not configured'}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+
           {tab === 'image' ? (
             <label className="field">
               <span className="field-label">Shape</span>

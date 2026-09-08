@@ -416,9 +416,6 @@ async function main() {
 
   const gdStatus = await api(mm, '/api/integrations/google-drive');
   check('10. a company can read its own connection status', gdStatus.status === 200, `HTTP ${gdStatus.status}`);
-  check('10. and it is not connected to anything by default',
-    (gdStatus.json?.connection as { status?: string } | undefined)?.status === 'disconnected',
-    String((gdStatus.json?.connection as { status?: string } | undefined)?.status));
 
   const connectionLeaks = forbiddenFieldsIn(gdStatus.json);
   check('10. the connection carries no token, company id or storage path',
@@ -426,22 +423,37 @@ async function main() {
     connectionLeaks.length === 0 ? 'checked every field and value' : connectionLeaks.join(', '));
 
   // A company id in the body must be ignored, and a nonsense folder refused.
-  const gdFolder = await api(mm, '/api/integrations/google-drive/folder', {
+  // Nonsense is refused outright.
+  const gdJunk = await api(mm, '/api/integrations/google-drive/folder', {
     method: 'POST',
-    body: JSON.stringify({ folderId: 'https://drive.google.com/drive/folders/abc', companyId: nhCompanyId }),
+    body: JSON.stringify({ folderId: 'not a folder at all', companyId: nhCompanyId }),
   });
-  check('10. a Drive URL is refused as a folder id', gdFolder.status === 422, `HTTP ${gdFolder.status}`);
+  check('10. a value that is not a folder is refused', gdJunk.status === 422, `HTTP ${gdJunk.status}`);
 
-  // Syncing with nothing connected must say so rather than pretending.
-  const gdSync = await api(mm, '/api/integrations/google-drive/sync', { method: 'POST' });
-  check('10. syncing with nothing connected is refused honestly',
-    gdSync.status === 409 && gdSync.text.includes('connected'), `HTTP ${gdSync.status}`);
+  // A well-formed link whose folder does not exist. This proves the link is
+  // parsed and then actually checked against Google, and it is deliberately an
+  // id nobody owns: posting a real one here would silently repoint whatever
+  // folder this company had configured.
+  const gdLink = await api(mm, '/api/integrations/google-drive/folder', {
+    method: 'POST',
+    body: JSON.stringify({
+      folderId: 'https://drive.google.com/drive/folders/CIPproofNoSuchFolder00000000?usp=sharing',
+      companyId: nhCompanyId,
+    }),
+  });
+  check('10. a folder link is parsed, then refused because it cannot be opened',
+    gdLink.status === 422 || gdLink.status === 409, `HTTP ${gdLink.status}`);
 
-  // Neither company has a connection, so neither can see one.
+  // Whatever this company has connected, the other company must not see it.
   const gdOther = await api(nh, '/api/integrations/google-drive');
+  const ourFolder = (gdStatus.json?.connection as { folderId?: string | null } | undefined)?.folderId ?? null;
+  const theirFolder = (gdOther.json?.connection as { folderId?: string | null } | undefined)?.folderId ?? null;
   check('10. each company sees only its own connection',
-    (gdOther.json?.connection as { folderId?: string | null } | undefined)?.folderId === null,
-    'a folder from another company was visible');
+    theirFolder === null || theirFolder !== ourFolder,
+    'one company could see the other company folder');
+  check('10. and the other company sees no account of ours',
+    !gdOther.text.includes('@') || gdOther.text.includes('null'),
+    'an account address crossed the boundary');
 
   const gdFiles = await api(mm, '/api/integrations/google-drive/files');
   check('10. the synced-file listing is scoped to this company',

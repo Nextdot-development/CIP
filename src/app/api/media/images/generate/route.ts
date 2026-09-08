@@ -16,6 +16,7 @@ export const dynamic = 'force-dynamic';
 
 type Body = {
   prompt?: unknown;
+  provider?: unknown;
   referenceFileIds?: unknown;
   aspectRatio?: unknown;
   imageSize?: unknown;
@@ -39,8 +40,9 @@ export async function POST(request: Request) {
 
     try {
       const generation = await generateImage(scope, {
-        // A company id in the body is simply not read. Only these five fields are.
+        // A company id in the body is simply not read. Only these six fields are.
         prompt: body.prompt,
+        provider: body.provider,
         referenceFileIds: body.referenceFileIds,
         aspectRatio: body.aspectRatio,
         imageSize: body.imageSize,

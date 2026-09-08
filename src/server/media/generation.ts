@@ -3,6 +3,8 @@ import { withCompanyScope } from '../db';
 import type { CompanyScope } from '../db';
 import { driveStorage } from '../drive/storage';
 import { imageGenerationProvider, videoGenerationProvider } from './providers';
+import { IMAGE_PROVIDER_CHOICES } from './providers/types';
+import type { ImageProviderChoice } from './providers/types';
 import { MEDIA_LIMITS, ProviderFailed } from './providers/types';
 import type { GeneratedAsset, ProviderUsage, ReferenceImage } from './providers/types';
 import { extensionFor, mediaStorageKey, putMediaAsset } from './storage';
@@ -89,6 +91,8 @@ const SELECT_COLUMNS = `
 
 export type ImageGenerationInput = {
   prompt: unknown;
+  /** 'openai' or 'gemini'. Omitted means the configured default. */
+  provider?: unknown;
   referenceFileIds?: unknown;
   aspectRatio?: unknown;
   imageSize?: unknown;
@@ -115,8 +119,17 @@ export async function generateImage(
   scope: CompanyScope,
   input: ImageGenerationInput,
 ): Promise<MediaGenerationDTO> {
-  const provider = imageGenerationProvider();
+  const provider = imageGenerationProvider(validateProviderChoice(input.provider));
   const prompt = validatePrompt(input.prompt);
+
+  // Refuse before writing a record or calling anything: a provider with no key
+  // cannot produce an image, and saying so now is better than a failed
+  // generation the caller has to go and read.
+  if (!provider.configured && provider.name !== 'fake-image') {
+    throw new MediaProviderUnavailable(
+      `${provider.name === 'openai' ? 'OpenAI' : 'Gemini'} image generation is not configured.`,
+    );
+  }
   const aspectRatio = validateChoice(input.aspectRatio, provider.aspectRatios, 'Aspect ratio');
   const imageSize = validateChoice(input.imageSize, provider.imageSizes, 'Image size');
   const referenceIds = validateReferenceIds(input.referenceFileIds);
@@ -135,7 +148,14 @@ export async function generateImage(
     model: provider.model,
     prompt,
     status: 'processing',
-    inputMetadata: { aspectRatio, imageSize, referenceCount: references.length },
+    inputMetadata: {
+      aspectRatio,
+      imageSize,
+      referenceCount: references.length,
+      // Kept so a retry goes back to the provider that was chosen, rather than
+      // to whatever the default happens to be by then.
+      providerChoice: validateProviderChoice(input.provider),
+    },
     idempotencyKey,
   });
 
@@ -409,6 +429,15 @@ async function findByIdempotencyKey(
   return row ? toDTO(row) : null;
 }
 
+/**
+ * Writes the row.
+ *
+ * inputMetadata is handed to the driver as an object, not as a string. Passing
+ * JSON.stringify(...) instead encodes it twice: the driver JSON-encodes the
+ * string it was given, and the column ends up holding a jsonb *string* rather
+ * than an object. Everything then reads back as undefined — which is exactly
+ * what happened to aspectRatio here until a test asked for a field back.
+ */
 async function insertGeneration(
   scope: CompanyScope,
   values: {
@@ -429,7 +458,7 @@ async function insertGeneration(
       values
         (${scope.companyId}, ${scope.userId}, ${values.type}, ${values.provider},
          ${values.model}, ${values.prompt}, ${values.status},
-         ${JSON.stringify(values.inputMetadata)}::jsonb, ${values.idempotencyKey},
+         ${tx.json(values.inputMetadata as never)}, ${values.idempotencyKey},
          ${values.status === 'processing' ? new Date() : null})
       returning id
     `;
@@ -651,6 +680,21 @@ function asPublicError(error: unknown): Error {
   }
   if (error instanceof MediaRejected || error instanceof MediaNotFound) return error;
   return new MediaRejected('The generation did not finish.', 'GENERATION_FAILED');
+}
+
+/**
+ * Validates a provider name from a request.
+ *
+ * Only the two published names are accepted. An unknown one is refused rather
+ * than quietly falling back to the default, because a caller that asked for a
+ * particular provider and silently got the other has been misled.
+ */
+export function validateProviderChoice(value: unknown): ImageProviderChoice | null {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value !== 'string' || !(IMAGE_PROVIDER_CHOICES as readonly string[]).includes(value)) {
+    throw new MediaRejected(`Provider must be one of: ${IMAGE_PROVIDER_CHOICES.join(', ')}.`);
+  }
+  return value as ImageProviderChoice;
 }
 
 function isUuid(value: string): boolean {
