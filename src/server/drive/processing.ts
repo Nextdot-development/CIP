@@ -357,6 +357,20 @@ export async function getProcessingState(
   updatedAt: string;
   /** Whether this type is read as text at all. */
   extractable: boolean;
+  /**
+   * Whether the original bytes are held here. A file read without being kept
+   * is never claimed by the extractor, so its processing_status stays pending
+   * for ever and means nothing.
+   */
+  retained: boolean;
+  /** What the Brain made of it, for a file that is understood by looking. */
+  visual: {
+    kind: string;
+    status: string;
+    pages: number;
+    pagesUnderstood: number;
+    posts: number;
+  } | null;
 } | null> {
   return withCompanyScope(scope, async (tx) => {
     const rows = await tx<
@@ -366,11 +380,32 @@ export async function getProcessingState(
         processing_attempts: number;
         processing_error: string | null;
         updated_at: Date;
+        bytes_retained: boolean;
+        understanding_kind: string | null;
+        understanding_status: string | null;
+        pages: number | null;
+        pages_understood: number | null;
+        posts: number | null;
       }[]
     >`
-      select processing_status, file_type, processing_attempts, processing_error, updated_at
-        from drive_files
-       where id = ${fileId} and company_id = ${scope.companyId} and archived_at is null
+      select f.processing_status, f.file_type, f.processing_attempts, f.processing_error,
+             f.updated_at, f.bytes_retained,
+             u.kind as understanding_kind, u.status as understanding_status,
+             p.pages, p.pages_understood, p.posts
+        from drive_files f
+        left join lateral (
+          select kind, status from asset_understanding
+           where file_id = f.id and company_id = f.company_id
+           order by updated_at desc limit 1
+        ) u on true
+        left join lateral (
+          select count(*)::int as pages,
+                 count(*) filter (where status = 'ready')::int as pages_understood,
+                 coalesce(sum(posts_detected), 0)::int as posts
+            from pdf_page_understanding
+           where file_id = f.id and company_id = f.company_id
+        ) p on true
+       where f.id = ${fileId} and f.company_id = ${scope.companyId} and f.archived_at is null
     `;
 
     const row = rows[0];
@@ -383,6 +418,16 @@ export async function getProcessingState(
       error: row.processing_error,
       updatedAt: row.updated_at.toISOString(),
       extractable: EXTRACTABLE_TYPES.includes(row.file_type.toLowerCase()),
+      retained: row.bytes_retained,
+      visual: row.understanding_kind
+        ? {
+            kind: row.understanding_kind,
+            status: row.understanding_status ?? 'pending',
+            pages: row.pages ?? 0,
+            pagesUnderstood: row.pages_understood ?? 0,
+            posts: row.posts ?? 0,
+          }
+        : null,
     };
   });
 }

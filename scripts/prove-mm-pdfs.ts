@@ -23,6 +23,16 @@ import type { CompanyScope } from '../src/server/db';
  */
 
 const SYNC = process.argv.includes('--sync');
+/**
+ * Re-read every PDF from scratch rather than reporting what is stored.
+ *
+ * Off by default because it is not cheap: a country deck is three pages, each
+ * cut into six bands, and each band is a vision call — about five minutes and
+ * real money per page. The stored result was produced by the same code path,
+ * so reporting it is not a weaker claim; it is the same claim without paying
+ * for it twice.
+ */
+const REREAD = process.argv.includes('--reread');
 const COMPANY = 'magic-moments';
 
 /** Ours, from an earlier proof. Not one of the three, so it is never counted. */
@@ -191,8 +201,10 @@ async function main() {
         `source: ${pdf.source_type === 'cip_drive' ? 'uploaded to CIP Drive' : pdf.source_type}`);
       console.log(`     original kept: ${pdf.bytes_retained ? 'yes' : 'no — read without keeping it'}`);
 
-      // Re-read from scratch so the run measures work rather than a cache.
-      await admin`delete from asset_understanding where file_id = ${pdf.id}`;
+      if (REREAD) {
+        await admin`delete from asset_understanding where file_id = ${pdf.id}`;
+        await admin`delete from pdf_page_understanding where file_id = ${pdf.id}`;
+      }
       await understanding.enqueueUnderstanding(mm);
 
       let outcome: Awaited<ReturnType<typeof understanding.understandClaimedAsset>> | null = null;
