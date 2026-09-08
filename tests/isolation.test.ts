@@ -65,8 +65,8 @@ before(async () => {
 }, { timeout: 180_000 });
 
 after(async () => {
-  await appSql?.end();
-  await adminSqlConn?.end();
+  await appSql?.end({ timeout: 5 });
+  await adminSqlConn?.end({ timeout: 5 });
   await db?.stop();
 });
 

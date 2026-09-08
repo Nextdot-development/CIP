@@ -63,6 +63,70 @@ async function upload(token: string, name: string, body: string, folderId?: stri
   return { status: res.status, json };
 }
 
+
+/**
+ * Looks for forbidden fields in a response, by structure rather than substring.
+ *
+ * Substring-matching the whole body is wrong here: a document's own text can
+ * legitimately contain "company_id" or "storage_path" — the Drive in this
+ * database holds CIP's migration files, which mention both — so that test
+ * fails on innocent content while telling you nothing about an actual leak.
+ * What matters is whether a *field* carrying one of these ever reaches a
+ * caller, and whether any value looks like a storage key.
+ */
+const FORBIDDEN_KEYS = [
+  'company_id', 'companyId', 'storage_path', 'storagePath', 'embedding',
+  'access_token', 'refresh_token', 'accessToken', 'refreshToken',
+  'access_token_encrypted', 'refresh_token_encrypted', 'checksum_sha256',
+];
+
+function forbiddenFieldsIn(value: unknown, path = '$'): string[] {
+  const found: string[] = [];
+
+  if (Array.isArray(value)) {
+    value.forEach((item, i) => found.push(...forbiddenFieldsIn(item, `${path}[${i}]`)));
+    return found;
+  }
+  if (typeof value === 'string') {
+    // A storage key is the one value shape that is always a leak, wherever it
+    // appears. Document text never starts with the bucket prefix.
+    if (value.startsWith('companies/')) found.push(`${path} (storage key)`);
+    return found;
+  }
+  if (typeof value !== 'object' || value === null) return found;
+
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if (FORBIDDEN_KEYS.includes(key)) found.push(`${path}.${key}`);
+    found.push(...forbiddenFieldsIn(child, `${path}.${key}`));
+  }
+  return found;
+}
+
+/**
+ * Fires a burst all at once.
+ *
+ * Sequentially is not a burst: a slow endpoint gives the token bucket time to
+ * refill between requests, so the limiter looks broken when it is working. The
+ * real client this protects against does not wait politely either.
+ */
+async function burst(
+  token: string,
+  path: string,
+  count: number,
+  body: (i: number) => unknown,
+): Promise<{ limited: number; retryAfter: string | null }> {
+  const responses = await Promise.all(
+    Array.from({ length: count }, (_, i) =>
+      api(token, path, { method: 'POST', body: JSON.stringify(body(i)) }),
+    ),
+  );
+  const refused = responses.filter((r) => r.status === 429);
+  return {
+    limited: refused.length,
+    retryAfter: refused[0]?.headers.get('retry-after') ?? null,
+  };
+}
+
 async function main() {
   const sql = postgres(process.env.DATABASE_URL!, { onnotice: () => {} });
   // Verifying which company a row landed in needs a connection that can see
@@ -243,25 +307,18 @@ async function main() {
   check('8. a cross-company folderId is not found rather than empty',
     crossFolder.status === 404, `HTTP ${crossFolder.status}`);
 
-  check('8. no response ever carried a forbidden field',
-    !stolen.text.includes('storage_path') && !stolen.text.includes('storagePath') &&
-    !stolen.text.includes('company_id') && !stolen.text.includes('companyId') &&
-    !stolen.text.includes('embedding'),
-    'checked storage_path, storagePath, company_id, companyId, embedding');
+  const semanticLeaks = forbiddenFieldsIn(stolen.json);
+  check('8. no semantic response carried a forbidden field',
+    semanticLeaks.length === 0,
+    semanticLeaks.length === 0 ? 'checked every field and value' : semanticLeaks.join(', '));
 
   // Rate limiting is a Phase 4 requirement, so prove it actually engages
   // rather than trusting the configuration.
-  let limited = 0;
-  let lastRetryAfter: string | null = null;
-  for (let i = 0; i < 40; i += 1) {
-    const r = await api(mm, '/api/drive/search/semantic', {
-      method: 'POST',
-      body: JSON.stringify({ query: `burst ${i}` }),
-    });
-    if (r.status === 429) { limited += 1; lastRetryAfter = r.headers.get('retry-after'); }
-  }
-  check('8. rate limiting engages under a burst', limited > 0, `${limited} of 40 refused`);
-  check('8. and it says how long to wait', lastRetryAfter !== null, `retry-after: ${lastRetryAfter ?? 'absent'}`);
+  const semanticBurst = await burst(mm, '/api/drive/search/semantic', 40, (i) => ({ query: `burst ${i}` }));
+  check('8. rate limiting engages under a burst',
+    semanticBurst.limited > 0, `${semanticBurst.limited} of 40 refused`);
+  check('8. and it says how long to wait',
+    semanticBurst.retryAfter !== null, `retry-after: ${semanticBurst.retryAfter ?? 'absent'}`);
 
   // --- 9. media generation ----------------------------------------------
   // The fake providers stand in unless keys are configured, so these run
@@ -327,24 +384,19 @@ async function main() {
     forgedMedia.status === 201 && landedWith[0]?.company_id !== nhCompanyId,
     `landed in ${landedWith[0]?.company_id === nhCompanyId ? 'the WRONG company' : 'the caller own company'}`);
 
+  const mediaLeaks = forbiddenFieldsIn(mmList.json);
   check('9. no media response carried a forbidden field',
-    !mmList.text.includes('storage_path') && !mmList.text.includes('storagePath') &&
-    !mmList.text.includes('company_id') && !mmList.text.includes('companyId') &&
-    !mmList.text.includes('companies/'),
-    'checked storage_path, storagePath, company_id, companyId, companies/');
+    mediaLeaks.length === 0,
+    mediaLeaks.length === 0 ? 'checked every field and value' : mediaLeaks.join(', '));
 
   // Rate limiting is mandatory on the paid endpoints, so prove it engages.
-  let mediaLimited = 0;
-  let mediaRetryAfter: string | null = null;
-  for (let i = 0; i < 30; i += 1) {
-    const r = await api(mm, '/api/media/images/generate', {
-      method: 'POST',
-      body: JSON.stringify({ prompt: `burst-media-${stamp}-${i}` }),
-    });
-    if (r.status === 429) { mediaLimited += 1; mediaRetryAfter = r.headers.get('retry-after'); }
-  }
-  check('9. image generation is rate limited', mediaLimited > 0, `${mediaLimited} of 30 refused`);
-  check('9. and it says how long to wait', mediaRetryAfter !== null, `retry-after: ${mediaRetryAfter ?? 'absent'}`);
+  const mediaBurst = await burst(mm, '/api/media/images/generate', 30, (i) => ({
+    prompt: `burst-media-${stamp}-${i}`,
+  }));
+  check('9. image generation is rate limited',
+    mediaBurst.limited > 0, `${mediaBurst.limited} of 30 refused`);
+  check('9. and it says how long to wait',
+    mediaBurst.retryAfter !== null, `retry-after: ${mediaBurst.retryAfter ?? 'absent'}`);
 
   // --- 10. connected Google Drive ---------------------------------------
   // No OAuth client is needed for these: what is being proved is the boundary
@@ -368,12 +420,10 @@ async function main() {
     (gdStatus.json?.connection as { status?: string } | undefined)?.status === 'disconnected',
     String((gdStatus.json?.connection as { status?: string } | undefined)?.status));
 
+  const connectionLeaks = forbiddenFieldsIn(gdStatus.json);
   check('10. the connection carries no token, company id or storage path',
-    !gdStatus.text.includes('access_token') && !gdStatus.text.includes('refresh_token') &&
-    !gdStatus.text.includes('accessToken') && !gdStatus.text.includes('refreshToken') &&
-    !gdStatus.text.includes('company_id') && !gdStatus.text.includes('companyId') &&
-    !gdStatus.text.includes('storage_path') && !gdStatus.text.includes(nhCompanyId),
-    'checked access_token, refresh_token, company_id, storage_path');
+    connectionLeaks.length === 0 && !gdStatus.text.includes(nhCompanyId),
+    connectionLeaks.length === 0 ? 'checked every field and value' : connectionLeaks.join(', '));
 
   // A company id in the body must be ignored, and a nonsense folder refused.
   const gdFolder = await api(mm, '/api/integrations/google-drive/folder', {

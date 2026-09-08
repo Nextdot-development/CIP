@@ -118,6 +118,32 @@ async function detectVector(url: string, required: boolean): Promise<boolean> {
   }
 }
 
+
+/**
+ * Closes the pool that src/server/db.ts opens on import.
+ *
+ * Test files open their own connections and close them, but importing any
+ * service module also creates the application's module-level pool, and nothing
+ * was closing that. Its idle connections keep the event loop alive, so the
+ * process finishes every test and then simply never exits — which reads as a
+ * hung suite even though nothing failed.
+ *
+ * Only closes a pool that was actually created: a suite that imported no
+ * service module has none, and importing db.ts here just to close it would
+ * create the very thing being cleaned up.
+ */
+async function closeApplicationPool(): Promise<void> {
+  const pool = (globalThis as { __cipSql?: { end: (o?: { timeout?: number }) => Promise<void> } }).__cipSql;
+  if (!pool) return;
+  try {
+    // A connection stuck mid-query must not be able to block teardown for ever.
+    await pool.end({ timeout: 5 });
+  } catch {
+    /* already closed, or refused to close; the process is going away anyway */
+  }
+  (globalThis as { __cipSql?: unknown }).__cipSql = undefined;
+}
+
 const APP_PASSWORD = 'test-app-password';
 
 export async function startTestDatabase(): Promise<TestDb> {
@@ -170,6 +196,7 @@ export async function startTestDatabase(): Promise<TestDb> {
     hasVector,
     skipMigrations: hasVector ? [] : MIGRATIONS_NEEDING_VECTOR,
     stop: async () => {
+      await closeApplicationPool();
       await pg.stop();
       try {
         rmSync(dir, { recursive: true, force: true });

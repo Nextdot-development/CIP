@@ -78,7 +78,7 @@ before(async () => {
 }, { timeout: 180_000 });
 
 after(async () => {
-  await sql?.end();
+  await sql?.end({ timeout: 5 });
   await db?.stop();
 });
 

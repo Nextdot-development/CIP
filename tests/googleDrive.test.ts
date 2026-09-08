@@ -125,8 +125,8 @@ beforeEach(async () => {
 });
 
 after(async () => {
-  await appSql?.end();
-  await adminSql?.end();
+  await appSql?.end({ timeout: 5 });
+  await adminSql?.end({ timeout: 5 });
   await db?.stop();
   try {
     rmSync(storageDir, { recursive: true, force: true });
