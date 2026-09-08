@@ -52,30 +52,86 @@ const KINDS: { id: FileKind; label: string }[] = [
 ];
 
 /**
- * What the Knowledge Layer has made of a file.
+ * What CIP has made of a file.
+ *
+ * Every file gets read. What differs is how: a document by its words, an image
+ * or a video by looking at it, a PDF of screenshots by looking at every page.
+ *
+ * This used to report only the text-extraction status, which meant an image
+ * said "Not read yet" for ever — it is never extracted as text, so that status
+ * never moves — and a 53 MB PDF with 126 posts pulled out of it said "Waiting
+ * to be read". Both had been read. Understanding is what the label follows
+ * now, and extraction only fills in while the Brain has not reached the file.
  *
  * A failed read is amber, not red: it needs attention, but it does not stop
- * anything shipping. Types we do not read yet say so, rather than sitting in
- * a queue that will never move.
+ * anything shipping.
  */
 function ProcessingChip({ file }: { file: DriveFileDTO }) {
-  if (!isExtractable(file.fileType)) {
-    return <span className="proc proc-none" title="We do not read this file type yet">Not read yet</span>;
+  const understanding = file.understanding;
+
+  if (understanding) {
+    switch (understanding.status) {
+      case 'ready':
+        return (
+          <span className="proc proc-ready" title={readTitle(understanding.kind)}>
+            {readLabel(understanding.kind)}
+          </span>
+        );
+      case 'processing':
+        return (
+          <span className="proc proc-reading">
+            <span className="spin" aria-hidden="true" /> Reading
+          </span>
+        );
+      case 'failed':
+        return <span className="proc proc-failed">Could not read</span>;
+      case 'unsupported':
+        return (
+          <span className="proc proc-none" title="CIP looked at this one and could not use it">
+            Nothing to learn
+          </span>
+        );
+      default:
+        return <span className="proc proc-waiting">Waiting to be read</span>;
+    }
   }
-  switch (file.processingStatus) {
-    case 'processed':
-      return <span className="proc proc-ready">Text ready</span>;
-    case 'processing':
-      return (
-        <span className="proc proc-reading">
-          <span className="spin" aria-hidden="true" /> Reading
-        </span>
-      );
-    case 'failed':
-      return <span className="proc proc-failed">Could not read</span>;
-    default:
-      return <span className="proc proc-waiting">Waiting to be read</span>;
+
+  // Not queued for the Brain yet. For a text type, extraction is the step in
+  // front of it and is worth showing; for anything else, the queue simply has
+  // not reached it.
+  if (isExtractable(file.fileType)) {
+    switch (file.processingStatus) {
+      case 'processed':
+        return <span className="proc proc-ready">Text ready</span>;
+      case 'processing':
+        return (
+          <span className="proc proc-reading">
+            <span className="spin" aria-hidden="true" /> Reading
+          </span>
+        );
+      case 'failed':
+        return <span className="proc proc-failed">Could not read</span>;
+      default:
+        return <span className="proc proc-waiting">Waiting to be read</span>;
+    }
   }
+
+  return <span className="proc proc-waiting">Waiting to be read</span>;
+}
+
+/** What "read" meant for this kind of file, in the words a person would use. */
+function readLabel(kind: string): string {
+  if (kind === 'image') return 'Looked at';
+  if (kind === 'video') return 'Watched';
+  if (kind === 'pdf_visual') return 'Pages read';
+  return 'Read';
+}
+
+function readTitle(kind: string): string {
+  if (kind === 'image') return 'CIP has looked at this image and knows what is in it';
+  if (kind === 'video') return 'CIP has watched this video and listened to its audio';
+  if (kind === 'pdf_visual') return 'This PDF had no text layer, so CIP read every page by looking at it';
+  return 'CIP has read this and learned from it';
 }
 
 type Upload = { id: string; name: string; status: 'uploading' | 'failed'; message?: string };

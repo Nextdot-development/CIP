@@ -2,6 +2,9 @@ import type { FileKind } from '@/lib/fileTypes';
 
 /** What the Drive endpoints send the browser. No storage keys ever leave the server. */
 
+/** What the Brain made of a file. */
+export type UnderstandingStatus = 'pending' | 'processing' | 'ready' | 'failed' | 'unsupported';
+
 export type ProcessingStatus = 'pending' | 'processing' | 'processed' | 'failed';
 
 /**
@@ -36,6 +39,14 @@ export type DriveFileDTO = {
   uploadedBy: { id: string; name: string } | null;
   /** Reserved for the Brand Brain. Always 'pending' in Phase 2. */
   processingStatus: ProcessingStatus;
+  /**
+   * How far the Brain got with this file, if it has looked at it.
+   *
+   * Separate from processingStatus, which is only about pulling text out. An
+   * image or a video is never extracted as text and so sits at `pending` for
+   * ever; whether CIP understands it is this.
+   */
+  understanding: { status: UnderstandingStatus; kind: string } | null;
   sourceType: DriveSourceType;
 };
 

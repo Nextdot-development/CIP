@@ -4,53 +4,73 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { useWorkspace } from '@/context/workspace';
 import { useNavigate } from '@/lib/navigate';
-import { Card, EmptyState } from '../components/ui/Bits';
+import type { AskMode } from '@/context/NavContext';
+import { PromptSuggestions, RequestComposer } from '../components/RequestComposer';
+import { Card, EmptyState, LogoMark } from '../components/ui/Bits';
 import { Icon } from '../components/ui/Icon';
 import type { IconName } from '../components/ui/Icon';
 import type { KnowledgeOverview } from '@/server/brain/overview';
 
 /**
- * Home — how much CIP knows about you, and the two things you can do about it.
+ * Home — ask for something, and see how much CIP has to answer with.
  *
- * Every figure is counted from the database when the page loads. The version
- * before this showed a seeded "62% understood" with a progress bar and a list
- * of things it would unlock, none of which moved when you uploaded a file:
- * a number that never changes is worse than no number, because people plan
- * around it.
+ * The composer and the company's own art sit across the top, because the first
+ * thing a person wants is to say what they need, and the page should look like
+ * theirs while they do it. What follows is how much CIP actually knows.
+ *
+ * Those figures used to be a seeded "62% understood" with a bar towards a
+ * threshold that unlocked features, and none of it moved when a file was
+ * uploaded. Everything here is counted from the database when the page loads.
  */
 export function HomeDashboard({ overview }: { overview: KnowledgeOverview }) {
   const workspace = useWorkspace();
-  const { ask: goAsk } = useNavigate();
+  const { ask } = useNavigate();
   const [draft, setDraft] = useState('');
 
   const { files, learned, sources } = overview;
 
-  const ask = () => {
-    const text = draft.trim();
-    if (text) goAsk({ text, mode: 'instant' });
+  const send = (mode: AskMode) => {
+    if (draft.trim()) ask({ text: draft.trim(), mode });
   };
 
   return (
     <div className="rise">
-      <header className="page-head">
-        <p className="eyebrow">{greeting()}, {workspace.user.firstName}</p>
-        <h1>
-          {overview.empty
-            ? `CIP does not know ${workspace.name} yet`
-            : `CIP has read ${files.understood} of ${workspace.name}'s ${files.total} files`}
-        </h1>
-        <p className="lede">
-          {overview.empty
-            ? 'Teach it something and everything else here starts working.'
-            : `${learned.facts} things learned about your brand, each traceable to the file it came from.`}
-        </p>
-      </header>
+      <div className="home-top">
+        <div className="greeting">
+          <h1>
+            {greeting()}, {workspace.user.firstName}
+            <span className="wave">👋</span>
+          </h1>
+          <p className="ask-line">What would you like to create today?</p>
+          <p className="ask-sub">
+            {overview.empty
+              ? 'Teach CIP about your brand first, and everything it makes will sound like you.'
+              : `Tell us in your own words. CIP writes the brief from the ${learned.facts} things ` +
+                `it has learned about ${workspace.name}.`}
+          </p>
+
+          <RequestComposer
+            value={draft}
+            onChange={setDraft}
+            onSubmit={send}
+            placeholder={workspace.composerPlaceholder}
+          />
+
+          <PromptSuggestions
+            lead="Try asking:"
+            items={workspace.promptSuggestions}
+            onPick={(s) => ask({ text: s, mode: 'instant' })}
+          />
+        </div>
+
+        <HeroPanel />
+      </div>
 
       {overview.empty ? (
         <EmptyState
           icon="teach"
-          title="Nothing taught yet"
-          copy="Connect a Google Drive folder and CIP keeps itself up to date, or upload files yourself. Either way it reads them and learns what your brand looks and sounds like."
+          title="CIP does not know your brand yet"
+          copy="Connect a Google Drive folder and it keeps itself up to date, or upload files yourself. Either way it reads them and learns what your brand looks and sounds like."
           action={
             <Link className="btn btn-primary btn-sm" href="/teach">
               Start teaching <Icon name="arrow-right" size={14} />
@@ -59,14 +79,28 @@ export function HomeDashboard({ overview }: { overview: KnowledgeOverview }) {
         />
       ) : (
         <>
-          {/* What is in there. Counted, not estimated. */}
+          <div className="sec-head">
+            <div>
+              <h2>What CIP knows</h2>
+              <p className="hint">Counted now, from what it has actually read.</p>
+            </div>
+            <Link className="btn btn-ghost btn-sm" href="/trust">
+              See all of it <Icon name="arrow-right" size={14} />
+            </Link>
+          </div>
+
           <div className="metrics">
             <Stat icon="book" label="Files read" value={files.understood} of={files.total} />
-            <Stat icon="sparkle" label="Things learned" value={learned.facts} note={
-              learned.derived > 0 ? `${learned.derived} confirmed by more than one file` : undefined
-            } />
+            <Stat
+              icon="sparkle"
+              label="Things learned"
+              value={learned.facts}
+              note={learned.derived > 0 ? `${learned.derived} confirmed by more than one file` : undefined}
+            />
             {learned.posts > 0 && <Stat icon="image" label="Posts found" value={learned.posts} />}
-            {learned.lessons > 0 && <Stat icon="check" label="Lessons from feedback" value={learned.lessons} />}
+            {learned.lessons > 0 && (
+              <Stat icon="check" label="Lessons from feedback" value={learned.lessons} />
+            )}
           </div>
 
           {(files.waiting > 0 || files.failed > 0) && (
@@ -90,11 +124,11 @@ export function HomeDashboard({ overview }: { overview: KnowledgeOverview }) {
 
           <div className="sec-head">
             <div>
-              <h2>What CIP has to work with</h2>
+              <h2>What it has to work with</h2>
               <p className="hint">Everything here came from your Drive or your uploads.</p>
             </div>
-            <Link className="btn btn-ghost btn-sm" href="/trust">
-              See all of it <Icon name="arrow-right" size={14} />
+            <Link className="btn btn-ghost btn-sm" href="/teach">
+              Add more <Icon name="arrow-right" size={14} />
             </Link>
           </div>
 
@@ -102,55 +136,56 @@ export function HomeDashboard({ overview }: { overview: KnowledgeOverview }) {
             {files.byKind.map((k) => (
               <article className="card kind-card" key={k.kind}>
                 <span className="kc-icon"><Icon name={iconFor(k.kind)} size={19} /></span>
-                <div className="stack grow">
+                <span className="stack grow">
                   <span className="kc-title">{k.kind}</span>
-                  <span className="kc-sub">
-                    {k.understood} of {k.count} read
-                  </span>
-                </div>
+                  <span className="kc-sub">{k.understood} of {k.count} read</span>
+                </span>
               </article>
             ))}
           </div>
+
+          {sources.driveConnected && (
+            <p className="tiny muted" style={{ marginTop: 18 }}>
+              <Icon name="link" size={13} /> Syncing “{sources.driveFolder ?? 'a folder'}” from Google
+              Drive{sources.lastSyncAt ? ` · last checked ${relative(sources.lastSyncAt)}` : ''}.
+            </p>
+          )}
         </>
       )}
-
-      {/* The way in. Whatever is typed here is carried into Ask. */}
-      <div className="sec-head">
-        <div>
-          <h2>Make something</h2>
-          <p className="hint">
-            {overview.empty
-              ? 'This works better once CIP has read a few of your files.'
-              : 'Describe it. CIP writes the brief from what it knows about you, then makes it.'}
-          </p>
-        </div>
-      </div>
-
-      <Card className="pad">
-        <textarea
-          className="field-input"
-          rows={3}
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          placeholder={workspace.composerPlaceholder}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) ask();
-          }}
-        />
-        <div className="row" style={{ justifyContent: 'flex-end', marginTop: 12 }}>
-          <button type="button" className="btn btn-primary" onClick={ask} disabled={!draft.trim()}>
-            Ask CIP <Icon name="arrow-right" size={14} />
-          </button>
-        </div>
-      </Card>
-
-      {sources.driveConnected && (
-        <p className="tiny muted" style={{ marginTop: 18 }}>
-          <Icon name="link" size={13} /> Syncing “{sources.driveFolder ?? 'a folder'}” from Google Drive
-          {sources.lastSyncAt ? ` · last checked ${relative(sources.lastSyncAt)}` : ''}.
-        </p>
-      )}
     </div>
+  );
+}
+
+/** Company-owned art. Changes completely with the workspace. */
+function HeroPanel() {
+  const workspace = useWorkspace();
+
+  return (
+    <aside className="hero">
+      <div className="hero-logo">
+        <LogoMark
+          name={workspace.name}
+          logoUrl={workspace.logoUrl}
+          bg="rgba(255,255,255,.14)"
+          fg="currentColor"
+          size="md"
+        />
+        <span className="hero-name">{workspace.name}</span>
+      </div>
+      <h2>{workspace.hero.title}</h2>
+      <p className="hero-sub">{workspace.hero.subtitle}</p>
+      {workspace.logoUrl && (
+        <span className="hero-watermark" aria-hidden>
+          <LogoMark
+            name={workspace.name}
+            logoUrl={workspace.logoUrl}
+            bg="transparent"
+            fg="currentColor"
+            size="lg"
+          />
+        </span>
+      )}
+    </aside>
   );
 }
 
@@ -185,7 +220,7 @@ function iconFor(kind: string): IconName {
 function greeting(): string {
   const hour = new Date().getHours();
   if (hour < 12) return 'Good morning';
-  if (hour < 18) return 'Good afternoon';
+  if (hour < 17) return 'Good afternoon';
   return 'Good evening';
 }
 
