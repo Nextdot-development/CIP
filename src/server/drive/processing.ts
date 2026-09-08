@@ -88,6 +88,10 @@ export async function claimNextFile(): Promise<ClaimedFile | null> {
          where archived_at is null
            and processing_status = 'pending'
            and file_type = any(${EXTRACTABLE_TYPES})
+           -- A file we read without keeping has no bytes here to read again.
+           -- What it holds is learned by the Brain, which fetches it from its
+           -- source once; claiming it here would only fail on a missing object.
+           and bytes_retained
            and (next_attempt_at is null or next_attempt_at <= now())
          order by created_at
          for update skip locked
@@ -327,6 +331,58 @@ export async function getExtraction(
       chunkCount: counted[0]?.n ?? 0,
       chunkerVersion: counted[0]?.chunker_version ?? null,
       createdAt: row.created_at.toISOString(),
+    };
+  });
+}
+
+/**
+ * Where a file has got to, when there is no extraction to show.
+ *
+ * The extraction endpoint needs to tell four situations apart that all used to
+ * look the same from outside: a file nothing will ever read, one waiting its
+ * turn, one being read right now, and one that failed. Only the row knows, so
+ * this asks it.
+ *
+ * Returns null when the file does not exist for this company — the same answer
+ * as one that never existed anywhere, so ids stay unprobeable.
+ */
+export async function getProcessingState(
+  scope: CompanyScope,
+  fileId: string,
+): Promise<{
+  status: 'pending' | 'processing' | 'processed' | 'failed';
+  fileType: string;
+  attempts: number;
+  error: string | null;
+  updatedAt: string;
+  /** Whether this type is read as text at all. */
+  extractable: boolean;
+} | null> {
+  return withCompanyScope(scope, async (tx) => {
+    const rows = await tx<
+      {
+        processing_status: 'pending' | 'processing' | 'processed' | 'failed';
+        file_type: string;
+        processing_attempts: number;
+        processing_error: string | null;
+        updated_at: Date;
+      }[]
+    >`
+      select processing_status, file_type, processing_attempts, processing_error, updated_at
+        from drive_files
+       where id = ${fileId} and company_id = ${scope.companyId} and archived_at is null
+    `;
+
+    const row = rows[0];
+    if (!row) return null;
+
+    return {
+      status: row.processing_status,
+      fileType: row.file_type,
+      attempts: row.processing_attempts,
+      error: row.processing_error,
+      updatedAt: row.updated_at.toISOString(),
+      extractable: EXTRACTABLE_TYPES.includes(row.file_type.toLowerCase()),
     };
   });
 }

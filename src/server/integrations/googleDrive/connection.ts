@@ -411,16 +411,67 @@ export async function requireConnected(scope: CompanyScope): Promise<ActiveConne
 }
 
 /** One synced file as the UI sees it. No storage path, no company id. */
+/**
+ * One word for where a file has actually got to.
+ *
+ * Extraction and understanding are two queues, and a file is only ready when
+ * both are done with it. Reporting the first as "ready" is what let a PDF that
+ * nothing had opened appear as though it were in the Knowledge Layer.
+ */
+function progressOf(
+  processing: string,
+  understanding: string | null,
+  retained: boolean,
+): 'queued' | 'processing' | 'ready' | 'failed' {
+  if (processing === 'failed') return 'failed';
+  if (understanding === 'failed') return 'failed';
+
+  // A file read without being kept is never extracted — there are no bytes
+  // here to extract from — so its processing_status stays pending for ever.
+  // Reading that as "queued" would leave a finished file looking stuck.
+  if (retained) {
+    if (processing === 'processing') return 'processing';
+    if (processing === 'pending') return 'queued';
+  }
+
+  // Extracted. Whether it is finished depends on whether the Brain has been
+  // over it — and `unsupported` counts as finished: nothing more will happen.
+  if (understanding === 'ready' || understanding === 'unsupported') return 'ready';
+  if (understanding === null) return 'queued';
+  return 'processing';
+}
+
 export type SyncedFileDTO = {
   id: string;
   name: string;
+  /**
+   * What the sync did with it: synced, unsupported, too_large, failed, trashed.
+   *
+   * This is only half the story. A file can be `synced` and still be sitting
+   * in a queue nothing has read yet, which is exactly what made the UI say
+   * "In your Knowledge Layer" about a PDF nothing had opened. `progress`
+   * below is the other half.
+   */
   state: string;
   reason: string | null;
   /** The CIP file it became, so the UI can link to it. Null if not ingested. */
   fileId: string | null;
   externalMime: string;
+  sizeBytes: number | null;
+  /** For `too_large`: the ceiling that rejected it, next to sizeBytes. */
+  limitBytes: number | null;
   syncedAt: string | null;
   lastSeenAt: string | null;
+  /** How far the pipeline has got with it. Null until it is a CIP file. */
+  progress: {
+    status: 'queued' | 'processing' | 'ready' | 'failed';
+    /** Whether the original bytes were kept, or only what was learned. */
+    retained: boolean;
+    error: string | null;
+    pages: number | null;
+    pagesUnderstood: number | null;
+    posts: number | null;
+  } | null;
 };
 
 /**
@@ -449,13 +500,40 @@ export async function listSyncedFiles(
         reason: string | null;
         file_id: string | null;
         external_mime: string;
+        external_size: string | null;
+        limit_bytes: string | null;
         synced_at: Date | null;
         last_seen_at: Date | null;
+        processing_status: string | null;
+        processing_error: string | null;
+        bytes_retained: boolean | null;
+        understanding_status: string | null;
+        pages: number | null;
+        understood: number | null;
+        posts: number | null;
       }[]
     >`
-      select id, name, state, reason, file_id, external_mime, synced_at, last_seen_at
-        from google_drive_files
-       order by updated_at desc
+      select g.id, g.name, g.state, g.reason, g.file_id, g.external_mime,
+             g.external_size, g.limit_bytes, g.synced_at, g.last_seen_at,
+             f.processing_status, f.processing_error, f.bytes_retained,
+             u.status as understanding_status,
+             p.pages, p.understood, p.posts
+        from google_drive_files g
+        left join drive_files f
+          on f.id = g.file_id and f.company_id = g.company_id and f.archived_at is null
+        left join lateral (
+          select status from asset_understanding
+           where file_id = g.file_id and company_id = g.company_id
+           order by updated_at desc limit 1
+        ) u on true
+        left join lateral (
+          select count(*)::int as pages,
+                 count(*) filter (where status = 'ready')::int as understood,
+                 coalesce(sum(posts_detected), 0)::int as posts
+            from pdf_page_understanding
+           where file_id = g.file_id and company_id = g.company_id
+        ) p on true
+       order by g.updated_at desc
        limit ${limit}
     `,
   );
@@ -467,7 +545,23 @@ export async function listSyncedFiles(
     reason: row.reason,
     fileId: row.file_id,
     externalMime: row.external_mime,
+    sizeBytes: row.external_size === null ? null : Number(row.external_size),
+    limitBytes: row.limit_bytes === null ? null : Number(row.limit_bytes),
     syncedAt: row.synced_at?.toISOString() ?? null,
     lastSeenAt: row.last_seen_at?.toISOString() ?? null,
+    progress: row.file_id === null || row.processing_status === null
+      ? null
+      : {
+          status: progressOf(
+            row.processing_status,
+            row.understanding_status,
+            row.bytes_retained ?? true,
+          ),
+          retained: row.bytes_retained ?? true,
+          error: row.processing_error,
+          pages: row.pages && row.pages > 0 ? row.pages : null,
+          pagesUnderstood: row.pages && row.pages > 0 ? row.understood : null,
+          posts: row.pages && row.pages > 0 ? row.posts : null,
+        },
   }));
 }

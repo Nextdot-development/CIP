@@ -1,4 +1,5 @@
 import 'server-only';
+import { ObjectTooLarge } from './storage';
 import type { DriveStorage } from './storage';
 import { assertSafeKey } from './storage';
 
@@ -18,6 +19,20 @@ import { assertSafeKey } from './storage';
  */
 export class SupabaseStorage implements DriveStorage {
   readonly name = 'supabase-storage';
+
+  /**
+   * What this project will accept in one object.
+   *
+   * A bucket's own file_size_limit cannot exceed the project-wide upload cap,
+   * which on the free plan is 50 MB and cannot be raised from the API —
+   * verified against this project: a request to set 55 MB is refused with
+   * EntityTooLarge, as is every larger value. So the default here is that cap,
+   * and CIP_STORAGE_MAX_OBJECT_BYTES raises it once the plan allows.
+   */
+  get maxObjectBytes(): number {
+    const configured = Number(process.env.CIP_STORAGE_MAX_OBJECT_BYTES);
+    return Number.isFinite(configured) && configured > 0 ? configured : 50 * 1024 * 1024;
+  }
 
   private readonly base: string;
   private readonly bucket: string;
@@ -52,7 +67,14 @@ export class SupabaseStorage implements DriveStorage {
       body: new Uint8Array(body),
     });
     if (!res.ok) {
-      throw new Error(`Storage upload failed (${res.status}): ${await safeText(res)}`);
+      const detail = await safeText(res);
+      // Supabase answers 400 with a 413 in the body for an oversize object.
+      // Reported as what it is, so a caller can tell "too big for this plan"
+      // from "the write failed".
+      if (res.status === 413 || /EntityTooLarge|exceeded the maximum allowed size/i.test(detail)) {
+        throw new ObjectTooLarge(body.byteLength, this.maxObjectBytes, 'Supabase');
+      }
+      throw new Error(`Storage upload failed (${res.status}): ${detail}`);
     }
   }
 

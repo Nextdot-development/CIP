@@ -4,7 +4,7 @@ import type { CompanyScope } from '../db';
 import { driveStorage, pdfPageKeyFor } from '../drive/storage';
 import { embedder, toVectorLiteral } from '../drive/embedding';
 import { profilePdf, renderPdfPages, RENDER_LIMITS } from '../drive/extraction/pdfRender';
-import type { PdfProfile } from '../drive/extraction/pdfRender';
+import type { PdfProfile, RenderedBand } from '../drive/extraction/pdfRender';
 import { brain } from './providers';
 import { BrainFailed, BRAIN_LIMITS } from './providers/types';
 import type { AssetAnalysis, PdfPageAnalysis, PdfPost } from './providers/types';
@@ -127,26 +127,32 @@ export async function understandPdfVisually(
       pageNumber: page.pageNumber,
       width: page.width,
       height: page.height,
-      bytes: page.bytes.length,
+      bytes: page.bands.reduce((total, band) => total + band.bytes.length, 0),
       hasTextLayer: (profiled?.textLength ?? 0) >= RENDER_LIMITS.minTextChars,
       pageText,
     });
 
     // The rendered page is kept, because the inspection view has to be able to
-    // show what the model was looking at when it made a claim. Same private
-    // bucket, same company prefix as every other asset.
+    // show what the model was looking at when it made a claim. The first band
+    // is the whole page for anything of ordinary proportions; for a strip it is
+    // the top of it, which is enough to recognise the page by.
+    const first = page.bands[0];
+    if (!first) continue;
+
     const imagePath = pdfPageKeyFor(scope.companyId, input.fileId, pageId);
-    await driveStorage().put(imagePath, page.bytes, 'image/jpeg');
+    await driveStorage().put(imagePath, first.bytes, 'image/jpeg');
 
     await withCompanyScope(scope, async (tx) => {
       await tx`update pdf_page_understanding set image_path = ${imagePath} where id = ${pageId}`;
     });
 
     try {
-      const analysis = await provider.analyzePdfPage({
-        bytes: page.bytes,
-        mimeType: page.mimeType,
-        pageNumber: page.pageNumber,
+      // A tall page is looked at in strips, because a 1:8 image resolves almost
+      // nothing across its narrow axis. Each strip is a separate question about
+      // the same page, and the answers are combined below — the page number
+      // stays the provenance, which is what a reader can actually check.
+      const analysis = await analyseBands(provider, {
+        page,
         pageCount: profile.pageCount,
         pageText,
         filename: input.filename,
@@ -243,6 +249,108 @@ export async function understandPdfVisually(
     postsDetected,
     hasTextLayer: profile.hasTextLayer,
   };
+}
+
+/**
+ * Looks at every strip of one page and combines what came back.
+ *
+ * Bands overlap on purpose, so a post cut in half by one boundary appears
+ * whole on the next — which means the same post can be reported twice. They
+ * are matched on what the model read off them rather than on position: two
+ * descriptions of the same tile agree on its caption and its text long before
+ * they agree on where it sits.
+ *
+ * Post indices are renumbered across the whole page, so `page 2, post 7` means
+ * the seventh post on page 2 regardless of which strip found it.
+ */
+async function analyseBands(
+  provider: ReturnType<typeof brain>,
+  input: {
+    page: { pageNumber: number; bands: readonly RenderedBand[] };
+    pageCount: number;
+    pageText: string | null;
+    filename: string;
+  },
+): Promise<PdfPageAnalysis> {
+  const results: PdfPageAnalysis[] = [];
+
+  for (const band of input.page.bands) {
+    results.push(
+      await provider.analyzePdfPage({
+        bytes: band.bytes,
+        mimeType: band.mimeType,
+        pageNumber: input.page.pageNumber,
+        pageCount: input.pageCount,
+        // The text belongs to the whole page, so every strip gets it. It is a
+        // hint for reading a picture, not a claim about this strip.
+        pageText: input.pageText,
+        filename: input.filename,
+      }),
+    );
+  }
+
+  const first = results[0];
+  if (!first) {
+    throw new BrainFailed('UNSUPPORTED_ASSET', 'permanent', 'This page produced no bands to look at.');
+  }
+  if (results.length === 1) return first;
+
+  const posts: PdfPost[] = [];
+  const seen = new Set<string>();
+
+  for (const result of results) {
+    for (const post of result.posts) {
+      const key = identityOf(post);
+      // A post with nothing readable on it cannot be matched to its twin, so
+      // it is kept: losing a real tile is worse than keeping a duplicate.
+      if (key !== null) {
+        if (seen.has(key)) continue;
+        seen.add(key);
+      }
+      posts.push({ ...post, postIndex: posts.length });
+    }
+  }
+
+  return {
+    summary: results.map((r) => r.summary).filter(Boolean).join(' '),
+    extractedText: results.map((r) => r.extractedText).filter(Boolean).join('\n') || null,
+    structured: {
+      ...first.structured,
+      bandsAnalysed: results.length,
+      postCount: posts.length,
+    },
+    facts: dedupeFacts(results.flatMap((r) => r.facts)),
+    posts: posts.slice(0, BRAIN_LIMITS.maxPostsPerPage * results.length),
+    usage: {
+      inputTokens: sum(results.map((r) => r.usage.inputTokens)),
+      outputTokens: sum(results.map((r) => r.usage.outputTokens)),
+      durationMs: sum(results.map((r) => r.usage.durationMs)),
+    },
+  };
+}
+
+/** What makes two sightings of a post the same post, or null if nothing does. */
+function identityOf(post: PdfPost): string | null {
+  const parts = [post.caption, post.headline, post.visibleText]
+    .map((value) => value?.trim().toLowerCase())
+    .filter((value): value is string => Boolean(value && value.length > 8));
+
+  return parts.length > 0 ? parts.join('|').slice(0, 300) : null;
+}
+
+function dedupeFacts(facts: PdfPageAnalysis['facts']): PdfPageAnalysis['facts'] {
+  const seen = new Set<string>();
+  return facts.filter((fact) => {
+    const key = `${fact.section}|${fact.attribute}|${fact.value}`.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function sum(values: (number | null | undefined)[]): number | null {
+  const present = values.filter((value): value is number => typeof value === 'number');
+  return present.length > 0 ? present.reduce((a, b) => a + b, 0) : null;
 }
 
 /**

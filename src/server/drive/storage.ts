@@ -1,4 +1,5 @@
 import 'server-only';
+import { MAX_FILE_BYTES } from '@/lib/fileTypes';
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve, sep } from 'node:path';
@@ -20,6 +21,38 @@ export interface DriveStorage {
   get(key: string): Promise<Buffer>;
   remove(key: string): Promise<void>;
   readonly name: string;
+  /**
+   * The largest single object this backend will accept.
+   *
+   * Asked before a file is fetched rather than discovered by having one
+   * rejected. Two real 52.84 MB decks were downloaded in full — 106 MB over
+   * the wire, every sync — only for Supabase to refuse the object at 50 MB and
+   * the sync to record "Storage upload failed (400)". The limit belongs to the
+   * backend, so the backend is what states it.
+   */
+  readonly maxObjectBytes: number;
+}
+
+/**
+ * An object the store would not accept because of its size.
+ *
+ * Distinct from a failed write: nothing went wrong, the file is simply larger
+ * than this backend allows. Both numbers travel with it so a caller can say
+ * which limit was hit and by how much, rather than paraphrasing.
+ */
+export class ObjectTooLarge extends Error {
+  readonly measuredBytes: number;
+  readonly limitBytes: number;
+
+  constructor(measuredBytes: number, limitBytes: number, backend: string) {
+    super(
+      `That file is ${(measuredBytes / 1024 / 1024).toFixed(2)} MB, over the ` +
+        `${(limitBytes / 1024 / 1024).toFixed(0)} MB limit of the ${backend} object store.`,
+    );
+    this.name = 'ObjectTooLarge';
+    this.measuredBytes = measuredBytes;
+    this.limitBytes = limitBytes;
+  }
 }
 
 /**
@@ -74,6 +107,18 @@ export function sha256(body: Buffer): string {
  */
 class LocalDiskStorage implements DriveStorage {
   readonly name = 'local-disk';
+  /**
+   * A disk has no object limit of its own, so the app's own ceiling stands —
+   * unless one is configured. The override is honoured here as well as in the
+   * hosted backend so the limit can be exercised without a 50 MB fixture, and
+   * so a deployment on disk can still be given a bound.
+   */
+  get maxObjectBytes(): number {
+    // Read each time rather than captured: the store is built once per process
+    // and cached, so a value fixed in the constructor could never be changed.
+    const configured = Number(process.env.CIP_STORAGE_MAX_OBJECT_BYTES);
+    return Number.isFinite(configured) && configured > 0 ? configured : MAX_FILE_BYTES;
+  }
   private readonly root: string;
 
   constructor(root: string) {

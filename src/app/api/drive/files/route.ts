@@ -1,6 +1,7 @@
 import { withDriveScope, noStore } from '@/server/drive/http';
 import { DriveRejected, uploadFile } from '@/server/drive/service';
-import { MAX_FILE_BYTES } from '@/lib/fileTypes';
+import { MAX_FILE_BYTES, maxFileSizeLabel } from '@/lib/fileTypes';
+import { pumpInBackground } from '@/server/jobs/pump';
 
 /** POST /api/drive/files — multipart form with `file` and optional `folderId` */
 export const dynamic = 'force-dynamic';
@@ -14,7 +15,12 @@ export async function POST(request: Request) {
       throw new DriveRejected('Choose a file to upload.');
     }
     if (entry.size > MAX_FILE_BYTES) {
-      throw new DriveRejected('Files need to be 50 MB or smaller.');
+      // Derived from the constant rather than written out, so the number in the
+      // message cannot drift away from the number being enforced.
+      throw new DriveRejected(
+        `That file is ${(entry.size / 1024 / 1024).toFixed(2)} MB. ` +
+          `Files need to be ${maxFileSizeLabel()} or smaller.`,
+      );
     }
 
     const folderId = form.get('folderId');
@@ -26,6 +32,11 @@ export async function POST(request: Request) {
       mimeType: entry.type || null,
       body,
     });
+
+    // An upload lands as pending, exactly like a synced file, and needs the
+    // same nudge for anything to read it. Started, not awaited: the person is
+    // waiting on the upload, not on a vision model.
+    pumpInBackground();
 
     return Response.json(file, { status: 201, headers: noStore });
   });

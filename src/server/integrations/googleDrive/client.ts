@@ -78,7 +78,49 @@ const REQUEST_TIMEOUT_MS = 60_000;
 /** Google's own cap; asking for more is silently reduced. */
 export const PAGE_SIZE = 100;
 const MAX_ATTEMPTS = 4;
-const MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024;
+
+/**
+ * The largest file we will pull out of Google Drive.
+ *
+ * A download is read into memory in one piece, so this is a memory bound
+ * before it is a policy: the worker holds the whole file while it writes it to
+ * the bucket. What follows is bounded separately and does not scale with this
+ * number — a PDF is rendered a page at a time under its own page, pixel and
+ * byte budgets, so a 120 MB deck costs no more per page than a 5 MB one.
+ *
+ * 50 MB turned out to be the wrong number rather than the wrong idea: two real
+ * country decks came in at 52.84 MB and were refused for the sake of 2.84 MB.
+ * The default is now 128 MB, and it is configurable, because the right ceiling
+ * depends on how much memory the worker has rather than on anything here.
+ */
+export function maxDownloadBytes(): number {
+  const configured = Number(process.env.CIP_GDRIVE_MAX_FILE_BYTES);
+  return Number.isFinite(configured) && configured > 0 ? configured : 128 * 1024 * 1024;
+}
+
+/**
+ * A file we could have read but chose not to.
+ *
+ * Distinct from a failure because it is neither Google's fault nor a broken
+ * file: it is our own limit, and the two numbers that decide it are the whole
+ * explanation. Carried on the error so the caller can record both rather than
+ * paraphrasing them into a sentence.
+ */
+export class GoogleDriveTooLarge extends GoogleDriveError {
+  readonly measuredBytes: number;
+  readonly limitBytes: number;
+
+  constructor(measuredBytes: number, limitBytes: number) {
+    super(
+      'permanent',
+      `That file is ${(measuredBytes / 1024 / 1024).toFixed(2)} MB, over the ` +
+        `${(limitBytes / 1024 / 1024).toFixed(0)} MB limit for a single file.`,
+    );
+    this.name = 'GoogleDriveTooLarge';
+    this.measuredBytes = measuredBytes;
+    this.limitBytes = limitBytes;
+  }
+}
 
 export class GoogleDriveClient implements GoogleDriveApi {
   readonly configured: boolean;
@@ -200,9 +242,20 @@ export class GoogleDriveClient implements GoogleDriveApi {
   }
 
   private async readBody(response: Response): Promise<Buffer> {
+    // Content-Length first, when Google sends one. Refusing before reading the
+    // body is the difference between declining a 200 MB file and holding it in
+    // memory in order to decline it.
+    const limit = maxDownloadBytes();
+    const declared = Number(response.headers.get('content-length'));
+    if (Number.isFinite(declared) && declared > limit) {
+      throw new GoogleDriveTooLarge(declared, limit);
+    }
+
     const bytes = Buffer.from(await response.arrayBuffer());
-    if (bytes.byteLength > MAX_DOWNLOAD_BYTES) {
-      throw new GoogleDriveError('permanent', 'That file is too large to ingest.');
+    // An export has no length up front, so the check is repeated on what
+    // actually arrived.
+    if (bytes.byteLength > limit) {
+      throw new GoogleDriveTooLarge(bytes.byteLength, limit);
     }
     return bytes;
   }

@@ -33,6 +33,7 @@ let gdrive: typeof import('../src/server/integrations/googleDrive');
 let crypto: typeof import('../src/server/integrations/crypto');
 let processing: typeof import('../src/server/drive/processing');
 let drive: typeof import('../src/server/drive/service');
+let understanding: typeof import('../src/server/brain/understanding');
 
 let fake: import('../src/server/integrations/googleDrive/fake').FakeGoogleDrive;
 
@@ -48,6 +49,20 @@ async function connect(scope: Scope, folderId: string): Promise<void> {
   const tokens = await fake.exchangeCode();
   await connection.saveTokens(scope, tokens);
   await connection.setFolder(scope, folderId);
+}
+
+/** Drains the understanding queue, exactly as the Brain worker does. */
+async function understandAll(): Promise<number> {
+  // Nothing is claimable until it has been queued, exactly as in the worker.
+  await understanding.enqueueEverywhere();
+  let done = 0;
+  for (let i = 0; i < 40; i += 1) {
+    const claim = await understanding.claimAssetForUnderstanding();
+    if (!claim) break;
+    await understanding.understandClaimedAsset(claim);
+    done += 1;
+  }
+  return done;
 }
 
 /** Drains the extraction queue, exactly as the Phase 3 worker does. */
@@ -68,6 +83,9 @@ before(async () => {
 
   process.env.DATABASE_ADMIN_URL = db.adminUrl;
   process.env.CIP_APP_DB_PASSWORD = db.appPassword;
+  // Progress now runs through understanding, so the suite needs a Brain.
+  // The deterministic fake keeps it offline and free.
+  process.env.CIP_FORCE_FAKE_BRAIN = 'true';
   process.env.SESSION_SECRET = 'test-session-secret-at-least-32-characters-long';
   process.env.CIP_SEED_PASSWORD = PASSWORD;
   process.env.CIP_STORAGE_DIR = storageDir;
@@ -86,6 +104,7 @@ before(async () => {
   crypto = await import('../src/server/integrations/crypto');
   processing = await import('../src/server/drive/processing');
   drive = await import('../src/server/drive/service');
+  understanding = await import('../src/server/brain/understanding');
 
   const { FakeGoogleDrive } = await import('../src/server/integrations/googleDrive/fake');
   fake = new FakeGoogleDrive();
@@ -870,5 +889,307 @@ describe('the Company Drive is unchanged', () => {
     const sources = new Set(results.files.map((f) => f.sourceType));
     assert.ok(sources.has('cip_drive'), 'uploads are missing from search');
     assert.ok(sources.has('google_drive'), 'synced files are missing from search');
+  });
+});
+
+describe('a file larger than the object store can hold', () => {
+  // The real case: two 52.84 MB country decks against a 50 MB object store
+  // limit that cannot be raised on this plan. They used to be recorded as
+  // failed and skipped entirely, which is the one outcome that helps nobody.
+
+  it('is read anyway, and only the original goes unkept', async () => {
+    await connect(mm, MM_FOLDER);
+
+    // Smaller than the store's limit in the test environment, so the limit is
+    // driven down to meet it rather than a 50 MB fixture being built.
+    process.env.CIP_STORAGE_MAX_OBJECT_BYTES = '64';
+    try {
+      fake.put(
+        MM_FOLDER,
+        { id: 'gd-big', name: 'India.pdf', mimeType: 'application/pdf', md5Checksum: 'md5-big' },
+        Buffer.alloc(200, 0x41),
+      );
+
+      const outcome = await sync.syncNow(mm);
+      assert.equal(outcome.added, 1, 'an oversize file must still be ingested');
+      assert.equal(outcome.tooLarge, 0, 'it is within what we can read, so it is not too large');
+
+      const rows = await adminSql<
+        { name: string; bytes_retained: boolean; storage_path: string | null; file_size: string }[]
+      >`
+        select name, bytes_retained, storage_path, file_size from drive_files
+         where company_id = ${mm.companyId} and name = 'India.pdf'
+      `;
+      const row = rows[0]!;
+      assert.equal(row.bytes_retained, false, 'the bytes are too large to keep');
+      assert.equal(row.storage_path, null, 'a file we did not keep must not claim a storage key');
+      assert.equal(Number(row.file_size), 200, 'the real size is still recorded');
+    } finally {
+      delete process.env.CIP_STORAGE_MAX_OBJECT_BYTES;
+    }
+  });
+
+  it('is not claimed by the extractor, which has no bytes to read', async () => {
+    await connect(mm, MM_FOLDER);
+    process.env.CIP_STORAGE_MAX_OBJECT_BYTES = '64';
+    try {
+      fake.put(
+        MM_FOLDER,
+        { id: 'gd-big2', name: 'nigeria.pdf', mimeType: 'application/pdf', md5Checksum: 'md5-big2' },
+        Buffer.alloc(200, 0x42),
+      );
+      await sync.syncNow(mm);
+
+      // The queue must pass over it rather than claiming it and failing on a
+      // storage key that was never written. Other files in the folder are
+      // claimed as usual, which is the point: only this one is skipped.
+      await extractAll();
+
+      const rows = await adminSql<{ processing_status: string; processing_attempts: number }[]>`
+        select processing_status, processing_attempts from drive_files
+         where company_id = ${mm.companyId} and name = 'nigeria.pdf'
+      `;
+      assert.equal(rows[0]!.processing_status, 'pending', 'the extractor should have passed over it');
+      assert.equal(rows[0]!.processing_attempts, 0, 'it must not even have been attempted');
+    } finally {
+      delete process.env.CIP_STORAGE_MAX_OBJECT_BYTES;
+    }
+  });
+
+  it('past what CIP can read in one piece, is reported with both numbers', async () => {
+    await connect(mm, MM_FOLDER);
+    process.env.CIP_GDRIVE_MAX_FILE_BYTES = '100';
+    try {
+      fake.put(
+        MM_FOLDER,
+        { id: 'gd-huge', name: 'enormous.pdf', mimeType: 'application/pdf', md5Checksum: 'md5-huge' },
+        Buffer.alloc(500, 0x43),
+      );
+
+      const outcome = await sync.syncNow(mm);
+      assert.equal(outcome.tooLarge, 1);
+      assert.equal(outcome.failed, 0, 'our own limit is not a failure');
+
+      const rows = await adminSql<
+        { state: string; reason: string; external_size: string; limit_bytes: string | null }[]
+      >`
+        select state, reason, external_size, limit_bytes from google_drive_files
+         where company_id = ${mm.companyId} and name = 'enormous.pdf'
+      `;
+      const row = rows[0]!;
+      assert.equal(row.state, 'too_large', 'too large is its own state, not a failure');
+      assert.equal(Number(row.external_size), 500, 'the measured size is recorded');
+      assert.equal(Number(row.limit_bytes), 100, 'so is the limit that rejected it');
+      assert.match(row.reason, /over the/, 'and the reason says both');
+
+      // Never silently skipped: nothing was ingested, and the record says why.
+      const files = await adminSql<{ n: number }[]>`
+        select count(*)::int n from drive_files
+         where company_id = ${mm.companyId} and name = 'enormous.pdf'
+      `;
+      assert.equal(files[0]!.n, 0);
+    } finally {
+      delete process.env.CIP_GDRIVE_MAX_FILE_BYTES;
+    }
+  });
+
+  it('is declined before it is downloaded', async () => {
+    await connect(mm, MM_FOLDER);
+    process.env.CIP_GDRIVE_MAX_FILE_BYTES = '100';
+    try {
+      fake.put(
+        MM_FOLDER,
+        { id: 'gd-huge2', name: 'huge2.pdf', mimeType: 'application/pdf', md5Checksum: 'm2' },
+        Buffer.alloc(500, 0x44),
+      );
+
+      const before = fake.downloadCalls;
+      await sync.syncNow(mm);
+      assert.equal(
+        fake.downloadCalls,
+        before,
+        'a file we will refuse must not be fetched in order to refuse it',
+      );
+    } finally {
+      delete process.env.CIP_GDRIVE_MAX_FILE_BYTES;
+    }
+  });
+});
+
+describe('what a sync reports about a file it ingested', () => {
+  it('does not call a queued file part of the Knowledge Layer', async () => {
+    await connect(mm, MM_FOLDER);
+    fake.put(
+      MM_FOLDER,
+      { id: 'gd-queued', name: 'waiting.txt', mimeType: 'text/plain', md5Checksum: 'md5-q' },
+      'Something worth reading later.',
+    );
+    await sync.syncNow(mm);
+
+    const listed = await connection.listSyncedFiles(mm, {});
+    const row = listed.find((f) => f.name === 'waiting.txt')!;
+
+    // The sync did its part, and nothing has read the file yet. Those are two
+    // different facts and the row now carries both.
+    assert.equal(row.state, 'synced');
+    assert.ok(row.progress, 'a file that became a CIP file must report its progress');
+    assert.equal(row.progress!.status, 'queued', 'nothing has read it yet');
+    assert.equal(row.progress!.retained, true);
+  });
+
+  it('reports it ready once the pipeline has actually finished with it', async () => {
+    await connect(mm, MM_FOLDER);
+    fake.put(
+      MM_FOLDER,
+      { id: 'gd-done', name: 'finished.txt', mimeType: 'text/plain', md5Checksum: 'md5-d' },
+      'Our brand voice is warm, unhurried and specific about the occasion.',
+    );
+    await sync.syncNow(mm);
+    await extractAll();
+    await understandAll();
+
+    const listed = await connection.listSyncedFiles(mm, {});
+    const row = listed.find((f) => f.name === 'finished.txt')!;
+    assert.equal(row.progress!.status, 'ready');
+  });
+
+  it('carries the measured size and the limit for a file it refused', async () => {
+    await connect(mm, MM_FOLDER);
+    process.env.CIP_GDRIVE_MAX_FILE_BYTES = '100';
+    try {
+      fake.put(
+        MM_FOLDER,
+        { id: 'gd-big3', name: 'toobig.pdf', mimeType: 'application/pdf', md5Checksum: 'm3' },
+        Buffer.alloc(400, 0x45),
+      );
+      await sync.syncNow(mm);
+
+      const listed = await connection.listSyncedFiles(mm, {});
+      const row = listed.find((f) => f.name === 'toobig.pdf')!;
+      assert.equal(row.state, 'too_large');
+      assert.equal(row.sizeBytes, 400);
+      assert.equal(row.limitBytes, 100);
+      assert.equal(row.progress, null, 'it never became a CIP file, so it has no progress');
+    } finally {
+      delete process.env.CIP_GDRIVE_MAX_FILE_BYTES;
+    }
+  });
+});
+
+describe('syncing twice changes nothing the second time', () => {
+  it('does not duplicate rows, downloads or understanding', async () => {
+    await connect(mm, MM_FOLDER);
+    fake.put(
+      MM_FOLDER,
+      { id: 'gd-idem', name: 'stable.txt', mimeType: 'text/plain', md5Checksum: 'md5-stable' },
+      'This document does not change.',
+    );
+
+    await sync.syncNow(mm);
+    await extractAll();
+    await understandAll();
+
+    const downloadsAfterFirst = fake.downloadCalls;
+
+    const second = await sync.syncNow(mm);
+    assert.equal(second.unchanged, 1, 'an unchanged file should be recognised as unchanged');
+    assert.equal(second.added, 0);
+    assert.equal(second.updated, 0);
+    assert.equal(
+      fake.downloadCalls,
+      downloadsAfterFirst,
+      'an unchanged file must not be downloaded again',
+    );
+
+    const counts = await adminSql<{ files: number; understandings: number }[]>`
+      select (select count(*) from drive_files
+               where company_id = ${mm.companyId} and name = 'stable.txt')::int as files,
+             (select count(*) from asset_understanding u
+                join drive_files f on f.id = u.file_id
+               where f.company_id = ${mm.companyId} and f.name = 'stable.txt')::int as understandings
+    `;
+    assert.equal(counts[0]!.files, 1, 'a second sync duplicated the file');
+    assert.equal(counts[0]!.understandings, 1, 'a second sync duplicated the understanding');
+  });
+
+  it('reprocesses only the file that actually changed', async () => {
+    await connect(mm, MM_FOLDER);
+    fake.put(MM_FOLDER, { id: 'gd-a', name: 'a.txt', mimeType: 'text/plain', md5Checksum: 'a1' }, 'first');
+    fake.put(MM_FOLDER, { id: 'gd-b', name: 'b.txt', mimeType: 'text/plain', md5Checksum: 'b1' }, 'second');
+    await sync.syncNow(mm);
+    await extractAll();
+
+    fake.put(MM_FOLDER, { id: 'gd-a', name: 'a.txt', mimeType: 'text/plain', md5Checksum: 'a2' }, 'first, revised');
+
+    const outcome = await sync.syncNow(mm);
+    assert.equal(outcome.updated, 1);
+    assert.equal(outcome.unchanged, 1);
+
+    const rows = await adminSql<{ name: string; processing_status: string }[]>`
+      select name, processing_status from drive_files
+       where company_id = ${mm.companyId} and name in ('a.txt', 'b.txt') order by name
+    `;
+    assert.equal(rows[0]!.processing_status, 'pending', 'the changed file is queued again');
+    assert.equal(rows[1]!.processing_status, 'processed', 'the unchanged one is left alone');
+  });
+});
+
+describe('the queue moves without anybody running a worker', () => {
+  it('a sync leaves work that the pump then completes', async () => {
+    await connect(mm, MM_FOLDER);
+    fake.put(
+      MM_FOLDER,
+      { id: 'gd-pump', name: 'pumped.txt', mimeType: 'text/plain', md5Checksum: 'md5-pump' },
+      'Warm, celebratory, and never about the alcohol itself.',
+    );
+    await sync.syncNow(mm);
+
+    const before = await adminSql<{ processing_status: string }[]>`
+      select processing_status from drive_files
+       where company_id = ${mm.companyId} and name = 'pumped.txt'
+    `;
+    assert.equal(before[0]!.processing_status, 'pending', 'a sync enqueues rather than processes');
+
+    const { pumpQueues } = await import('../src/server/jobs/pump');
+    const tally = await pumpQueues();
+    assert.ok(tally.extracted > 0, 'the pump read nothing');
+
+    const after = await adminSql<{ processing_status: string }[]>`
+      select processing_status from drive_files
+       where company_id = ${mm.companyId} and name = 'pumped.txt'
+    `;
+    assert.equal(after[0]!.processing_status, 'processed');
+  });
+
+  it('two pumps at once do the work once', async () => {
+    await connect(mm, MM_FOLDER);
+    for (let i = 0; i < 3; i += 1) {
+      fake.put(
+        MM_FOLDER,
+        { id: `gd-race-${i}`, name: `race-${i}.txt`, mimeType: 'text/plain', md5Checksum: `r${i}` },
+        `Document number ${i}, with enough words in it to be worth chunking at all.`,
+      );
+    }
+    await sync.syncNow(mm);
+
+    const { pumpQueues } = await import('../src/server/jobs/pump');
+    const [a, b] = await Promise.all([pumpQueues(), pumpQueues()]);
+
+    // The second call joins the first rather than starting a second pass, so
+    // both see the same tally and nothing is claimed twice.
+    assert.deepEqual(a, b, 'concurrent pumps should share one pass');
+
+    const rows = await adminSql<{ n: number }[]>`
+      select count(*)::int n from drive_files
+       where company_id = ${mm.companyId} and name like 'race-%' and processing_status = 'processed'
+    `;
+    assert.equal(rows[0]!.n, 3);
+
+    const extractions = await adminSql<{ n: number }[]>`
+      select count(*)::int n from drive_file_extractions e
+        join drive_files f on f.id = e.file_id
+       where f.company_id = ${mm.companyId} and f.name like 'race-%'
+    `;
+    assert.equal(extractions[0]!.n, 3, 'a file was extracted more than once');
   });
 });

@@ -2,6 +2,7 @@ import { noStore, withIntegrationScope } from '@/server/integrations/googleDrive
 import { getConnection } from '@/server/integrations/googleDrive/connection';
 import { syncNow } from '@/server/integrations/googleDrive/sync';
 import { GOOGLE_SYNC_LIMIT, rateLimit } from '@/server/rateLimit';
+import { pumpInBackground } from '@/server/jobs/pump';
 
 /**
  * POST /api/integrations/google-drive/sync
@@ -27,6 +28,16 @@ export async function POST() {
     }
 
     const outcome = await syncNow(scope);
+
+    // Syncing writes rows as pending; something still has to read them. The
+    // pump is started rather than awaited, because extraction and a vision
+    // model take minutes and this response should not.
+    //
+    // Without this, a synced file waits for `npm run cip:worker` — which is
+    // still the right way to run it, and is what a deployment should do — but
+    // pressing Sync Now with no worker running used to do visibly nothing.
+    pumpInBackground();
+
     const connection = await getConnection(scope);
     return Response.json({ outcome, connection }, { headers: noStore });
   });

@@ -46,12 +46,29 @@ export type PdfProfile = {
   hasImages: boolean;
 };
 
-export type RenderedPage = {
-  pageNumber: number;
+/**
+ * One strip of a rendered page.
+ *
+ * A page that fits is a single band covering all of it. A tall one is cut into
+ * several, because a vision model shown a 1:8 strip resolves almost nothing
+ * across its narrow axis.
+ */
+export type RenderedBand = {
+  index: number;
   bytes: Buffer;
   mimeType: 'image/jpeg';
   width: number;
   height: number;
+  /** Where this strip starts down the page, in rendered pixels. */
+  offsetY: number;
+};
+
+export type RenderedPage = {
+  pageNumber: number;
+  /** The page as rendered, before any cutting. */
+  width: number;
+  height: number;
+  bands: RenderedBand[];
 };
 
 /**
@@ -71,19 +88,64 @@ export const RENDER_LIMITS = {
     return fromEnv('CIP_PDF_MAX_RENDER_PAGES', 40);
   },
   /**
-   * The long edge, in pixels. 1,400 is comfortably above what a vision model
-   * resolves and well below what a full-resolution render would produce.
+   * What the *short* edge should measure, in pixels.
+   *
+   * Scaling by the long edge is what a page of ordinary proportions wants, and
+   * it is exactly wrong for these files. India.pdf and nigeria.pdf are strips
+   * of roughly 1:7.5 — a whole Instagram feed exported as one page — so
+   * capping the long edge at 2,048 left the width at 273 px and every tile on
+   * it about 90 px across. The model reported, correctly, that it could not
+   * read them. Driving the short edge instead gives the narrow axis the
+   * resolution it needs, and the height that follows is dealt with by cutting
+   * the page into bands.
    */
+  get targetShortEdgePixels(): number {
+    return fromEnv('CIP_PDF_SHORT_EDGE_PIXELS', 1_400);
+  },
+  /** A ceiling for ordinary pages, so a poster does not render enormous. */
   get maxEdgePixels(): number {
-    return fromEnv('CIP_PDF_MAX_EDGE_PIXELS', 1_400);
+    return fromEnv('CIP_PDF_MAX_EDGE_PIXELS', 2_048);
+  },
+  /**
+   * The tallest strip sent to the model in one piece.
+   *
+   * Beyond roughly this, detail is lost to downsampling no matter how large
+   * the image is, so more pixels buy nothing and cost tokens.
+   */
+  get maxBandHeightPixels(): number {
+    return fromEnv('CIP_PDF_MAX_BAND_HEIGHT', 2_000);
+  },
+  /**
+   * Overlap between neighbouring bands, as a fraction of band height.
+   *
+   * A cut lands wherever it lands, which is often through the middle of a
+   * post. The overlap means anything sliced in half on one band appears whole
+   * on the next; the duplicate is dealt with when the posts are merged.
+   */
+  get bandOverlap(): number {
+    const raw = Number(process.env.CIP_PDF_BAND_OVERLAP);
+    return Number.isFinite(raw) && raw >= 0 && raw < 0.5 ? raw : 0.12;
+  },
+  /** Total pixels for one page, so an enormous sheet cannot exhaust memory. */
+  get maxPagePixels(): number {
+    return fromEnv('CIP_PDF_MAX_PAGE_PIXELS', 24_000_000);
   },
   /** Total rendered bytes for one document, across all its pages. */
   get maxTotalBytes(): number {
     return fromEnv('CIP_PDF_MAX_TOTAL_RENDER_BYTES', 60 * 1024 * 1024);
   },
-  /** The whole render, not one page. */
+  /**
+   * The whole render, not one page.
+   *
+   * Rendering happens for every page before any of them is looked at, so this
+   * has to cover the document rather than a page. A real country deck is three
+   * pages of 1400x10500 and 180 s was not enough for the third — it was
+   * correctly recorded as skipped, which is the right behaviour and the wrong
+   * outcome. The page count and pixel budgets are what actually bound the
+   * work; this is only here so a pathological file cannot hold the queue open.
+   */
   get timeoutMs(): number {
-    return fromEnv('CIP_PDF_RENDER_TIMEOUT_MS', 180_000);
+    return fromEnv('CIP_PDF_RENDER_TIMEOUT_MS', 600_000);
   },
   /**
    * Below this a page's text is treated as incidental — a page number, a
@@ -101,6 +163,106 @@ export const RENDER_LIMITS = {
     return fromEnv('CIP_PDF_MAX_PAGE_TEXT_CHARS', 4_000);
   },
 } as const;
+
+/**
+ * How much to scale a page by.
+ *
+ * The short edge is what decides legibility, so it is what the scale targets.
+ * Two things then hold it back: an ordinary page should not render past the
+ * long-edge cap, and no page may exceed the total pixel budget however it is
+ * shaped. Never below 1:1 either — upscaling a small page adds pixels without
+ * adding information.
+ */
+export function scaleFor(widthPoints: number, heightPoints: number): number {
+  const shortEdge = Math.min(widthPoints, heightPoints);
+  const longEdge = Math.max(widthPoints, heightPoints);
+  if (shortEdge <= 0 || longEdge <= 0) return 1;
+
+  let scale = RENDER_LIMITS.targetShortEdgePixels / shortEdge;
+
+  // A page of ordinary proportions is still bounded by its long edge. A strip
+  // is not: its long edge is meant to be cut up, so letting it govern here
+  // would reintroduce exactly the problem this is solving.
+  const aspect = longEdge / shortEdge;
+  if (aspect < 3) {
+    scale = Math.min(scale, RENDER_LIMITS.maxEdgePixels / longEdge);
+  }
+
+  const pixels = widthPoints * heightPoints * scale * scale;
+  if (pixels > RENDER_LIMITS.maxPagePixels) {
+    scale = Math.sqrt(RENDER_LIMITS.maxPagePixels / (widthPoints * heightPoints));
+  }
+
+  return Math.max(Math.min(scale, 4), 0.1);
+}
+
+/** Where each band starts and how tall it is, for a page of this height. */
+export function bandsFor(height: number): { offsetY: number; height: number }[] {
+  const max = RENDER_LIMITS.maxBandHeightPixels;
+  if (height <= max) return [{ offsetY: 0, height }];
+
+  const overlap = Math.floor(max * RENDER_LIMITS.bandOverlap);
+  const step = Math.max(max - overlap, 1);
+  const bands: { offsetY: number; height: number }[] = [];
+
+  for (let offsetY = 0; offsetY < height; offsetY += step) {
+    const remaining = height - offsetY;
+    bands.push({ offsetY, height: Math.min(max, remaining) });
+    // The last band reaches the bottom; anything further would be empty.
+    if (offsetY + max >= height) break;
+  }
+
+  return bands;
+}
+
+/** Cuts a rendered page into the strips that will be looked at. */
+function cutIntoBands(
+  source: { width: number; height: number },
+  width: number,
+  height: number,
+  createCanvas: (w: number, h: number) => {
+    getContext(kind: '2d'): { drawImage(...args: never[]): void };
+    toBuffer(mime: 'image/jpeg', quality?: number): Buffer;
+  },
+): RenderedBand[] {
+  const quality = RENDER_LIMITS.jpegQuality / 100;
+  const plan = bandsFor(height);
+
+  if (plan.length === 1) {
+    return [
+      {
+        index: 0,
+        bytes: (source as unknown as { toBuffer(m: 'image/jpeg', q?: number): Buffer })
+          .toBuffer('image/jpeg', quality),
+        mimeType: 'image/jpeg',
+        width,
+        height,
+        offsetY: 0,
+      },
+    ];
+  }
+
+  return plan.map((band, index) => {
+    const canvas = createCanvas(width, band.height);
+    const context = canvas.getContext('2d');
+    // Drawn at a negative offset, which is the cheapest way to take a
+    // rectangle out of a canvas without an intermediate copy.
+    (context.drawImage as unknown as (img: unknown, x: number, y: number) => void)(
+      source,
+      0,
+      -band.offsetY,
+    );
+
+    return {
+      index,
+      bytes: canvas.toBuffer('image/jpeg', quality),
+      mimeType: 'image/jpeg' as const,
+      width,
+      height: band.height,
+      offsetY: band.offsetY,
+    };
+  });
+}
 
 /** Opens a PDF, normalising the ways pdf.js can refuse one. */
 async function open(body: Buffer) {
@@ -235,13 +397,7 @@ export async function renderPdfPages(
 
       try {
         const base = page.getViewport({ scale: 1 });
-        // Scaled so the long edge lands on the cap. Never enlarged: a small
-        // page upscaled is the same information with more pixels to pay for.
-        const scale = Math.min(
-          RENDER_LIMITS.maxEdgePixels / Math.max(base.width, base.height),
-          2,
-        );
-        const viewport = page.getViewport({ scale: Math.max(scale, 0.1) });
+        const viewport = page.getViewport({ scale: scaleFor(base.width, base.height) });
 
         const width = Math.max(1, Math.floor(viewport.width));
         const height = Math.max(1, Math.floor(viewport.height));
@@ -261,15 +417,16 @@ export async function renderPdfPages(
           viewport,
         }).promise;
 
-        const bytes = canvas.toBuffer('image/jpeg', RENDER_LIMITS.jpegQuality / 100);
+        const bands = cutIntoBands(canvas, width, height, createCanvas);
+        const bandBytes = bands.reduce((sum, band) => sum + band.bytes.length, 0);
 
-        if (totalBytes + bytes.length > RENDER_LIMITS.maxTotalBytes) {
+        if (totalBytes + bandBytes > RENDER_LIMITS.maxTotalBytes) {
           skipped.push(...budgeted.slice(budgeted.indexOf(n)));
           break;
         }
 
-        totalBytes += bytes.length;
-        pages.push({ pageNumber: n, bytes, mimeType: 'image/jpeg', width, height });
+        totalBytes += bandBytes;
+        pages.push({ pageNumber: n, width, height, bands });
       } finally {
         page.cleanup();
       }

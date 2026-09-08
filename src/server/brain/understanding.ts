@@ -95,7 +95,7 @@ export type ClaimedAsset = {
   filename: string;
   fileType: string;
   mimeType: string;
-  storagePath: string;
+  storagePath: string | null;
   attempts: number;
 };
 
@@ -120,7 +120,8 @@ export async function claimAssetForUnderstanding(): Promise<ClaimedAsset | null>
     const rows = await sql<
       {
         id: string; company_id: string; file_id: string; kind: AssetKind;
-        name: string; file_type: string; mime_type: string; storage_path: string; attempts: number;
+        name: string; file_type: string; mime_type: string; storage_path: string | null;
+        attempts: number;
       }[]
     >`
       update asset_understanding u
@@ -185,7 +186,7 @@ export async function understandClaimedAsset(claim: ClaimedAsset): Promise<Under
       throw new BrainFailed('NOT_CONFIGURED', 'permanent', 'The Brain is not configured.');
     }
 
-    const bytes = await driveStorage().get(claim.storagePath);
+    const bytes = await bytesFor(claim);
 
     // A PDF is decided here rather than at enqueue, because the decision needs
     // the bytes: whether it has a text layer, and whether it shows anything.
@@ -242,6 +243,45 @@ export async function understandClaimedAsset(claim: ClaimedAsset): Promise<Under
       willRetry: failure.kind !== 'permanent' && claim.attempts + 1 < BRAIN_LIMITS.maxAttempts,
     };
   }
+}
+
+/**
+ * The asset's bytes, wherever they are.
+ *
+ * Almost always the object store. The exception is a file too large for it —
+ * 52.84 MB against a 50 MB cap — which was read at sync time and deliberately
+ * not kept. There is nothing to fetch locally for those, so they are fetched
+ * from the source that has them, once, and released when this returns.
+ *
+ * Keeping the original was never the point: what CIP needs from a deck of
+ * Instagram posts is the posts. This is what makes "read it, keep what you
+ * learned" work rather than refusing the file outright.
+ */
+async function bytesFor(claim: ClaimedAsset): Promise<Buffer> {
+  if (claim.storagePath) return driveStorage().get(claim.storagePath);
+
+  const rows = await adminSql()<{ external_id: string }[]>`
+    select g.external_id
+      from google_drive_files g
+     where g.file_id = ${claim.fileId} and g.company_id = ${claim.companyId}
+     limit 1
+  `;
+
+  const externalId = rows[0]?.external_id;
+  if (!externalId) {
+    throw new BrainFailed(
+      'UNSUPPORTED_ASSET',
+      'permanent',
+      'This file was read without being kept, and its source is no longer known.',
+    );
+  }
+
+  const { requireConnected } = await import('../integrations/googleDrive/connection');
+  const { googleDrive } = await import('../integrations/googleDrive');
+
+  const scope = workerScope(claim.companyId);
+  const connection = await requireConnected(scope);
+  return googleDrive().download(connection.accessToken, externalId);
 }
 
 /**

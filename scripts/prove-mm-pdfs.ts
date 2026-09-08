@@ -128,9 +128,12 @@ async function main() {
 
   // --- 2. the PDFs themselves ---------------------------------------------
   const pdfs = await admin<
-    { id: string; name: string; file_size: string; source_type: string; created_at: Date }[]
+    {
+      id: string; name: string; file_size: string; source_type: string;
+      bytes_retained: boolean; created_at: Date;
+    }[]
   >`
-    select id, name, file_size, source_type, created_at
+    select id, name, file_size, source_type, bytes_retained, created_at
       from drive_files
      where company_id = ${mm.companyId}
        and file_type = 'pdf'
@@ -174,9 +177,19 @@ async function main() {
     }
 
     for (const pdf of candidates) {
+      const external = await admin<
+        { external_id: string; state: string; external_size: string | null }[]
+      >`
+        select external_id, state, external_size from google_drive_files
+         where company_id = ${mm.companyId} and file_id = ${pdf.id}
+      `;
+
       console.log(`  ── ${pdf.name}`);
-      console.log(`     ${(Number(pdf.file_size) / 1024 / 1024).toFixed(2)} MB · ` +
+      console.log(`     Google Drive id: ${external[0]?.external_id ?? '(not from Google Drive)'}`);
+      console.log(`     sync state: ${external[0]?.state ?? 'n/a'}`);
+      console.log(`     size: ${(Number(pdf.file_size) / 1024 / 1024).toFixed(2)} MB · ` +
         `source: ${pdf.source_type === 'cip_drive' ? 'uploaded to CIP Drive' : pdf.source_type}`);
+      console.log(`     original kept: ${pdf.bytes_retained ? 'yes' : 'no — read without keeping it'}`);
 
       // Re-read from scratch so the run measures work rather than a cache.
       await admin`delete from asset_understanding where file_id = ${pdf.id}`;
@@ -208,13 +221,31 @@ async function main() {
          where company_id = ${mm.companyId} and file_id = ${pdf.id}
       `;
 
+      const bands = pages.reduce(
+        (total, page) => total + Number((page.structured as { bandsAnalysed?: number }).bandsAnalysed ?? 1),
+        0,
+      );
+      const withProvenance = await admin<{ n: number }[]>`
+        select count(*)::int as n from brand_dna_evidence
+         where company_id = ${mm.companyId} and file_id = ${pdf.id}
+           and page_number is not null and source_type = 'pdf_visual'
+      `;
+      const evidenceTotal = await admin<{ n: number }[]>`
+        select count(*)::int as n from brand_dna_evidence
+         where company_id = ${mm.companyId} and file_id = ${pdf.id}
+      `;
+
       console.log(`     read as: ${summaryRow[0]?.kind ?? 'not understood'}`);
       console.log(`     page count: ${structured.pageCount ?? '—'}`);
       console.log(`     pages rasterised: ${pages.length}`);
-      console.log(`     pages sent to Vision: ${pages.length}`);
+      // A tall page is cut into strips and each is a separate vision call, so
+      // "pages sent" and "images sent" are different numbers and both matter.
+      console.log(`     images sent to Vision: ${bands} (across ${pages.length} page(s))`);
       console.log(`     pages understood: ${understood.length}`);
       console.log(`     posts extracted: ${posts.length}`);
-      console.log(`     facts with provenance: ${factRows[0]?.n ?? 0}`);
+      console.log(`     facts: ${factRows[0]?.n ?? 0}`);
+      console.log(`     provenance coverage: ${withProvenance[0]?.n ?? 0}/${evidenceTotal[0]?.n ?? 0} ` +
+        'evidence rows carry a page number');
       console.log(`     countries seen: ${structured.countries?.join(', ') || '—'}`);
       console.log(`     time: ${ms(understood.reduce((sum, p) => sum + (p.durationMs ?? 0), 0))}`);
 
@@ -271,6 +302,29 @@ async function main() {
       blocked('all three country PDFs were read',
         `only ${candidates.length} of 3 is in the Drive`);
     }
+  }
+
+  // --- 2b. everything in the folder that did not become a CIP file ---------
+  const skipped = await admin<
+    { name: string; state: string; reason: string | null; external_size: string | null;
+      limit_bytes: string | null }[]
+  >`
+    select name, state, reason, external_size, limit_bytes
+      from google_drive_files
+     where company_id = ${mm.companyId} and state in ('unsupported', 'too_large', 'failed', 'trashed')
+     order by name
+  `;
+
+  if (skipped.length > 0) {
+    console.log('  ── not ingested\n');
+    for (const row of skipped) {
+      const size = row.external_size ? `${(Number(row.external_size) / 1024 / 1024).toFixed(2)} MB` : '—';
+      const limit = row.limit_bytes ? `${(Number(row.limit_bytes) / 1024 / 1024).toFixed(0)} MB` : null;
+      console.log(`     ${row.name} — ${row.state} · measured ${size}` +
+        (limit ? ` · maximum ${limit}` : ''));
+      if (row.reason) console.log(`       ${row.reason}`);
+    }
+    console.log('');
   }
 
   // --- 3. the paths that already worked, still working ---------------------

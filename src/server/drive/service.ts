@@ -4,7 +4,7 @@ import type { TransactionSql } from 'postgres';
 import { withCompanyScope } from '../db';
 import type { CompanyScope } from '../db';
 import { driveStorage, sha256, storageKeyFor } from './storage';
-import { MAX_FILE_BYTES, sanitiseFilename, specFor } from '@/lib/fileTypes';
+import { MAX_FILE_BYTES, maxFileSizeLabel, sanitiseFilename, specFor } from '@/lib/fileTypes';
 import type { FileKind } from '@/lib/fileTypes';
 import type * as D from '@/types/drive';
 
@@ -266,7 +266,7 @@ export async function uploadFile(scope: CompanyScope, input: UploadInput): Promi
   }
   if (input.body.length === 0) throw new DriveRejected('That file is empty.');
   if (input.body.length > MAX_FILE_BYTES) {
-    throw new DriveRejected('Files need to be 50 MB or smaller.');
+    throw new DriveRejected(`Files need to be ${maxFileSizeLabel()} or smaller.`);
   }
 
   // The browser's Content-Type is a hint, not evidence. The extension decides,

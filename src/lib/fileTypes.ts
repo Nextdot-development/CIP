@@ -38,7 +38,25 @@ export const ACCEPTED_TYPES: FileTypeSpec[] = [
   { extension: 'wav',  mimeTypes: ['audio/wav', 'audio/x-wav', 'audio/wave'], kind: 'audio', label: 'WAV', previewable: true },
 ];
 
-export const MAX_FILE_BYTES = 50 * 1024 * 1024;
+/**
+ * The largest file the Drive accepts.
+ *
+ * A memory bound: an upload is held whole while it is written to the bucket.
+ * What happens afterwards does not scale with it — a PDF is rendered a page at
+ * a time under its own budgets — so this only has to be small enough that one
+ * upload cannot exhaust the process.
+ *
+ * 50 MB was too tight in practice: real decks arrive at 52 MB. This file is
+ * imported by the browser as well as the server, so the value is a constant
+ * rather than read from the environment; the Google Drive path has its own
+ * configurable ceiling for the same reason it has its own memory profile.
+ */
+export const MAX_FILE_BYTES = 128 * 1024 * 1024;
+
+/** The same number, for a sentence a person reads. */
+export function maxFileSizeLabel(): string {
+  return `${Math.round(MAX_FILE_BYTES / 1024 / 1024)} MB`;
+}
 
 /**
  * The types the Knowledge Layer reads today. Everything else is stored and

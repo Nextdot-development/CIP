@@ -2,8 +2,8 @@ import 'server-only';
 import { randomUUID } from 'node:crypto';
 import { withCompanyScope } from '../../db';
 import type { CompanyScope } from '../../db';
-import { driveStorage, sha256, storageKeyFor } from '../../drive/storage';
-import { GoogleDriveError } from './client';
+import { driveStorage, ObjectTooLarge, sha256, storageKeyFor } from '../../drive/storage';
+import { GoogleDriveError, GoogleDriveTooLarge, maxDownloadBytes } from './client';
 import type { GoogleFile } from './client';
 import { googleDrive } from './index';
 import { markNeedsReauth, requireConnected } from './connection';
@@ -30,9 +30,13 @@ export type SyncOutcome = {
   updated: number;
   unchanged: number;
   unsupported: number;
+  /** Refused by our own size limit, which is not the same as having failed. */
+  tooLarge: number;
   removed: number;
   failed: number;
   pages: number;
+  /** Files put into the processing queue by this sync. */
+  queued: number;
 };
 
 type ExistingRow = {
@@ -77,7 +81,7 @@ export async function syncNow(scope: CompanyScope): Promise<SyncOutcome> {
 
   const outcome: SyncOutcome = {
     scanned: 0, added: 0, updated: 0, unchanged: 0,
-    unsupported: 0, removed: 0, failed: 0, pages: 0,
+    unsupported: 0, tooLarge: 0, removed: 0, failed: 0, pages: 0, queued: 0,
   };
 
   try {
@@ -187,6 +191,37 @@ async function syncOneFile(
     return;
   }
 
+  // Google already told us how big it is, so an oversize file is declined
+  // before a byte of it moves. The size is absent for Google-native documents,
+  // which are exported rather than downloaded and are never large.
+  //
+  // Two ceilings apply and the lower one governs: how much we are willing to
+  // hold in memory, and how large an object the store will accept. Checking
+  // only the first meant downloading 52.84 MB twice per sync to have the
+  // bucket refuse it at 50 MB.
+  // Two ceilings apply. The object store's is the smaller one here, and it is
+  // not raisable on this plan — but a file we cannot keep is not a file we
+  // cannot read. Anything within what we can hold in memory is fetched and
+  // understood; only the original goes unsaved.
+  const storeLimit = driveStorage().maxObjectBytes;
+  const readLimit = maxDownloadBytes();
+  const retain = file.size === null || file.size <= storeLimit;
+
+  if (file.size !== null && file.size > readLimit) {
+    await upsertRecord(scope, connectionId, file, {
+      state: 'too_large',
+      reason:
+        `That file is ${(file.size / 1024 / 1024).toFixed(2)} MB, over the ` +
+        `${(readLimit / 1024 / 1024).toFixed(0)} MB limit CIP can read in one piece.`,
+      seenAt,
+      exportedMime: plan.exportMime,
+      fileId: existing?.file_id ?? null,
+      limitBytes: readLimit,
+    });
+    outcome.tooLarge += 1;
+    return;
+  }
+
   try {
     const bytes = plan.exportMime
       ? await api().exportFile(accessToken, file.id, plan.exportMime)
@@ -210,6 +245,7 @@ async function syncOneFile(
       fileType: plan.fileType,
       mimeType: storedMimeFor(plan.fileType),
       bytes,
+      retain,
     });
 
     await upsertRecord(scope, connectionId, file, {
@@ -224,6 +260,34 @@ async function syncOneFile(
     else outcome.added += 1;
   } catch (error) {
     if (error instanceof GoogleDriveError && error.kind === 'needs_reauth') throw error;
+
+    // Our own limit, reached despite the check above — an export, or a file
+    // whose reported size was wrong. Recorded as itself, not as a failure.
+    if (error instanceof ObjectTooLarge) {
+      await upsertRecord(scope, connectionId, file, {
+        state: 'too_large',
+        reason: error.message.slice(0, 300),
+        seenAt,
+        exportedMime: plan.exportMime,
+        fileId: existing?.file_id ?? null,
+        limitBytes: error.limitBytes,
+      });
+      outcome.tooLarge += 1;
+      return;
+    }
+
+    if (error instanceof GoogleDriveTooLarge) {
+      await upsertRecord(scope, connectionId, file, {
+        state: 'too_large',
+        reason: error.message.slice(0, 300),
+        seenAt,
+        exportedMime: plan.exportMime,
+        fileId: existing?.file_id ?? null,
+        limitBytes: error.limitBytes,
+      });
+      outcome.tooLarge += 1;
+      return;
+    }
 
     // One unreadable file must not abandon the rest of the folder.
     await upsertRecord(scope, connectionId, file, {
@@ -267,13 +331,20 @@ async function writeDriveFile(
     fileType: string;
     mimeType: string;
     bytes: Buffer;
+    /**
+     * False for a file too large for the object store. The row is written and
+     * the file is understood; only the original is not kept. Re-reading it
+     * fetches it from Google again, which is the price of not being able to
+     * hold it.
+     */
+    retain: boolean;
   },
 ): Promise<string> {
   const fileId = input.existingFileId ?? randomUUID();
-  const key = storageKeyFor(scope.companyId, fileId, input.fileType);
+  const key = input.retain ? storageKeyFor(scope.companyId, fileId, input.fileType) : null;
   const checksum = sha256(input.bytes);
 
-  await driveStorage().put(key, input.bytes, input.mimeType);
+  if (key) await driveStorage().put(key, input.bytes, input.mimeType);
 
   await withCompanyScope(scope, async (tx) => {
     if (input.existingFileId) {
@@ -283,6 +354,8 @@ async function writeDriveFile(
                original_filename = ${input.name},
                file_size = ${input.bytes.byteLength},
                checksum_sha256 = ${checksum},
+               storage_path = ${key},
+               bytes_retained = ${input.retain},
                archived_at = null,
                processing_status = 'pending',
                processing_attempts = 0,
@@ -298,12 +371,12 @@ async function writeDriveFile(
     await tx`
       insert into drive_files
         (id, company_id, folder_id, name, original_filename, file_type, mime_type,
-         file_size, checksum_sha256, storage_path, uploaded_by, source_type,
-         processing_status, metadata)
+         file_size, checksum_sha256, storage_path, bytes_retained, uploaded_by,
+         source_type, processing_status, metadata)
       values
         (${fileId}, ${scope.companyId}, null, ${input.name}, ${input.name},
          ${input.fileType}, ${input.mimeType}, ${input.bytes.byteLength}, ${checksum},
-         ${key}, ${scope.userId}, 'google_drive', 'pending', '{}'::jsonb)
+         ${key}, ${input.retain}, ${scope.userId}, 'google_drive', 'pending', '{}'::jsonb)
     `;
   });
 
@@ -320,6 +393,8 @@ async function upsertRecord(
     seenAt: Date;
     exportedMime: string | null;
     fileId: string | null;
+    /** Only for `too_large`: the ceiling that rejected it. */
+    limitBytes?: number | null;
   },
 ): Promise<void> {
   await withCompanyScope(scope, async (tx) => {
@@ -327,12 +402,13 @@ async function upsertRecord(
       insert into google_drive_files
         (company_id, connection_id, external_id, name, external_mime, exported_mime,
          external_modified_time, external_md5, external_size, file_id, state, reason,
-         last_seen_at, synced_at, updated_at)
+         limit_bytes, last_seen_at, synced_at, updated_at)
       values
         (${scope.companyId}, ${connectionId}, ${file.id}, ${file.name}, ${file.mimeType},
          ${values.exportedMime},
          ${file.modifiedTime ? new Date(file.modifiedTime) : null}, ${file.md5Checksum},
          ${file.size}, ${values.fileId}, ${values.state}, ${values.reason},
+         ${values.limitBytes ?? null},
          ${values.seenAt}, ${values.state === 'synced' ? values.seenAt : null}, now())
       on conflict (company_id, external_id) do update
          set connection_id          = excluded.connection_id,
@@ -345,6 +421,7 @@ async function upsertRecord(
              file_id                = coalesce(excluded.file_id, google_drive_files.file_id),
              state                  = excluded.state,
              reason                 = excluded.reason,
+             limit_bytes            = excluded.limit_bytes,
              last_seen_at           = excluded.last_seen_at,
              synced_at              = coalesce(excluded.synced_at, google_drive_files.synced_at),
              updated_at             = now()
@@ -424,5 +501,12 @@ function api() {
 function describe(error: unknown): string {
   if (error instanceof GoogleDriveError) return error.message;
   if (error instanceof Error && error.name === 'GoogleDriveNeedsReauth') return error.message;
+
+  // Anything else is ours — storage refusing an object, a database constraint,
+  // a bug. "The sync did not finish" was all this said, which is the one thing
+  // the reader already knew, and it made a real 52 MB upload failure take a
+  // code change to see. The row is only ever shown to the company it belongs
+  // to, so its own error is safe to put in front of it.
+  if (error instanceof Error && error.message) return error.message;
   return 'The sync did not finish.';
 }

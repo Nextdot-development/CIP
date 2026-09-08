@@ -263,8 +263,46 @@ export function KnowledgeSection({
               <span className="stack grow">
                 <span className="gen-prompt">{file.name}</span>
                 {file.reason && <span className="small muted">{file.reason}</span>}
+
+                {/* Both numbers, so "too large" is checkable rather than taken
+                    on trust. */}
+                {file.state === 'too_large' && file.sizeBytes !== null && (
+                  <span className="small muted">
+                    Measured {megabytes(file.sizeBytes)}
+                    {file.limitBytes !== null ? ` · maximum ${megabytes(file.limitBytes)}` : ''}
+                  </span>
+                )}
+
+                {file.progress && (
+                  <span className="small muted">
+                    {file.progress.pages !== null
+                      ? `${file.progress.pagesUnderstood}/${file.progress.pages} page(s) understood` +
+                        (file.progress.posts ? ` · ${file.progress.posts} post(s)` : '')
+                      : file.progress.status === 'ready'
+                        ? 'Read and understood'
+                        : 'Waiting for the worker'}
+                    {file.progress.retained ? '' : ' · read without keeping the original'}
+                  </span>
+                )}
+
+                {file.progress?.error && (
+                  <span className="small" style={{ color: 'var(--danger, #c33)' }}>
+                    {file.progress.error}
+                  </span>
+                )}
               </span>
-              <Pill tone={FILE_TONE[file.state] ?? 'neutral'}>{FILE_LABEL[file.state] ?? file.state}</Pill>
+
+              {/* Once a file is ours, how far it has got is the honest headline;
+                  the sync state only matters while it is not. */}
+              {file.progress ? (
+                <Pill tone={PROGRESS_TONE[file.progress.status] ?? 'neutral'}>
+                  {PROGRESS_LABEL[file.progress.status] ?? file.progress.status}
+                </Pill>
+              ) : (
+                <Pill tone={FILE_TONE[file.state] ?? 'neutral'}>
+                  {FILE_LABEL[file.state] ?? file.state}
+                </Pill>
+              )}
             </div>
           ))}
         </Card>
@@ -293,21 +331,52 @@ const LABEL: Record<string, string> = {
   disconnected: 'Not connected',
 };
 
+/**
+ * What to call a file, and what colour to say it in.
+ *
+ * `synced` used to read "In your Knowledge Layer", which was a claim about the
+ * pipeline made by the step before it. A file is copied in, then read, then
+ * understood, and the first of those finishing says nothing about the other
+ * two — a PDF nothing had opened sat there looking finished. So the sync state
+ * only decides the label when the file never became a CIP file at all;
+ * otherwise its actual progress does.
+ */
 const FILE_TONE: Record<string, 'ok' | 'warn' | 'stop' | 'neutral'> = {
   synced: 'ok',
   pending: 'warn',
   unsupported: 'neutral',
   trashed: 'neutral',
+  too_large: 'warn',
   failed: 'stop',
 };
 
 const FILE_LABEL: Record<string, string> = {
-  synced: 'In your Knowledge Layer',
+  synced: 'Synced',
   pending: 'Waiting',
   unsupported: 'Could not be read',
   trashed: 'Removed in Drive',
+  too_large: 'Too large',
   failed: 'Did not sync',
 };
+
+const PROGRESS_TONE: Record<string, 'ok' | 'warn' | 'stop' | 'neutral'> = {
+  queued: 'warn',
+  processing: 'warn',
+  ready: 'ok',
+  failed: 'stop',
+};
+
+const PROGRESS_LABEL: Record<string, string> = {
+  queued: 'Queued',
+  processing: 'Reading…',
+  ready: 'In your Knowledge Layer',
+  failed: 'Could not be read',
+};
+
+function megabytes(bytes: number | null): string | null {
+  if (bytes === null) return null;
+  return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+}
 
 const OUTCOMES: Record<string, string> = {
   connected: 'Google Drive connected. Choose a folder to sync.',

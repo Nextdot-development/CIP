@@ -25,10 +25,29 @@ export type GoogleDriveConnectionDTO = {
 export type SyncedFileDTO = {
   id: string;
   name: string;
+  /** What the sync did: synced, unsupported, too_large, failed, trashed. */
   state: string;
   reason: string | null;
   fileId: string | null;
   externalMime: string;
+  sizeBytes: number | null;
+  /** For `too_large`: the ceiling that rejected it, next to sizeBytes. */
+  limitBytes: number | null;
   syncedAt: string | null;
   lastSeenAt: string | null;
+  /**
+   * How far the pipeline has actually got. Null until the file is a CIP file.
+   *
+   * Separate from `state` because copying a file in and reading it are
+   * different steps, and treating the first as the second is what made a
+   * queued PDF look finished.
+   */
+  progress: {
+    status: 'queued' | 'processing' | 'ready' | 'failed';
+    retained: boolean;
+    error: string | null;
+    pages: number | null;
+    pagesUnderstood: number | null;
+    posts: number | null;
+  } | null;
 };
