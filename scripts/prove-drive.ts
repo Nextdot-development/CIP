@@ -484,10 +484,10 @@ async function main() {
   const { driveStorage } = await import('../src/server/drive/storage');
   for (const stray of strays) await driveStorage().remove(stray.storage_path).catch(() => {});
   await admin`delete from media_generations where prompt like ${'%' + String(stamp) + '%'}`;
-  // Nothing above connects a Drive, but clear any connection state a previous
-  // run of this script may have left so the checks stay meaningful.
-  await admin`delete from google_drive_files`;
-  await admin`delete from google_drive_connections`;
+  // Nothing here connects a Google Drive, so there is nothing of ours to clear.
+  // An earlier version deleted every google_drive_connections row at this point
+  // and destroyed the real connection of whoever ran the proof. The checks above
+  // read connection state; they never create it, and they hold either way.
   console.log('  (cleaned up the folders and files this run created)');
 
   await sql.end();

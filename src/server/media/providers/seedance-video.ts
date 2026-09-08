@@ -125,13 +125,10 @@ export class SeedanceVideoProvider implements VideoGenerationProvider {
     }
 
     if (status !== 'SUCCEEDED') {
-      // Runway puts a reason in `failure`, but it can quote the prompt back, so
-      // it is not passed on. The normalised code is what a caller needs.
-      return {
-        state: 'failed',
-        code: 'GENERATION_FAILED',
-        message: 'The video provider could not make that video.',
-      };
+      // Runway puts a prose reason in `failure`, and that one can quote the
+      // prompt back, so it is not passed on. `failureCode` is a stable enum
+      // that never does, and it carries the part a person needs.
+      return failureFrom(stringAt(task, 'failureCode'));
     }
 
     const url = firstOutputUrl(task);
@@ -203,7 +200,7 @@ export class SeedanceVideoProvider implements VideoGenerationProvider {
     }
 
     if (response.ok || tolerate.includes(response.status)) return response;
-    throw classify(response);
+    throw await classify(response);
   }
 
   private async download(url: string): Promise<GeneratedAsset> {
@@ -216,7 +213,7 @@ export class SeedanceVideoProvider implements VideoGenerationProvider {
     } catch {
       throw new ProviderFailed('PROVIDER_ERROR', 'transient', 'The finished video could not be downloaded.');
     }
-    if (!response.ok) throw classify(response);
+    if (!response.ok) throw await classify(response);
 
     const bytes = Buffer.from(await response.arrayBuffer());
     if (bytes.byteLength > MEDIA_LIMITS.maxAssetBytes) {
@@ -247,7 +244,59 @@ function firstOutputUrl(task: unknown): string | null {
   return null;
 }
 
-function classify(response: Response): ProviderFailed {
+/**
+ * Turns Runway's failure enum into something someone can act on.
+ *
+ * Moderation is the case worth separating. It is not a provider wobble that
+ * will pass: the same prompt and the same reference frame will be refused
+ * again, and the fix belongs to whoever chose them. "Could not make that
+ * video" sends them to look at our logs for a decision Runway made, and leaves
+ * them nothing to change.
+ *
+ * Observed: a photoreal human face as the reference frame comes back as
+ * INPUT_PREPROCESSING.SAFETY.THIRD_PARTY while the same prompt with no
+ * reference succeeds.
+ */
+function failureFrom(failureCode: string | null): VideoStatus {
+  const code = (failureCode ?? '').toUpperCase();
+
+  if (code.includes('SAFETY') || code.includes('MODERATION')) {
+    return {
+      state: 'failed',
+      code: 'INVALID_REQUEST',
+      message:
+        'The video provider refused this request: its content moderation blocked the ' +
+        'prompt or the reference image. A photoreal face as the reference frame is the ' +
+        'usual cause. Try different wording, or generate without a reference image.',
+    };
+  }
+
+  return {
+    state: 'failed',
+    code: 'GENERATION_FAILED',
+    message: 'The video provider could not make that video.',
+  };
+}
+
+async function classify(response: Response): Promise<ProviderFailed> {
+  // Runway does not use 402 for an empty account. It answers 400 with the
+  // reason in the body, which is indistinguishable from a malformed request
+  // unless the body is read — and "the provider refused that request" sends
+  // someone to check their prompt when what they need is to top up.
+  const detail = await response
+    .clone()
+    .text()
+    .then((text) => text.slice(0, 500))
+    .catch(() => '');
+
+  if (/enough credits|insufficient credit|out of credit/i.test(detail)) {
+    return new ProviderFailed(
+      'PROVIDER_ERROR',
+      'permanent',
+      'The video provider account is out of credit.',
+    );
+  }
+
   if (response.status === 429) {
     const retryAfter = Number(response.headers.get('retry-after'));
     return new ProviderFailed(
@@ -265,8 +314,6 @@ function classify(response: Response): ProviderFailed {
     );
   }
   if (response.status === 402) {
-    // Out of credit. Retrying will not help, and it is worth saying plainly
-    // rather than reporting a generic provider error nobody can act on.
     return new ProviderFailed(
       'PROVIDER_ERROR',
       'permanent',

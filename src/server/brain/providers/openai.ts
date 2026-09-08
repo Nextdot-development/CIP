@@ -424,7 +424,11 @@ export class OpenAIBrainProvider implements BrainProvider {
       extractedText: string | null;
       structured: Record<string, unknown>;
       facts: AssetAnalysis['facts'];
-    }>(content, schema, name, 4_000);
+      // Images need the most room of the three: a photograph yields a long
+      // structured description and a dozen facts, and gpt-5 bills its
+      // reasoning against the same budget. Measured: 4,000 was enough for a
+      // document every time and for a 1024x1024 photograph only sometimes.
+    }>(content, schema, name, 8_000);
 
     if (!parsed.summary || parsed.summary.trim().length === 0) {
       throw new BrainFailed('INVALID_RESPONSE', 'transient', 'The analysis came back empty.');
@@ -496,12 +500,17 @@ export class OpenAIBrainProvider implements BrainProvider {
 
     const text = body?.choices?.[0]?.message?.content;
     if (!text) {
-      // Seen for real when the token budget is spent on reasoning before any
-      // answer is produced. Retryable: a larger budget or a quieter moment fixes it.
+      // The model says which of these it was, so there is no need to guess.
+      // "length" means the budget went on reasoning before any answer was
+      // written — a real outcome for a dense image, and one an operator can
+      // act on, unlike a flat "nothing usable".
+      const ranOut = body?.choices?.[0]?.finish_reason === 'length';
       throw new BrainFailed(
         'INVALID_RESPONSE',
         'transient',
-        'The Brain returned nothing usable.',
+        ranOut
+          ? 'The analysis ran out of token budget before it produced an answer.'
+          : 'The Brain returned nothing usable.',
       );
     }
 
