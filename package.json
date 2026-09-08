@@ -32,7 +32,8 @@
     "test:brain": "node --conditions=react-server --import tsx --test --test-concurrency=1 --test-force-exit tests/brain.test.ts",
     "prove:brain": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/prove-brain.ts",
     "test:pdf": "node --conditions=react-server --import tsx --test --test-concurrency=1 --test-force-exit tests/pdfVisual.test.ts",
-    "prove:pdf": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/prove-pdf.ts"
+    "prove:pdf": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/prove-pdf.ts",
+    "prove:mm-pdfs": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/prove-mm-pdfs.ts"
   },
   "dependencies": {
     "@google/genai": "^2.21.0",

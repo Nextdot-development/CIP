@@ -272,7 +272,8 @@ async function classify(response: Response): Promise<GoogleDriveError> {
     if (reason === 'accessNotConfigured' || reason === 'SERVICE_DISABLED') {
       return new GoogleDriveError(
         'permanent',
-        'The Google Drive API is not enabled for this project. Enable it in the Google Cloud console, wait a minute, and try again.',
+        'The Google Drive API is not enabled for this project. ' +
+          `Enable it at ${enableDriveApiUrl()}, wait a minute, and try again.`,
       );
     }
     if (
@@ -318,6 +319,24 @@ async function classify(response: Response): Promise<GoogleDriveError> {
  * checked. The accompanying human message is deliberately not read: it can
  * quote a file name.
  */
+/**
+ * Where to turn the Drive API on.
+ *
+ * "Enable it in the Google Cloud console" is true and nearly useless: the
+ * console has hundreds of APIs and several projects, and the one that matters
+ * is whichever this deployment's OAuth client belongs to. That project's
+ * number is the numeric prefix of the client id, so the exact page can be
+ * named instead of described.
+ *
+ * The client id is our own configuration, not a customer's, so putting part of
+ * it in an operator-facing message gives nothing away about them.
+ */
+function enableDriveApiUrl(): string {
+  const base = 'https://console.cloud.google.com/apis/library/drive.googleapis.com';
+  const project = /^(\d+)-/.exec(process.env.GOOGLE_CLIENT_ID ?? '')?.[1];
+  return project ? `${base}?project=${project}` : base;
+}
+
 async function errorReason(response: Response): Promise<string | null> {
   try {
     const body = (await response.clone().json()) as {
