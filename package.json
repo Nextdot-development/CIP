@@ -25,7 +25,8 @@
     "media:worker": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/media-worker.ts",
     "test:media": "node --conditions=react-server --import tsx --test --test-concurrency=1 tests/media.test.ts",
     "gdrive:worker": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/gdrive-sync-worker.ts",
-    "test:gdrive": "node --conditions=react-server --import tsx --test --test-concurrency=1 tests/googleDrive.test.ts"
+    "test:gdrive": "node --conditions=react-server --import tsx --test --test-concurrency=1 tests/googleDrive.test.ts",
+    "test:graph": "node --conditions=react-server --import tsx --test --test-concurrency=1 --test-force-exit tests/knowledgeGraph.test.ts"
   },
   "dependencies": {
     "@google/genai": "^2.21.0",
@@ -35,6 +36,7 @@
     "postgres": "^3.4.9",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
+    "react-force-graph-2d": "^1.29.1",
     "server-only": "^0.0.1"
   },
   "devDependencies": {

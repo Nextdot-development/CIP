@@ -1,0 +1,135 @@
+/* ---------------------------------------------------------------------------
+   Knowledge Graph.
+
+   Its own dark surface rather than the app's light one: a force-directed graph
+   is nearly all thin lines and small dots, and those read far better against
+   dark. The canvas itself is drawn by the renderer, so what is here is the
+   frame around it — toolbar, statistics, legend and inspector.
+   --------------------------------------------------------------------------- */
+
+.graph-page {
+  display: flex; flex-direction: column;
+  height: calc(100vh - 96px); min-height: 520px;
+  border: 1px solid var(--line); border-radius: var(--r-md);
+  overflow: hidden; background: #0d1017;
+}
+
+.graph-toolbar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 10px 12px; border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+  background: #12161f;
+}
+
+.graph-search {
+  display: flex; align-items: center; gap: 8px; flex: 1 1 260px; min-width: 200px;
+  background: #0d1017; border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: var(--r-sm); padding: 8px 11px; color: #94a3b8;
+}
+.graph-search input {
+  flex: 1; background: none; border: 0; outline: none;
+  color: #e2e8f0; font: inherit; font-size: 14px;
+}
+.graph-search input::placeholder { color: #64748b; }
+.graph-hits {
+  font-size: 12px; font-weight: 600; color: #0d1017;
+  background: #facc15; border-radius: 999px; padding: 1px 7px;
+}
+
+.graph-toolbar select {
+  background: #0d1017; color: #e2e8f0; font: inherit; font-size: 13px;
+  border: 1px solid rgba(148, 163, 184, 0.22); border-radius: var(--r-sm);
+  padding: 8px 10px; cursor: pointer;
+}
+
+.graph-zoom { display: flex; gap: 6px; margin-left: auto; }
+.graph-zoom button {
+  min-width: 34px; height: 34px; padding: 0 10px;
+  background: #0d1017; color: #e2e8f0; font: inherit; font-size: 13px;
+  border: 1px solid rgba(148, 163, 184, 0.22); border-radius: var(--r-sm);
+  cursor: pointer; transition: background .15s ease, border-color .15s ease;
+}
+.graph-zoom button:hover { background: #1b2230; border-color: rgba(148, 163, 184, 0.4); }
+
+.graph-body { display: flex; flex: 1; min-height: 0; }
+
+.graph-canvas { position: relative; flex: 1; min-width: 0; }
+.graph-canvas canvas { display: block; }
+
+.graph-loading,
+.graph-busy {
+  position: absolute; inset: 0; display: grid; place-items: center;
+  color: #94a3b8; font-size: 14px; pointer-events: none;
+}
+.graph-busy {
+  inset: auto 14px 14px auto; padding: 6px 12px;
+  background: rgba(13, 16, 23, 0.9); border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 999px; font-size: 12.5px;
+}
+
+/* Counted from the graph that is actually on screen, never stored. */
+.graph-stats {
+  position: absolute; top: 14px; left: 14px;
+  display: flex; flex-wrap: wrap; gap: 4px 14px; max-width: 320px;
+  padding: 10px 13px; border-radius: var(--r-sm);
+  background: rgba(18, 22, 31, 0.86); border: 1px solid rgba(148, 163, 184, 0.18);
+  color: #94a3b8; font-size: 12px; pointer-events: none; backdrop-filter: blur(6px);
+}
+.graph-stats b { color: #e2e8f0; font-weight: 600; margin-right: 3px; }
+
+.graph-legend {
+  position: absolute; bottom: 14px; left: 14px;
+  display: flex; gap: 14px; padding: 8px 12px; border-radius: 999px;
+  background: rgba(18, 22, 31, 0.86); border: 1px solid rgba(148, 163, 184, 0.18);
+  font-size: 12px; color: #94a3b8; pointer-events: none; text-transform: capitalize;
+}
+.graph-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.graph-legend i { width: 9px; height: 9px; border-radius: 50%; display: block; }
+
+.graph-inspector {
+  width: 320px; flex: none; overflow-y: auto;
+  padding: 16px; background: #12161f;
+  border-left: 1px solid rgba(148, 163, 184, 0.16); color: #e2e8f0;
+}
+/* Explicit: the app's headings are dark ink, which vanishes on this panel. */
+.graph-inspector h3 {
+  font-size: 16px; line-height: 1.4; margin: 10px 0 14px;
+  word-break: break-word; color: #f1f5f9;
+}
+.insp-kind {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11.5px; text-transform: uppercase; letter-spacing: .06em; color: #94a3b8;
+}
+.insp-close {
+  background: none; border: 0; color: #94a3b8; cursor: pointer; padding: 2px;
+}
+.insp-close:hover { color: #e2e8f0; }
+
+.insp-facts { display: grid; gap: 10px; margin: 0 0 14px; }
+.insp-facts div { display: flex; justify-content: space-between; gap: 12px; }
+.insp-facts dt { font-size: 12.5px; color: #64748b; }
+.insp-facts dd { font-size: 12.5px; color: #e2e8f0; margin: 0; text-align: right; }
+
+.insp-snippet {
+  font-size: 13px; line-height: 1.6; color: #cbd5e1;
+  background: #0d1017; border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: var(--r-sm); padding: 11px 13px; margin: 0 0 14px;
+}
+
+.insp-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.insp-actions .btn {
+  background: #0d1017; color: #e2e8f0; border: 1px solid rgba(148, 163, 184, 0.25);
+}
+.insp-actions .btn:hover { background: #1b2230; }
+.insp-actions .btn-primary { background: var(--brand); border-color: var(--brand); color: #fff; }
+
+.graph-empty {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 12px; text-align: center; min-height: 60vh; color: var(--ink-500);
+}
+.graph-empty h2 { font-size: 19px; color: var(--ink-900); margin: 4px 0 0; }
+.graph-empty p { font-size: 14px; max-width: 420px; line-height: 1.6; margin: 0 0 6px; }
+
+@media (max-width: 860px) {
+  .graph-body { flex-direction: column; }
+  .graph-inspector { width: auto; border-left: 0; border-top: 1px solid rgba(148, 163, 184, 0.16); }
+}
