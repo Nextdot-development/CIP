@@ -38,9 +38,21 @@ export interface DriveStorage {
 const UUID = '[0-9a-f-]{36}';
 const EXTENSION = '(\\.[a-z0-9]{1,10})?';
 const SAFE_KEY = new RegExp(
-  `^companies\\/${UUID}\\/(${UUID}|media\\/${UUID}\\/${UUID})${EXTENSION}$`,
+  `^companies\\/${UUID}\\/(${UUID}` +
+    `|media\\/${UUID}\\/${UUID}` +
+    // A PDF read visually keeps each rendered page, grouped under the file it
+    // came from so a file's pages can be found without consulting the database.
+    // Both segments are ids we generated, so the shape stays as strict as the
+    // others: no page number, no filename, nothing a caller chose.
+    `|pdf-pages\\/${UUID}\\/${UUID}` +
+    `)${EXTENSION}$`,
   'i',
 );
+
+/** Where one rendered page of a PDF lives. */
+export function pdfPageKeyFor(companyId: string, fileId: string, pageId: string): string {
+  return `companies/${companyId}/pdf-pages/${fileId}/${pageId}.jpg`;
+}
 
 export function assertSafeKey(key: string): void {
   if (!SAFE_KEY.test(key)) {

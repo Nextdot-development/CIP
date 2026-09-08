@@ -2,6 +2,7 @@
 
 import { useCallback, useState } from 'react';
 import { Card, EmptyState, Pill } from '@/components/ui/Bits';
+import { BrainPdfPanel } from './BrainPdfPanel';
 import { Icon } from '@/components/ui/Icon';
 import { useToast } from '@/context/toast';
 import { relativeDay } from '@/lib/format';
@@ -29,12 +30,13 @@ import type {
  * worth making.
  */
 
-type Tab = 'overview' | 'brand' | 'memory' | 'learning';
+type Tab = 'overview' | 'brand' | 'memory' | 'pdfs' | 'learning';
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'overview', label: 'Overview' },
   { id: 'brand', label: 'Brand DNA' },
   { id: 'memory', label: 'Memory' },
+  { id: 'pdfs', label: 'PDFs' },
   { id: 'learning', label: 'Learning' },
 ];
 
@@ -246,6 +248,8 @@ export function BrainSection({ initial }: { initial: BrainOverviewDTO }) {
           )}
         </Card>
       )}
+
+      {tab === 'pdfs' && <BrainPdfPanel />}
 
       {tab === 'learning' && (
         <>

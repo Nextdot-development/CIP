@@ -95,3 +95,50 @@ textarea.field-input { resize: vertical; line-height: 1.55; }
   padding: 16px;
 }
 .evidence-sheet h3 { font-size: 15px; line-height: 1.45; margin: 8px 0 4px; word-break: break-word; }
+
+/* ---------- A PDF read visually ---------- */
+/* Page image beside what was read off it, because a claim about page 7 is
+   only checkable when page 7 is on screen next to it. Stacks on a narrow
+   screen rather than shrinking the page to something unreadable. */
+.pdf-page {
+  display: grid;
+  grid-template-columns: minmax(0, 220px) minmax(0, 1fr);
+  gap: 14px;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+
+@media (max-width: 720px) {
+  .pdf-page { grid-template-columns: minmax(0, 1fr); }
+}
+
+.pdf-page-image { display: flex; flex-direction: column; gap: 6px; }
+
+.pdf-page-image img {
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.pdf-page-detail { gap: 10px; min-width: 0; }
+
+.pdf-post {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.pdf-structured {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-top: 4px;
+}
+
+/* Long captions and hashtag runs must wrap rather than widening the row. */
+.pdf-structured span { overflow-wrap: anywhere; }

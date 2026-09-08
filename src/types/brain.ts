@@ -78,3 +78,56 @@ export const FACT_KIND_LABEL: Record<BrandFactDTO['kind'], string> = {
   inference: 'Inferred',
   hypothesis: 'Low confidence',
 };
+
+/**
+ * A PDF read visually, and what came out of it.
+ *
+ * Kept separate from MemoryDTO because the question is different: memory asks
+ * what CIP knows, this asks how the reading of one file actually went — which
+ * pages were looked at, which failed, and how many posts were found.
+ */
+export type PdfSummaryDTO = {
+  fileId: string;
+  name: string;
+  fileSize: number;
+  uploadedAt: string;
+  status: string;
+  kind: string | null;
+  error: string | null;
+  pageCount: number;
+  pagesProcessed: number;
+  pagesUnderstood: number;
+  pagesFailed: number;
+  pagesWithText: number;
+  postsDetected: number;
+  processingMs: number | null;
+};
+
+export type PdfPageDTO = {
+  id: string;
+  pageNumber: number;
+  status: string;
+  summary: string;
+  hasTextLayer: boolean;
+  postsDetected: number;
+  width: number | null;
+  height: number | null;
+  errorMessage: string | null;
+  durationMs: number | null;
+  structured: Record<string, unknown>;
+  /** Scoped route, never a storage path. */
+  imageUrl: string;
+};
+
+export type PdfPostDTO = {
+  id: string;
+  pageNumber: number;
+  postIndex: number;
+  country: string | null;
+  caption: string | null;
+  headline: string | null;
+  summary: string;
+  visibleText: string | null;
+  confidence: number;
+  structured: Record<string, unknown>;
+};

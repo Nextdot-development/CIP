@@ -138,6 +138,63 @@ export type DocumentInput = {
   filename: string;
 };
 
+/**
+ * One post found on a rendered PDF page.
+ *
+ * These files are pages of social posts, and a page can carry several. Each is
+ * a separate creative decision — its own caption, format and call to action —
+ * so they are returned separately rather than flattened into one description
+ * of the page.
+ *
+ * Every field is optional in substance: a post that shows no date has no date,
+ * and the model is told to leave it null rather than produce a plausible one.
+ */
+export type PdfPost = {
+  /** Where on the page, reading order. */
+  postIndex: number;
+  country: string | null;
+  account: string | null;
+  postedOn: string | null;
+  caption: string | null;
+  headline: string | null;
+  /** Everything legible, verbatim. */
+  visibleText: string | null;
+  summary: string;
+  product: string | null;
+  location: string | null;
+  eventContext: string | null;
+  cta: string | null;
+  hashtags: string[];
+  offer: string | null;
+  creativeFormat: string | null;
+  photographyStyle: string | null;
+  designStyle: string | null;
+  composition: string | null;
+  colours: string[];
+  typography: string[];
+  logoVisible: boolean;
+  people: string | null;
+  /** How sure the model is that this is one distinct post. */
+  confidence: number;
+};
+
+/** What one rendered PDF page turned out to hold. */
+export type PdfPageAnalysis = AssetAnalysis & {
+  posts: PdfPost[];
+};
+
+export type PdfPageInput = {
+  /** The rendered page image. Never the PDF itself. */
+  bytes: Buffer;
+  mimeType: string;
+  pageNumber: number;
+  pageCount: number;
+  /** Text the deterministic pass already read off this page, when there was any. */
+  pageText: string | null;
+  /** The display name only. Never a path, never an id. */
+  filename: string;
+};
+
 /** What a feedback comment means, turned into something actionable. */
 export type FeedbackAnalysis = {
   /** The lessons this feedback supports. Empty when it taught us nothing. */
@@ -225,6 +282,16 @@ export interface BrainProvider {
   /** Reads already-extracted document text. */
   analyzeDocument(input: DocumentInput): Promise<AssetAnalysis>;
 
+  /**
+   * Looks at one rendered page of a PDF and reports the posts on it.
+   *
+   * Separate from analyzeImage because the question is different: not "what is
+   * this picture" but "which posts are on this page, and what does each one
+   * say". Implementations must send the page image, its position in the
+   * document, any text already read from it and the instruction — nothing else.
+   */
+  analyzePdfPage(input: PdfPageInput): Promise<PdfPageAnalysis>;
+
   /** Turns a score and a comment into scoped, actionable lessons. */
   analyzeFeedback(input: FeedbackInput): Promise<FeedbackAnalysis>;
 
@@ -264,6 +331,20 @@ export const BRAIN_LIMITS = {
   /** Document text sent for analysis. The rest is already chunked and embedded. */
   get maxDocumentChars(): number {
     return fromEnv('CIP_BRAIN_MAX_DOCUMENT_CHARS', 12_000);
+  },
+  /**
+   * Posts read from a single page. A contact sheet of thumbnails can show
+   * dozens; past a point they are too small to read anything from reliably.
+   */
+  get maxPostsPerPage(): number {
+    return fromEnv('CIP_BRAIN_MAX_POSTS_PER_PAGE', 12);
+  },
+  /**
+   * Page text passed alongside the image. It is a hint for reading the
+   * picture, not the content itself, so it does not need the document budget.
+   */
+  get maxPageTextChars(): number {
+    return fromEnv('CIP_BRAIN_MAX_PAGE_TEXT_CHARS', 4_000);
   },
   get requestTimeoutMs(): number {
     return fromEnv('CIP_BRAIN_TIMEOUT_MS', 120_000);

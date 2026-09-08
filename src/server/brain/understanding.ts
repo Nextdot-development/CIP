@@ -13,6 +13,8 @@ import {
   BrainFailed,
 } from './providers/types';
 import type { AssetAnalysis } from './providers/types';
+import { needsVisualPass, understandPdfVisually } from './pdfVisual';
+import { profilePdf } from '../drive/extraction/pdfRender';
 import {
   extractAudio,
   ffmpegAvailable,
@@ -35,7 +37,7 @@ import {
  * so row-level security applies to every read and write that follows.
  */
 
-export type AssetKind = 'image' | 'video' | 'document';
+export type AssetKind = 'image' | 'video' | 'document' | 'pdf_visual';
 
 /** Which kind of understanding an asset needs, if any. */
 export function kindFor(mimeType: string, fileType: string): AssetKind | null {
@@ -185,15 +187,38 @@ export async function understandClaimedAsset(claim: ClaimedAsset): Promise<Under
 
     const bytes = await driveStorage().get(claim.storagePath);
 
-    const analysis =
-      claim.kind === 'image'
-        ? await provider.analyzeImage({ bytes, mimeType: claim.mimeType, filename: claim.filename })
-        : claim.kind === 'video'
-          ? await understandVideo(claim, bytes)
-          : await understandDocument(scope, claim);
+    // A PDF is decided here rather than at enqueue, because the decision needs
+    // the bytes: whether it has a text layer, and whether it shows anything.
+    // An Instagram page exported to PDF has no text at all, and reading it as
+    // a document produces nothing at all.
+    const kind = claim.kind === 'document' && claim.fileType.toLowerCase() === 'pdf'
+      ? await pdfKind(bytes)
+      : claim.kind;
 
-    await store(scope, claim, analysis);
-    return { status: 'understood', kind: claim.kind, facts: analysis.facts.length };
+    const analysis =
+      kind === 'image'
+        ? await provider.analyzeImage({ bytes, mimeType: claim.mimeType, filename: claim.filename })
+        : kind === 'video'
+          ? await understandVideo(claim, bytes)
+          : kind === 'pdf_visual'
+            ? (await understandPdfVisually(scope, {
+                fileId: claim.fileId,
+                understandingId: claim.understandingId,
+                filename: claim.filename,
+                bytes,
+              })).analysis
+            : await understandDocument(scope, claim);
+
+    await store(scope, { ...claim, kind }, analysis);
+
+    // The facts of a visually-read PDF are recorded per page, against the page
+    // they were seen on, so counting analysis.facts here would report zero for
+    // a document that produced dozens. Ask the database what it actually holds.
+    const facts = kind === 'pdf_visual'
+      ? await countPdfFacts(scope, claim.fileId)
+      : analysis.facts.length;
+
+    return { status: 'understood', kind, facts };
   } catch (error) {
     const failure =
       error instanceof BrainFailed
@@ -284,6 +309,39 @@ async function understandVideo(claim: ClaimedAsset, bytes: Buffer): Promise<Asse
   });
 }
 
+/**
+ * Whether this PDF should be read or looked at.
+ *
+ * Profiling is cheap — it parses the page tree without rendering anything — so
+ * it runs on every PDF rather than being guessed from the filename. A brand
+ * guidelines document with a real text layer and no pictures stays on the
+ * cheap path; a deck of screenshots does not.
+ *
+ * A PDF that will not parse is left as a document, so the existing extractor
+ * reports the problem in the words it already has for it.
+ */
+async function pdfKind(bytes: Buffer): Promise<AssetKind> {
+  try {
+    return needsVisualPass(await profilePdf(bytes)) ? 'pdf_visual' : 'document';
+  } catch {
+    return 'document';
+  }
+}
+
+/** How many distinct facts this PDF's pages produced. */
+async function countPdfFacts(scope: CompanyScope, fileId: string): Promise<number> {
+  const rows = await withCompanyScope(scope, async (tx) =>
+    tx<{ n: number }[]>`
+      select count(distinct fact_id)::int as n
+        from brand_dna_evidence
+       where company_id = ${scope.companyId}
+         and file_id = ${fileId}
+         and source_type = 'pdf_visual'
+    `,
+  );
+  return rows[0]?.n ?? 0;
+}
+
 /** A document, read from the text Phase 3 already extracted. */
 async function understandDocument(scope: CompanyScope, claim: ClaimedAsset): Promise<AssetAnalysis> {
   const rows = await withCompanyScope(scope, async (tx) =>
@@ -338,6 +396,7 @@ async function store(
     await tx`
       update asset_understanding
          set status = 'ready',
+             kind = ${claim.kind},
              provider = ${brain().name},
              model = ${brain().model},
              summary = ${analysis.summary},

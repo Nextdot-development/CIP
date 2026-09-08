@@ -11,6 +11,9 @@ import type {
   FramesInput,
   GenerationBrief,
   ImageInput,
+  PdfPageAnalysis,
+  PdfPageInput,
+  PdfPost,
 } from './types';
 
 /**
@@ -49,6 +52,84 @@ const FACT_SCHEMA = {
       attribute: { type: 'string' },
       value: { type: 'string' },
     },
+  },
+} as const;
+
+/**
+ * One rendered page of a PDF.
+ *
+ * Every field is required by the schema and nullable in value. That is
+ * deliberate: `strict: true` will not accept a missing key, and making the
+ * model emit null for what it cannot see is the difference between "no date
+ * shown" and a date it invented to fill the slot.
+ */
+const PDF_POST_SCHEMA = {
+  type: 'array',
+  items: {
+    type: 'object',
+    additionalProperties: false,
+    required: [
+      'postIndex', 'country', 'account', 'postedOn', 'caption', 'headline',
+      'visibleText', 'summary', 'product', 'location', 'eventContext', 'cta',
+      'hashtags', 'offer', 'creativeFormat', 'photographyStyle', 'designStyle',
+      'composition', 'colours', 'typography', 'logoVisible', 'people', 'confidence',
+    ],
+    properties: {
+      postIndex: { type: 'integer' },
+      country: { type: ['string', 'null'] },
+      account: { type: ['string', 'null'] },
+      postedOn: { type: ['string', 'null'] },
+      caption: { type: ['string', 'null'] },
+      headline: { type: ['string', 'null'] },
+      visibleText: { type: ['string', 'null'] },
+      summary: { type: 'string' },
+      product: { type: ['string', 'null'] },
+      location: { type: ['string', 'null'] },
+      eventContext: { type: ['string', 'null'] },
+      cta: { type: ['string', 'null'] },
+      hashtags: { type: 'array', items: { type: 'string' } },
+      offer: { type: ['string', 'null'] },
+      creativeFormat: { type: ['string', 'null'] },
+      photographyStyle: { type: ['string', 'null'] },
+      designStyle: { type: ['string', 'null'] },
+      composition: { type: ['string', 'null'] },
+      colours: { type: 'array', items: { type: 'string' } },
+      typography: { type: 'array', items: { type: 'string' } },
+      logoVisible: { type: 'boolean' },
+      people: { type: ['string', 'null'] },
+      confidence: { type: 'number' },
+    },
+  },
+} as const;
+
+const PDF_PAGE_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['summary', 'extractedText', 'structured', 'facts', 'posts'],
+  properties: {
+    summary: { type: 'string' },
+    extractedText: { type: ['string', 'null'] },
+    structured: {
+      type: 'object',
+      additionalProperties: false,
+      required: [
+        'pageKind', 'postCount', 'country', 'account', 'colours', 'typography',
+        'designStyle', 'recurringPatterns',
+      ],
+      properties: {
+        // What this page is: a grid of posts, one post, a cover, a divider.
+        pageKind: { type: 'string' },
+        postCount: { type: 'integer' },
+        country: { type: ['string', 'null'] },
+        account: { type: ['string', 'null'] },
+        colours: { type: 'array', items: { type: 'string' } },
+        typography: { type: 'array', items: { type: 'string' } },
+        designStyle: { type: ['string', 'null'] },
+        recurringPatterns: { type: 'array', items: { type: 'string' } },
+      },
+    },
+    facts: FACT_SCHEMA,
+    posts: PDF_POST_SCHEMA,
   },
 } as const;
 
@@ -292,6 +373,83 @@ export class OpenAIBrainProvider implements BrainProvider {
     ];
 
     return this.analyse(content, ASSET_SCHEMA, 'document_analysis');
+  }
+
+  async analyzePdfPage(input: PdfPageInput): Promise<PdfPageAnalysis> {
+    if (input.bytes.byteLength > BRAIN_LIMITS.maxImageBytes) {
+      throw new BrainFailed('UNSUPPORTED_ASSET', 'permanent', 'That page is too large to analyse.');
+    }
+
+    // The same guard the image path uses, for the same reason: a vision model
+    // shown something too small to read does not say so, it invents.
+    const size = pngOrJpegSize(input.bytes);
+    if (size && Math.min(size.width, size.height) < BRAIN_LIMITS.minImagePixels) {
+      throw new BrainFailed(
+        'ASSET_TOO_SMALL',
+        'permanent',
+        'That page rendered too small to read reliably.',
+      );
+    }
+
+    const hint = input.pageText?.trim().slice(0, BRAIN_LIMITS.maxPageTextChars);
+
+    const content: Content[] = [
+      {
+        type: 'text',
+        text:
+          `This is page ${input.pageNumber} of ${input.pageCount} of a document named ` +
+          `"${input.filename}". It is a page of social media posts.\n\n` +
+          'Find every distinct post on this page and report each one separately. A page ' +
+          'may hold one post, a grid of several, or none at all — a cover or a divider ' +
+          'page has no posts, and an empty list is the right answer for it. Number them ' +
+          'in reading order starting at 0.\n\n' +
+          'Read text exactly as it appears, including captions, hashtags, dates, handles ' +
+          'and any offer. Report the country only if the page or the post shows it — a ' +
+          'language is not a country and a filename is not evidence.\n\n' +
+          'Describe only what is actually visible. Where something is not shown, use null ' +
+          'rather than a plausible value: a post with no visible date has no date. Never ' +
+          'record an absence as a fact — if there is no logo or no call to action, omit ' +
+          'it instead of stating that it is missing. Facts should be small, individually ' +
+          'checkable claims about what is present, and should describe the brand rather ' +
+          'than this one page: recurring colour, typography, composition, product ' +
+          'presentation and call-to-action style are what make a page worth reading.\n\n' +
+          'confidence is how sure you are that an item is one distinct post: 1 when it is ' +
+          'unmistakable, lower when a page is dense or a card is cropped.' +
+          (hint ? `\n\nText already read from this page:\n${hint}` : ''),
+      },
+      {
+        type: 'image_url',
+        image_url: { url: dataUri(input.mimeType, input.bytes), detail: 'high' },
+      },
+    ];
+
+    const started = Date.now();
+    const { parsed, usage } = await this.call<{
+      summary: string;
+      extractedText: string | null;
+      structured: Record<string, unknown>;
+      facts: AssetAnalysis['facts'];
+      posts: PdfPost[];
+    }>(content, PDF_PAGE_SCHEMA, 'pdf_page_analysis', 12_000);
+
+    // A page of posts produces more structured output than any other asset:
+    // a dozen posts, each with a caption read verbatim. 12,000 is sized for
+    // that, on top of what gpt-5 spends on reasoning.
+
+    const posts = (parsed.posts ?? [])
+      .slice(0, BRAIN_LIMITS.maxPostsPerPage)
+      .map((post, index) => normalisePost(post, index));
+
+    return {
+      summary: parsed.summary?.trim() ?? '',
+      extractedText: parsed.extractedText?.trim() || null,
+      structured: { ...(parsed.structured ?? {}), postCount: posts.length },
+      facts: (parsed.facts ?? []).filter(
+        (fact) => fact.attribute?.trim() && fact.value?.trim() && !recordsAnAbsence(fact.value),
+      ),
+      posts,
+      usage: { ...usage, durationMs: Date.now() - started },
+    };
   }
 
   async analyzeFeedback(input: FeedbackInput): Promise<FeedbackAnalysis> {
@@ -545,6 +703,50 @@ export class OpenAIBrainProvider implements BrainProvider {
  * The prompts already say not to. This is the guarantee, because an instruction
  * is not one.
  */
+/**
+ * Cleans one post the model returned.
+ *
+ * Two things matter here. Blank and absence-recording strings become null, so
+ * "not specified" never reaches a caption field and looks like a caption. And
+ * confidence is clamped: a model that returns 5 when asked for 0-1 would
+ * otherwise store a value the column rejects.
+ */
+function normalisePost(post: PdfPost, fallbackIndex: number): PdfPost {
+  const clean = (value: string | null | undefined): string | null => {
+    const trimmed = value?.trim();
+    if (!trimmed || recordsAnAbsence(trimmed)) return null;
+    return trimmed;
+  };
+
+  const confidence = Number(post.confidence);
+
+  return {
+    postIndex: Number.isInteger(post.postIndex) && post.postIndex >= 0 ? post.postIndex : fallbackIndex,
+    country: clean(post.country),
+    account: clean(post.account),
+    postedOn: clean(post.postedOn),
+    caption: clean(post.caption),
+    headline: clean(post.headline),
+    visibleText: clean(post.visibleText),
+    summary: post.summary?.trim() ?? '',
+    product: clean(post.product),
+    location: clean(post.location),
+    eventContext: clean(post.eventContext),
+    cta: clean(post.cta),
+    hashtags: (post.hashtags ?? []).map((tag) => tag.trim()).filter(Boolean),
+    offer: clean(post.offer),
+    creativeFormat: clean(post.creativeFormat),
+    photographyStyle: clean(post.photographyStyle),
+    designStyle: clean(post.designStyle),
+    composition: clean(post.composition),
+    colours: (post.colours ?? []).map((colour) => colour.trim()).filter(Boolean),
+    typography: (post.typography ?? []).map((face) => face.trim()).filter(Boolean),
+    logoVisible: post.logoVisible === true,
+    people: clean(post.people),
+    confidence: Number.isFinite(confidence) ? Math.min(Math.max(confidence, 0), 1) : 0,
+  };
+}
+
 export function recordsAnAbsence(value: string): boolean {
   const normalised = value.trim().toLowerCase().replace(/^["'\s]+/, '');
   if (normalised.length === 0) return true;

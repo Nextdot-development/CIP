@@ -5,7 +5,7 @@ import { brain } from './providers';
 import { BRAIN_LIMITS, BrainFailed } from './providers/types';
 import type { GenerationBrief } from './providers/types';
 import { knownSubjects, readBrandDna } from './brandDna';
-import { applicableLessons, ratedExamples, similarAssets } from './retrieval';
+import { applicableLessons, ratedExamples, similarAssets, similarPosts } from './retrieval';
 
 /**
  * Deciding what to generate, before anything is generated.
@@ -67,9 +67,13 @@ export async function planGeneration(
   }
 
   // Everything the Brain gets to reason with, all of it this company's own.
-  const [facts, assets, subjects] = await Promise.all([
+  const [facts, assets, posts, subjects] = await Promise.all([
     readBrandDna(scope, { limit: BRAIN_LIMITS.maxBrandFacts, minEvidence: 1 }),
     similarAssets(scope, requestText),
+    // Individual posts read off this company's PDFs. A whole deck retrieved as
+    // one asset says "there is a deck"; the four posts inside it that match
+    // the request are the part worth putting in front of the model.
+    similarPosts(scope, requestText),
     knownSubjects(scope),
   ]);
 
@@ -93,7 +97,18 @@ export async function planGeneration(
       value: f.value,
       confidence: f.confidence,
     })),
-    relevantAssets: assets.map((a) => ({ summary: a.summary, extractedText: a.extractedText })),
+    relevantAssets: [
+      ...assets.map((a) => ({ summary: a.summary, extractedText: a.extractedText })),
+      // Named by where they came from, so the model can tell a real past post
+      // from a description of a file and weigh it accordingly.
+      ...posts.map((p) => ({
+        summary:
+          `Past post (${p.fileName}, page ${p.pageNumber}` +
+          (p.country ? `, ${p.country}` : '') +
+          `): ${p.summary}`,
+        extractedText: p.caption,
+      })),
+    ],
     successfulExamples: examples.positive.map((e) => ({
       requestText: e.requestText,
       score: e.score,

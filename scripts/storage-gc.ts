@@ -45,7 +45,16 @@ async function listBucketKeys(): Promise<string[]> {
 async function main() {
   const sql = postgres(process.env.DATABASE_ADMIN_URL ?? process.env.DATABASE_URL!, { onnotice: () => {} });
   try {
-    const rows = await sql<{ storage_path: string }[]>`select storage_path from drive_files`;
+    // Every table that owns an object, not just the Drive. This used to read
+    // drive_files alone, which meant generated media and rendered PDF pages
+    // both looked orphaned — and --delete would have removed them.
+    const rows = await sql<{ storage_path: string }[]>`
+      select storage_path from drive_files where storage_path is not null
+      union
+      select storage_path from media_generation_assets where storage_path is not null
+      union
+      select image_path as storage_path from pdf_page_understanding where image_path is not null
+    `;
     const known = new Set(rows.map((r) => r.storage_path));
     const stored = await listBucketKeys();
 

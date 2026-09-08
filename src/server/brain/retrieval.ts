@@ -111,6 +111,90 @@ export async function similarAssets(
   }));
 }
 
+/** One post read off a PDF page, retrieved by what it was about. */
+export type RetrievedPost = {
+  fileId: string;
+  fileName: string;
+  pageNumber: number;
+  postIndex: number;
+  country: string | null;
+  caption: string | null;
+  summary: string;
+  score: number;
+};
+
+/**
+ * Posts from this company's PDFs that resemble the request.
+ *
+ * Separate from similarAssets because the grain is different. A 30-page deck
+ * of Instagram posts is one asset and eighty creative decisions; retrieving
+ * "the India deck" says almost nothing, and retrieving the four Diwali posts
+ * inside it says a great deal.
+ *
+ * `country` is returned so a caller can see which market a post came from.
+ * These files arrive one per country and the difference matters — but it is
+ * reported, never filtered on here, because the request decides what is
+ * relevant, not this function.
+ */
+export async function similarPosts(
+  scope: CompanyScope,
+  requestText: string,
+  limit = BRAIN_LIMITS.maxReferences,
+): Promise<RetrievedPost[]> {
+  if (!(await similaritySupported(scope))) return [];
+
+  const active = embedder();
+
+  let literal: string;
+  try {
+    const [vector] = await active.embed([requestText]);
+    if (!vector) return [];
+    literal = toVectorLiteral(vector);
+  } catch {
+    return [];
+  }
+
+  const maxDistance = 1 - MIN_SIMILARITY;
+
+  // The posts table only exists once 0011 has run. A database that has not
+  // migrated yet still plans; it simply has no posts to offer.
+  try {
+    const rows = await withCompanyScope(scope, async (tx) =>
+      tx<
+        {
+          file_id: string; name: string; page_number: number; post_index: number;
+          country: string | null; caption: string | null; summary: string; score: string;
+        }[]
+      >`
+        select p.file_id, f.name, p.page_number, p.post_index, p.country,
+               p.caption, p.summary,
+               1 - (p.embedding <=> ${literal}::vector) as score
+          from pdf_post p
+          join drive_files f on f.id = p.file_id
+         where p.embedding is not null
+           and p.embed_model = ${active.model}
+           and f.archived_at is null
+           and (p.embedding <=> ${literal}::vector) <= ${maxDistance}
+         order by p.embedding <=> ${literal}::vector
+         limit ${Math.min(Math.max(limit, 1), 20)}
+      `,
+    );
+
+    return rows.map((row) => ({
+      fileId: row.file_id,
+      fileName: row.name,
+      pageNumber: row.page_number,
+      postIndex: row.post_index,
+      country: row.country,
+      caption: row.caption,
+      summary: row.summary,
+      score: Number(row.score),
+    }));
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Past generations this company rated well, and badly.
  *

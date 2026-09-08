@@ -11,6 +11,8 @@ import type {
   FramesInput,
   GenerationBrief,
   ImageInput,
+  PdfPageAnalysis,
+  PdfPageInput,
 } from './types';
 
 /**
@@ -35,11 +37,11 @@ export class FakeBrainProvider implements BrainProvider {
   /** Set by tests to exercise a failure path. */
   failWith: BrainFailed | null = null;
   /** Counts calls, so idempotency can be proved rather than assumed. */
-  calls = { image: 0, frames: 0, document: 0, feedback: 0, brief: 0 };
+  calls = { image: 0, frames: 0, document: 0, pdfPage: 0, feedback: 0, brief: 0 };
 
   reset(): void {
     this.failWith = null;
-    this.calls = { image: 0, frames: 0, document: 0, feedback: 0, brief: 0 };
+    this.calls = { image: 0, frames: 0, document: 0, pdfPage: 0, feedback: 0, brief: 0 };
   }
 
   private check(): void {
@@ -140,6 +142,82 @@ export class FakeBrainProvider implements BrainProvider {
       },
       facts: [{ section: 'content', attribute: 'tone', value: tone }],
       usage: { inputTokens: 15, outputTokens: 15, durationMs: 1 },
+    };
+  }
+
+  /**
+   * A page of posts, derived from the rendered bytes.
+   *
+   * How many posts it finds comes from the image itself, so a test can assert
+   * that segmentation reached the database without the number being written
+   * into the test twice. A page whose digest says "cover" yields none, which
+   * is what keeps the empty-page path exercised.
+   */
+  async analyzePdfPage(input: PdfPageInput): Promise<PdfPageAnalysis> {
+    this.calls.pdfPage += 1;
+    this.check();
+
+    const digest = createHash('sha256').update(input.bytes).digest('hex');
+    const colour = `#${digest.slice(0, 6)}`;
+    const designStyle = pick(digest, 6, ['minimal', 'bold-typographic', 'photographic', 'collage']);
+    const country = pick(digest, 16, ['India', 'United Arab Emirates', 'Nepal']);
+
+    // 0 to 3, from the bytes and the page number together. Both matter: the
+    // bytes so a different picture gives a different answer, and the page so a
+    // document built from two repeated images still exercises pages with posts
+    // and pages without. Zero stands for a cover or divider page.
+    const count = (parseInt(digest.slice(20, 21), 16) + input.pageNumber) % 4;
+
+    const posts = Array.from({ length: count }, (_, index) => {
+      const seed = digest.slice(index * 4, index * 4 + 8);
+      return {
+        postIndex: index,
+        country,
+        account: '@magicmoments',
+        postedOn: null,
+        caption: `Caption ${seed.slice(0, 4)} on page ${input.pageNumber}`,
+        headline: null,
+        visibleText: `Post ${index} text ${seed}`,
+        summary: `A ${designStyle} post from ${country} on page ${input.pageNumber}.`,
+        product: null,
+        location: null,
+        eventContext: pick(seed, 0, ['Diwali', 'New Year', 'Holi']),
+        cta: pick(seed, 2, ['Shop now', 'Tag a friend', 'Learn more']),
+        hashtags: [`#${seed.slice(0, 5)}`],
+        offer: null,
+        creativeFormat: pick(seed, 4, ['single image', 'carousel', 'reel cover']),
+        photographyStyle: pick(seed, 6, ['studio', 'lifestyle', 'candid']),
+        designStyle,
+        composition: pick(seed, 1, ['centred', 'rule-of-thirds']),
+        colours: [colour],
+        typography: ['sans-serif'],
+        logoVisible: seed.charCodeAt(0) % 2 === 0,
+        people: null,
+        confidence: 0.9,
+      };
+    });
+
+    return {
+      summary:
+        `Page ${input.pageNumber} of ${input.pageCount} of "${input.filename}": ` +
+        `${count} post(s), ${designStyle} styling.`,
+      extractedText: input.pageText ?? posts.map((post) => post.visibleText).join(' '),
+      structured: {
+        pageKind: count === 0 ? 'cover' : 'post grid',
+        postCount: count,
+        country,
+        account: '@magicmoments',
+        colours: [colour],
+        typography: ['sans-serif'],
+        designStyle,
+        recurringPatterns: [`${designStyle} layout`],
+      },
+      facts: [
+        { section: 'visual', attribute: 'design_style', value: designStyle },
+        { section: 'visual', attribute: 'dominant_colour', value: colour },
+      ],
+      posts,
+      usage: { inputTokens: 12, outputTokens: 24, durationMs: 1 },
     };
   }
 
