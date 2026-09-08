@@ -22,7 +22,17 @@ import type { DriveFileDTO } from '@/types/drive';
  */
 
 const IMAGE_RATIOS = ['1:1', '16:9', '9:16', '4:3', '3:4'];
-const VIDEO_RESOLUTIONS = ['480p', '720p', '1080p'];
+/**
+ * Runway names video shapes in pixels rather than as "720p", and refuses
+ * anything else, so these are its own values with a readable label.
+ */
+const VIDEO_RATIOS: { value: string; label: string }[] = [
+  { value: '1280:720', label: 'Landscape (1280x720)' },
+  { value: '720:1280', label: 'Portrait (720x1280)' },
+  { value: '960:960', label: 'Square (960x960)' },
+  { value: '1920:1080', label: 'Landscape HD (1920x1080)' },
+  { value: '1080:1920', label: 'Portrait HD (1080x1920)' },
+];
 
 export function MediaSection({
   initial,
@@ -40,7 +50,7 @@ export function MediaSection({
 
   const [prompt, setPrompt] = useState('');
   const [aspectRatio, setAspectRatio] = useState('1:1');
-  const [resolution, setResolution] = useState('720p');
+  const [resolution, setResolution] = useState('1280:720');
   const [referenceId, setReferenceId] = useState('');
 
   // Whichever generation the person is looking at now.
@@ -202,10 +212,10 @@ export function MediaSection({
             </label>
           ) : (
             <label className="field">
-              <span className="field-label">Resolution</span>
+              <span className="field-label">Shape</span>
               <select className="field-input" value={resolution} onChange={(e) => setResolution(e.target.value)}>
-                {VIDEO_RESOLUTIONS.map((r) => (
-                  <option key={r} value={r}>{r}</option>
+                {VIDEO_RATIOS.map((r) => (
+                  <option key={r.value} value={r.value}>{r.label}</option>
                 ))}
               </select>
             </label>
