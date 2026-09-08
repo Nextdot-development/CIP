@@ -251,9 +251,15 @@ describe('choosing a folder', () => {
     assert.equal(dto.folderId, MM_FOLDER);
   });
 
-  it('refuses a folder the connected account cannot open', async () => {
+  it('refuses a folder the connected account cannot open, and says which way', async () => {
     await connection.saveTokens(mm, await fake.exchangeCode());
-    await assert.rejects(() => connection.setFolder(mm, 'folder-that-does-not-exist'), /could not be opened/i);
+    // The specific reason survives rather than being flattened into one
+    // catch-all message: "no longer available" and "the API is switched off"
+    // send somebody to entirely different places.
+    await assert.rejects(
+      () => connection.setFolder(mm, 'folder-that-does-not-exist'),
+      /no longer available/i,
+    );
   });
 
   it('stores the id and the name once it is confirmed readable', async () => {
@@ -261,6 +267,82 @@ describe('choosing a folder', () => {
     const dto = await connection.getConnection(mm);
     assert.equal(dto.folderId, MM_FOLDER);
     assert.ok(dto.folderName);
+  });
+});
+
+describe('a 403 is reported for what it actually is', () => {
+  /**
+   * Google answers "the API is off", "you may not read that" and "slow down"
+   * with the same status. Telling them apart is the difference between someone
+   * enabling an API in a console and someone waiting for a rate limit that was
+   * never happening.
+   */
+  const realFetch = globalThis.fetch;
+
+  function stub403(reason: string) {
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({ error: { code: 403, errors: [{ reason, message: 'quotes a file name' }] } }),
+        { status: 403, headers: { 'content-type': 'application/json' } },
+      )) as typeof fetch;
+  }
+
+  async function realClient() {
+    const { GoogleDriveClient } = await import('../src/server/integrations/googleDrive/client');
+    return new GoogleDriveClient('client-id', 'client-secret');
+  }
+
+  after(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  const cases: [string, string, RegExp][] = [
+    ['accessNotConfigured', 'permanent', /not enabled/i],
+    ['SERVICE_DISABLED', 'permanent', /not enabled/i],
+    ['insufficientFilePermissions', 'permanent', /cannot read that folder/i],
+    ['rateLimitExceeded', 'rate_limited', /rate limiting/i],
+    ['somethingNobodyHasSeen', 'permanent', /refused/i],
+  ];
+
+  for (const [reason, kind, message] of cases) {
+    it(`${reason} is ${kind}`, async () => {
+      const client = await realClient();
+      stub403(reason);
+      try {
+        await assert.rejects(
+          () => client.getFile('token', 'folder-id'),
+          (error: unknown) => {
+            const e = error as { kind: string; message: string };
+            assert.equal(e.kind, kind, reason);
+            assert.match(e.message, message);
+            // Google's own wording can quote a file name, so it never survives.
+            assert.ok(!e.message.includes('quotes a file name'));
+            return true;
+          },
+        );
+      } finally {
+        globalThis.fetch = realFetch;
+      }
+    });
+  }
+
+  it('an unrecognised 403 is not retried four times over', async () => {
+    const client = await realClient();
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      return new Response(JSON.stringify({ error: { code: 403, errors: [{ reason: 'mystery' }] } }), {
+        status: 403,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    try {
+      await assert.rejects(() => client.getFile('token', 'folder-id'));
+      assert.equal(calls, 1, 'a refusal we cannot explain should not be retried');
+    } finally {
+      globalThis.fetch = realFetch;
+    }
   });
 });
 

@@ -235,7 +235,7 @@ export class GoogleDriveClient implements GoogleDriveApi {
 
       if (response.ok) return response;
 
-      const failure = classify(response);
+      const failure = await classify(response);
       if (failure.kind === 'needs_reauth' || failure.kind === 'permanent') throw failure;
 
       lastError = failure;
@@ -253,16 +253,47 @@ export class GoogleDriveClient implements GoogleDriveApi {
  * The body is never read into the message: Google's errors quote file names,
  * and a file name is the customer's.
  */
-function classify(response: Response): GoogleDriveError {
+async function classify(response: Response): Promise<GoogleDriveError> {
   if (response.status === 401) {
     return new GoogleDriveError('needs_reauth', 'Google Drive access has expired. Reconnect to continue.');
   }
+
   if (response.status === 403) {
-    // 403 is overloaded: it is both "rate limited" and "you may not read this".
-    // Without the body we cannot tell, so it is treated as retryable and, if it
-    // persists, surfaces as a sync failure rather than a silent skip.
-    return new GoogleDriveError('rate_limited', 'Google Drive refused the request; it may be rate limiting us.', 30);
+    // 403 is overloaded: "the API is switched off", "you may not read that",
+    // and "slow down" all arrive as one status. Treating them alike sent
+    // somebody chasing a rate limit when the Drive API had simply never been
+    // enabled, so the reason is read and each is reported for what it is.
+    //
+    // Only the short reason code is used. Google's human message quotes file
+    // names, which are the customer's; a reason like `accessNotConfigured` is
+    // operational metadata about our own project and carries none of theirs.
+    const reason = await errorReason(response);
+
+    if (reason === 'accessNotConfigured' || reason === 'SERVICE_DISABLED') {
+      return new GoogleDriveError(
+        'permanent',
+        'The Google Drive API is not enabled for this project. Enable it in the Google Cloud console, wait a minute, and try again.',
+      );
+    }
+    if (
+      reason === 'insufficientFilePermissions' ||
+      reason === 'insufficientPermissions' ||
+      reason === 'forbidden'
+    ) {
+      return new GoogleDriveError(
+        'permanent',
+        'The connected Google account cannot read that folder.',
+      );
+    }
+    if (reason === 'rateLimitExceeded' || reason === 'userRateLimitExceeded') {
+      return new GoogleDriveError('rate_limited', 'Google Drive is rate limiting us.', 30);
+    }
+
+    // An unrecognised 403 is not retried. Retrying a refusal we cannot explain
+    // just turns one clear failure into three slow ones.
+    return new GoogleDriveError('permanent', 'Google Drive refused the request.');
   }
+
   if (response.status === 404) {
     return new GoogleDriveError('permanent', 'That file or folder is no longer available in Google Drive.');
   }
@@ -278,6 +309,27 @@ function classify(response: Response): GoogleDriveError {
     return new GoogleDriveError('transient', 'Google Drive is having trouble.');
   }
   return new GoogleDriveError('permanent', 'Google Drive refused the request.');
+}
+
+/**
+ * The machine-readable reason from an error body, and nothing else.
+ *
+ * Google puts it in two places depending on the API surface, so both are
+ * checked. The accompanying human message is deliberately not read: it can
+ * quote a file name.
+ */
+async function errorReason(response: Response): Promise<string | null> {
+  try {
+    const body = (await response.clone().json()) as {
+      error?: { status?: unknown; errors?: { reason?: unknown }[] };
+    };
+    const fromList = body.error?.errors?.[0]?.reason;
+    if (typeof fromList === 'string') return fromList;
+    const status = body.error?.status;
+    return typeof status === 'string' ? status : null;
+  } catch {
+    return null;
+  }
 }
 
 async function backoff(attempt: number, retryAfterSeconds: number | null): Promise<void> {

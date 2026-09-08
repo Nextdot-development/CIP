@@ -290,6 +290,10 @@ export async function setFolder(scope: CompanyScope, folderId: string): Promise<
       await markNeedsReauth(scope);
       throw new GoogleDriveNeedsReauth();
     }
+    // Our own normalised message, never Google's — but the specific one, so
+    // "the API is not enabled" does not arrive as "the folder is unreadable"
+    // and send somebody looking at their sharing settings.
+    if (error instanceof GoogleDriveError) throw new GoogleDriveRejected(error.message);
     throw new GoogleDriveRejected('That folder could not be opened with the connected account.');
   }
 
