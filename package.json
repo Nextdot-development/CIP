@@ -26,7 +26,11 @@
     "test:media": "node --conditions=react-server --import tsx --test --test-concurrency=1 tests/media.test.ts",
     "gdrive:worker": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/gdrive-sync-worker.ts",
     "test:gdrive": "node --conditions=react-server --import tsx --test --test-concurrency=1 tests/googleDrive.test.ts",
-    "test:graph": "node --conditions=react-server --import tsx --test --test-concurrency=1 --test-force-exit tests/knowledgeGraph.test.ts"
+    "test:graph": "node --conditions=react-server --import tsx --test --test-concurrency=1 --test-force-exit tests/knowledgeGraph.test.ts",
+    "brain:worker": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/brain-worker.ts",
+    "cip:worker": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/cip-worker.ts",
+    "test:brain": "node --conditions=react-server --import tsx --test --test-concurrency=1 --test-force-exit tests/brain.test.ts",
+    "prove:brain": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/prove-brain.ts"
   },
   "dependencies": {
     "@google/genai": "^2.21.0",

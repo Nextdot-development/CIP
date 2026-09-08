@@ -1,0 +1,219 @@
+import 'server-only';
+import { createHash } from 'node:crypto';
+import { BrainFailed } from './types';
+import type {
+  AssetAnalysis,
+  BrainProvider,
+  BriefInput,
+  DocumentInput,
+  FeedbackAnalysis,
+  FeedbackInput,
+  FramesInput,
+  GenerationBrief,
+  ImageInput,
+} from './types';
+
+/**
+ * A deterministic Brain for tests.
+ *
+ * Everything it returns is derived from its input, so the same asset always
+ * produces the same analysis and two different assets never produce the same
+ * one. That is what lets tests assert on real behaviour — that understanding
+ * was stored, that a lesson was scoped correctly, that a brief carried the
+ * retrieved memory through — without a key, a bill or a network.
+ *
+ * It is never selected by accident: the registry picks it only when explicitly
+ * forced. An unconfigured real provider refuses rather than falling back here,
+ * because a system quietly inventing brand knowledge is worse than one that
+ * says it is not set up.
+ */
+export class FakeBrainProvider implements BrainProvider {
+  readonly name = 'fake' as const;
+  readonly model = 'fake-brain-1';
+  readonly configured = true;
+
+  /** Set by tests to exercise a failure path. */
+  failWith: BrainFailed | null = null;
+  /** Counts calls, so idempotency can be proved rather than assumed. */
+  calls = { image: 0, frames: 0, document: 0, feedback: 0, brief: 0 };
+
+  reset(): void {
+    this.failWith = null;
+    this.calls = { image: 0, frames: 0, document: 0, feedback: 0, brief: 0 };
+  }
+
+  private check(): void {
+    if (this.failWith) throw this.failWith;
+  }
+
+  async analyzeImage(input: ImageInput): Promise<AssetAnalysis> {
+    this.calls.image += 1;
+    this.check();
+
+    // Derived from the bytes, so a changed image genuinely changes the result.
+    const digest = createHash('sha256').update(input.bytes).digest('hex');
+    const colour = `#${digest.slice(0, 6)}`;
+    const composition = pick(digest, 8, ['centred', 'rule-of-thirds', 'flat-lay', 'close-up']);
+    const lighting = pick(digest, 10, ['soft daylight', 'warm candlelight', 'hard studio', 'moody low-key']);
+
+    return {
+      summary: `Image "${input.filename}" with a ${lighting} look and ${composition} composition.`,
+      extractedText: null,
+      structured: {
+        objects: ['product'],
+        products: [],
+        brandElements: [],
+        logoPresent: digest.charCodeAt(0) % 2 === 0,
+        colours: [colour],
+        typography: [],
+        composition,
+        background: pick(digest, 12, ['plain', 'textured', 'gradient']),
+        lighting,
+        style: 'photographic',
+        mood: pick(digest, 14, ['warm', 'calm', 'energetic']),
+        contentType: 'brand asset',
+      },
+      facts: [
+        { section: 'visual', attribute: 'dominant_colour', value: colour },
+        { section: 'visual', attribute: 'composition', value: composition },
+        { section: 'visual', attribute: 'lighting', value: lighting },
+      ],
+      usage: { inputTokens: 10, outputTokens: 20, durationMs: 1 },
+    };
+  }
+
+  async analyzeFrames(input: FramesInput): Promise<AssetAnalysis> {
+    this.calls.frames += 1;
+    this.check();
+
+    const digest = createHash('sha256')
+      .update(Buffer.concat(input.frames.map((f) => f.bytes)))
+      .digest('hex');
+    const pacing = pick(digest, 0, ['slow', 'measured', 'fast']);
+    const shot = pick(digest, 4, ['wide', 'close-up', 'medium']);
+
+    return {
+      summary:
+        `Video "${input.filename}", ${Math.round(input.durationSeconds)}s, ${pacing} pacing, ` +
+        `mostly ${shot} shots across ${input.frames.length} sampled frames.`,
+      extractedText: input.transcript,
+      structured: {
+        shotTypes: [shot],
+        cameraMovement: [pick(digest, 6, ['static', 'slow push-in', 'handheld'])],
+        pacing,
+        transitions: ['cut'],
+        textOverlays: [],
+        products: [],
+        brandElements: [],
+        colours: [`#${digest.slice(0, 6)}`],
+        style: 'cinematic',
+        mood: 'warm',
+        contentType: 'brand film',
+        scenes: input.frames.map((f) => ({ atSeconds: f.atSeconds, describes: `frame at ${f.atSeconds}s` })),
+      },
+      facts: [
+        { section: 'video', attribute: 'pacing', value: pacing },
+        { section: 'video', attribute: 'shot_type', value: shot },
+      ],
+      usage: { inputTokens: 20, outputTokens: 30, durationMs: 1 },
+    };
+  }
+
+  async analyzeDocument(input: DocumentInput): Promise<AssetAnalysis> {
+    this.calls.document += 1;
+    this.check();
+
+    if (input.text.trim().length === 0) {
+      throw new BrainFailed('UNSUPPORTED_ASSET', 'permanent', 'That document has no readable text.');
+    }
+
+    const digest = createHash('sha256').update(input.text).digest('hex');
+    const tone = pick(digest, 0, ['warm and unhurried', 'direct', 'playful']);
+
+    return {
+      summary: `Document "${input.filename}" written in a ${tone} tone.`,
+      extractedText: input.text.slice(0, 400),
+      structured: {
+        objects: [], products: [], brandElements: [], logoPresent: false,
+        colours: [], typography: [], composition: '', background: '',
+        lighting: '', style: 'written', mood: tone, contentType: 'brand document',
+      },
+      facts: [{ section: 'content', attribute: 'tone', value: tone }],
+      usage: { inputTokens: 15, outputTokens: 15, durationMs: 1 },
+    };
+  }
+
+  async analyzeFeedback(input: FeedbackInput): Promise<FeedbackAnalysis> {
+    this.calls.feedback += 1;
+    this.check();
+
+    // A bare score teaches nothing. Only a comment produces a lesson, which is
+    // the behaviour the real provider is instructed towards too.
+    const comment = input.comment?.trim();
+    if (!comment) return { lessons: [], usage: { durationMs: 1 } };
+
+    // Scoped as narrowly as the context allows, so a campaign-specific remark
+    // never becomes a company-wide rule.
+    const appliesTo = input.campaign ? 'campaign' : input.product ? 'product' : 'task_type';
+
+    return {
+      lessons: [
+        {
+          polarity: input.score >= 6 ? 'prefer' : 'avoid',
+          statement: comment.slice(0, 200),
+          appliesTo,
+          confidence: input.score >= 8 || input.score <= 2 ? 0.8 : 0.5,
+        },
+      ],
+      usage: { durationMs: 1 },
+    };
+  }
+
+  async buildGenerationBrief(input: BriefInput): Promise<GenerationBrief & { usage: { durationMs: number } }> {
+    this.calls.brief += 1;
+    this.check();
+
+    // Ask only when the request genuinely does not pin down which of several
+    // campaigns is meant — the same condition the real provider is given.
+    const mentionsCampaign = input.knownCampaigns.some((c) =>
+      input.requestText.toLowerCase().includes(c.toLowerCase()),
+    );
+    const needsClarification = input.knownCampaigns.length > 1 && !mentionsCampaign;
+
+    const brandRules = input.brandFacts.map((f) => `${f.attribute}: ${f.value}`);
+    const preferred = input.lessons.filter((l) => l.polarity === 'prefer').map((l) => l.statement);
+    const avoided = input.lessons.filter((l) => l.polarity === 'avoid').map((l) => l.statement);
+
+    // The retrieved memory is carried into the prompt, so a test can prove the
+    // generator received brand context rather than the raw request.
+    const promptParts = [input.requestText, ...brandRules, ...preferred];
+
+    return {
+      taskType: input.mediaType === 'video' ? 'promotional_video' : 'promotional_image',
+      platform: input.requestText.toLowerCase().includes('instagram') ? 'instagram' : null,
+      campaign: input.knownCampaigns.find((c) => input.requestText.toLowerCase().includes(c.toLowerCase())) ?? null,
+      product: input.knownProducts.find((p) => input.requestText.toLowerCase().includes(p.toLowerCase())) ?? null,
+      visualDirection: input.mediaType === 'image' ? brandRules.join('; ') || null : null,
+      videoDirection: input.mediaType === 'video' ? brandRules.join('; ') || null : null,
+      contentDirection: null,
+      brandRules,
+      successfulPatterns: input.successfulExamples.map((e) => e.requestText),
+      negativePatterns: input.negativeExamples.map((e) => e.requestText),
+      learnedPreferences: preferred,
+      constraints: [],
+      avoid: avoided,
+      generationPrompt: promptParts.join('. '),
+      confidence: needsClarification ? 0.2 : input.brandFacts.length > 0 ? 0.8 : 0.45,
+      clarificationQuestion: needsClarification
+        ? `Which campaign is this for: ${input.knownCampaigns.join(', ')}?`
+        : null,
+      usage: { durationMs: 1 },
+    };
+  }
+}
+
+/** Stable choice from a digest, so the same input always picks the same value. */
+function pick(digest: string, offset: number, options: string[]): string {
+  const value = parseInt(digest.slice(offset, offset + 2), 16);
+  return options[value % options.length]!;
+}

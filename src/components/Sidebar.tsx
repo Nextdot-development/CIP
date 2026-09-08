@@ -18,6 +18,7 @@ const NAV: { href: Route; label: string; sub?: string; icon: IconName }[] = [
   { href: '/media', label: 'Media', sub: 'Images & video', icon: 'image' },
   { href: '/knowledge', label: 'Knowledge', sub: 'Connected sources', icon: 'book' },
   { href: '/knowledge-graph', label: 'Knowledge Graph', sub: 'How it connects', icon: 'grid' },
+  { href: '/brain', label: 'Brain', sub: 'What CIP has learned', icon: 'sparkle' },
   { href: '/trust', label: 'Trust', sub: 'Track & review', icon: 'trust' },
 ];
 
