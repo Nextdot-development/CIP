@@ -188,3 +188,17 @@
 }
 .hi-title { font-size: 14px; font-weight: 600; color: var(--ink-900); }
 .hi-body  { font-size: 12.5px; color: var(--ink-600); margin-top: 4px; line-height: 1.6; }
+
+/* Dismiss sits quiet until the row is under the pointer: it is a small,
+   permanent action and should not compete with what the notice says. */
+.nr-dismiss {
+  flex: none; width: 26px; height: 26px; border-radius: 7px;
+  border: 0; background: transparent; color: var(--ink-400);
+  display: grid; place-items: center; cursor: pointer;
+  opacity: 0; transition: opacity .14s ease, background .14s ease, color .14s ease;
+}
+.notice-row:hover .nr-dismiss,
+.nr-dismiss:focus-visible { opacity: 1; }
+.nr-dismiss:hover { background: var(--ink-100); color: var(--ink-700); }
+/* Touch has no hover, so it is always there. */
+@media (hover: none) { .nr-dismiss { opacity: 1; } }

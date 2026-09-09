@@ -26,6 +26,8 @@ export type Notice = {
   detail: string;
   href: string | null;
   action: string | null;
+  /** Only a notice about something already final can be put away. */
+  dismissible: boolean;
 };
 
 /** Escape closes whichever panel is open, and the page holds still behind it. */
@@ -91,6 +93,21 @@ export function SideDrawers({ initial }: { initial: Notice[] }) {
     setNotices(body.notices);
   }, []);
 
+  // The server answers with what is left, so the panel and the badge move
+  // together and neither has to guess at the other's state.
+  const dismiss = useCallback(async (noticeId: string) => {
+    const res = await fetch('/api/notifications/dismiss', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ noticeId }),
+    });
+    if (!res.ok) return;
+    const body = (await res.json()) as { notices: Notice[] };
+    setNotices(body.notices);
+  }, []);
+
+  const clearable = notices.filter((n) => n.dismissible);
+
   const close = useCallback(() => setOpen(null), []);
   const count = notices.filter((n) => n.tone === 'problem' || n.tone === 'attention').length;
 
@@ -144,9 +161,36 @@ export function SideDrawers({ initial }: { initial: Notice[] }) {
                       </Link>
                     )}
                   </span>
+
+                  {/* Only on something already finished. A problem that is still
+                      true has no dismiss, because hiding it would not fix it. */}
+                  {notice.dismissible && (
+                    <button
+                      type="button"
+                      className="nr-dismiss"
+                      onClick={() => void dismiss(notice.id)}
+                      aria-label="Dismiss this notice"
+                      title="Dismiss"
+                    >
+                      <Icon name="close" size={14} />
+                    </button>
+                  )}
                 </article>
               ))}
             </div>
+          )}
+
+          {clearable.length > 1 && (
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              style={{ marginTop: 14 }}
+              onClick={() => {
+                for (const notice of clearable) void dismiss(notice.id);
+              }}
+            >
+              Dismiss {clearable.length} finished
+            </button>
           )}
         </Drawer>
       )}

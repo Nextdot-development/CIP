@@ -11,10 +11,15 @@ import type { CompanyScope } from './db';
  * A file that failed to read produces a notice while it is failed, and stops
  * producing one the moment it is retried and succeeds.
  *
- * That rules out some things a notification system usually does: there is no
- * "mark as read", and nothing arrives while you are looking at it. What it
- * buys is that the list can never lie — it cannot claim a sync failed that has
- * since worked, or hold a badge for something already fixed.
+ * Most notices therefore clear themselves, and the list can never claim a sync
+ * failed that has since worked.
+ *
+ * Some cannot clear themselves. A generation that failed yesterday is final —
+ * it will not succeed later — so its notice would sit there for ever and hold
+ * the badge at three however many times it was read. Those, and only those,
+ * can be put away; a dismissal is recorded per person against the notice's own
+ * id. Anything still true is not dismissible, because hiding it would not make
+ * it stop being true.
  */
 
 export type Notice = {
@@ -26,11 +31,31 @@ export type Notice = {
   /** Where to go to do something about it. */
   href: string | null;
   action: string | null;
+  /**
+   * Whether this one can be put away.
+   *
+   * True for a thing that has already finished happening — a generation that
+   * failed, a file Google refused. Those are final: they will not resolve
+   * themselves, so without this they would hold the badge for ever.
+   *
+   * False for anything still true. A Drive that needs reconnecting stops being
+   * reported the moment it is reconnected, and letting somebody dismiss it
+   * would hide a problem that has not gone anywhere.
+   */
+  dismissible: boolean;
 };
 
 export async function notifications(scope: CompanyScope): Promise<Notice[]> {
   return withCompanyScope(scope, async (tx) => {
     const notices: Notice[] = [];
+
+    // What this person has already put away. Per person: one member reading
+    // a notice does not read it for everybody.
+    const dismissedRows = await tx<{ notice_id: string }[]>`
+      select notice_id from notification_dismissals
+       where company_id = ${scope.companyId} and user_id = ${scope.userId}
+    `;
+    const dismissed = new Set(dismissedRows.map((row) => row.notice_id));
 
     // --- the Google Drive connection ------------------------------------
     const [connection] = await tx<
@@ -48,6 +73,7 @@ export async function notifications(scope: CompanyScope): Promise<Notice[]> {
         detail: connection.last_sync_error ?? 'Its access expired, so nothing new is being synced.',
         href: '/teach',
         action: 'Reconnect',
+        dismissible: false,
       });
     } else if (connection?.status === 'connected' && !connection.folder_id) {
       notices.push({
@@ -57,6 +83,7 @@ export async function notifications(scope: CompanyScope): Promise<Notice[]> {
         detail: 'Google Drive is connected but no folder is being watched, so nothing syncs.',
         href: '/teach',
         action: 'Choose one',
+        dismissible: false,
       });
     } else if (connection?.last_sync_error) {
       notices.push({
@@ -66,6 +93,7 @@ export async function notifications(scope: CompanyScope): Promise<Notice[]> {
         detail: connection.last_sync_error,
         href: '/teach',
         action: 'Try again',
+        dismissible: false,
       });
     }
 
@@ -87,6 +115,7 @@ export async function notifications(scope: CompanyScope): Promise<Notice[]> {
         detail: file.reason ?? 'No reason was recorded.',
         href: '/teach',
         action: null,
+        dismissible: true,
       });
     }
 
@@ -113,6 +142,7 @@ export async function notifications(scope: CompanyScope): Promise<Notice[]> {
         detail: file.error ?? 'No reason was recorded.',
         href: '/trust',
         action: 'See the file',
+        dismissible: true,
       });
     }
 
@@ -140,6 +170,7 @@ export async function notifications(scope: CompanyScope): Promise<Notice[]> {
         detail: 'CIP is working through them. This page will show them once they are done.',
         href: '/trust',
         action: null,
+        dismissible: false,
       });
     }
 
@@ -158,9 +189,34 @@ export async function notifications(scope: CompanyScope): Promise<Notice[]> {
         detail: `${generation.error_message ?? 'No reason was recorded.'} — “${generation.prompt.slice(0, 70)}…”`,
         href: '/ask',
         action: 'Try again',
+        dismissible: true,
       });
     }
 
-    return notices;
+    // Anything already put away is simply not produced. A notice that is not
+    // dismissible cannot have been, so the filter only ever removes final ones.
+    return notices.filter((notice) => !dismissed.has(notice.id));
+  });
+}
+
+
+/**
+ * Puts one notice away for this person.
+ *
+ * Idempotent: pressing it twice is the same as once. Nothing checks that the
+ * notice exists — it is derived, so it may already have stopped being produced
+ * between the panel rendering and the click, and recording a dismissal for
+ * something that is no longer reported costs a row and harms nothing.
+ */
+export async function dismissNotice(scope: CompanyScope, noticeId: string): Promise<void> {
+  const id = noticeId.trim().slice(0, 200);
+  if (id.length === 0) return;
+
+  await withCompanyScope(scope, async (tx) => {
+    await tx`
+      insert into notification_dismissals (company_id, user_id, notice_id)
+      values (${scope.companyId}, ${scope.userId}, ${id})
+      on conflict (company_id, user_id, notice_id) do nothing
+    `;
   });
 }
