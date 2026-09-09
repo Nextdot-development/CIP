@@ -31,7 +31,15 @@ import type {
  * video are the same act with a different answer, and both are asked for here.
  */
 
-type Phase = 'idle' | 'planning' | 'asking' | 'done';
+/**
+ * Where the request has actually got to.
+ *
+ * `planning` and `making` are two real stages inside one call — retrieving what
+ * the company knows and writing a brief, then asking the generator for the
+ * picture — and the server reports the boundary between them rather than the
+ * page guessing at it on a timer.
+ */
+type Phase = 'idle' | 'planning' | 'making' | 'done';
 
 type PlanSummary = {
   taskType: string | null;
@@ -44,6 +52,12 @@ type PlanSummary = {
   references: { fileId: string; fileName: string }[];
   confidence: number;
 };
+
+type StreamEvent =
+  | { stage: 'planning' }
+  | { stage: 'planned'; plan: PlanSummary; briefId: string }
+  | { stage: 'done'; result: BrainResult }
+  | { stage: 'failed'; message: string };
 
 type BrainResult =
   | { status: 'generated'; generation: MediaGenerationDTO; briefId: string; plan: PlanSummary }
@@ -68,6 +82,10 @@ export function AskSection({
   const [provider, setProvider] = useState<ImageProviderChoice>(providers.defaultImageProvider);
   const [phase, setPhase] = useState<Phase>('idle');
   const [result, setResult] = useState<BrainResult | null>(null);
+  // Held separately from `result` so the brief can be shown while the picture
+  // is still being made.
+  const [planned, setPlanned] = useState<PlanSummary | null>(null);
+  const [startedAt, setStartedAt] = useState(0);
   const [answer, setAnswer] = useState('');
   const [history, setHistory] = useState(initial);
 
@@ -95,11 +113,15 @@ export function AskSection({
     const text = draft.trim();
     if (!text) return;
 
-    setPhase(clarification ? 'asking' : 'planning');
+    setResult(null);
+    setPlanned(null);
+    setPhase('planning');
+    setStartedAt(Date.now());
+
     try {
       const res = await fetch('/api/brain/generate', {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', accept: 'application/x-ndjson' },
         body: JSON.stringify({
           request: text,
           mediaType,
@@ -108,20 +130,58 @@ export function AskSection({
         }),
       });
 
-      const body = (await res.json()) as Partial<BrainResult> & { message?: string };
-      if (!res.ok || !body.status) {
+      if (!res.ok || !res.body) {
+        const body = (await res.json().catch(() => ({}))) as { message?: string };
         note(body.message ?? 'That could not be made.');
         setPhase('idle');
         return;
       }
 
-      const outcome = body as BrainResult;
-      setResult(outcome);
-      setPhase('done');
-      setAnswer('');
-      if (outcome.status === 'generated') {
-        note(mediaType === 'video' ? 'Queued — this takes a few minutes' : 'Made');
-        void refresh();
+      // One JSON object per line. The last one carries the outcome; a stream
+      // that ends without it is a failure, not a success.
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffered = '';
+      let settled = false;
+
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffered += decoder.decode(value, { stream: true });
+
+        const lines = buffered.split('\n');
+        buffered = lines.pop() ?? '';
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const event = JSON.parse(line) as StreamEvent;
+
+          if (event.stage === 'planned') {
+            // The brief exists. Show it now rather than holding it back until
+            // the picture is ready — it is the half of the answer that
+            // explains the other half.
+            setPlanned(event.plan);
+            setPhase('making');
+          } else if (event.stage === 'done') {
+            settled = true;
+            setResult(event.result);
+            setPhase('done');
+            setAnswer('');
+            if (event.result.status === 'generated') {
+              note(mediaType === 'video' ? 'Queued — this takes a few minutes' : 'Made');
+              void refresh();
+            }
+          } else if (event.stage === 'failed') {
+            settled = true;
+            note(event.message);
+            setPhase('idle');
+          }
+        }
+      }
+
+      if (!settled) {
+        note('That stopped before it finished.');
+        setPhase('idle');
       }
     } catch {
       note('That could not be sent.');
@@ -129,7 +189,7 @@ export function AskSection({
     }
   };
 
-  const busy = phase === 'planning' || phase === 'asking';
+  const busy = phase === 'planning' || phase === 'making';
 
   return (
     <div className="rise">
@@ -211,14 +271,17 @@ export function AskSection({
             onClick={() => void send()}
             disabled={busy || !draft.trim() || !ready}
           >
-            {busy ? 'Thinking…' : 'Make it'} <Icon name="arrow-right" size={14} />
+            {busy ? 'Working…' : 'Make it'} <Icon name="arrow-right" size={14} />
           </button>
         </div>
       </Card>
 
+      {busy && <Working phase={phase} mediaType={mediaType} startedAt={startedAt} />}
+
       {/* What CIP decided, before what it produced. Shown either way, because
-          the reasoning is what makes a bad result correctable. */}
-      {result && <Plan plan={result.plan} />}
+          the reasoning is what makes a bad result correctable — and shown as
+          soon as it exists, which is well before the picture. */}
+      {(result?.plan ?? planned) && <Plan plan={(result?.plan ?? planned)!} />}
 
       {result?.status === 'needs_clarification' && (
         <Card className="pad">
@@ -276,6 +339,78 @@ export function AskSection({
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * The wait, with the two stages the server actually reports.
+ *
+ * Both are real: the first ends when the brief is written, which the stream
+ * says out loud. Nothing here advances on a timer, so a slow generator shows a
+ * step still running rather than a bar that has quietly finished without it.
+ *
+ * The elapsed seconds are the honest part of a wait nobody can predict — a
+ * picture is about a minute, a video several, and neither provider will say.
+ */
+function Working({
+  phase, mediaType, startedAt,
+}: {
+  phase: Phase;
+  mediaType: MediaType;
+  startedAt: number;
+}) {
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    const tick = () => setElapsed(Math.max(0, Math.round((Date.now() - startedAt) / 1000)));
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+  }, [startedAt]);
+
+  const steps: { id: Phase; label: string; done: string }[] = [
+    { id: 'planning', label: 'Reading what it knows about you', done: 'Read your brand' },
+    {
+      id: 'making',
+      label: mediaType === 'video' ? 'Sending it to the video generator' : 'Making the picture',
+      done: 'Sent to the generator',
+    },
+  ];
+
+  return (
+    <Card className="pad working">
+      <div className="row" style={{ justifyContent: 'space-between', alignItems: 'baseline' }}>
+        <p className="strong">CIP is working on it</p>
+        <span className="tiny muted">{elapsed}s</span>
+      </div>
+
+      <ol className="work-steps">
+        {steps.map((step) => {
+          const index = steps.findIndex((x) => x.id === phase);
+          const own = steps.findIndex((x) => x.id === step.id);
+          const state = own < index ? 'done' : own === index ? 'now' : 'next';
+
+          return (
+            <li key={step.id} className={`work-step ${state}`}>
+              <span className="ws-mark" aria-hidden>
+                {state === 'done' ? <Icon name="check" size={13} /> : <span className="ws-dot" />}
+              </span>
+              <span className="ws-label">{state === 'done' ? step.done : step.label}</span>
+            </li>
+          );
+        })}
+      </ol>
+
+      {/* A placeholder in the shape of what is coming, so the page does not
+          jump when it arrives. */}
+      <div className="work-skeleton" aria-hidden />
+
+      <p className="tiny muted">
+        {mediaType === 'video'
+          ? 'Video takes a few minutes. You can leave this page — it keeps going.'
+          : 'Usually about a minute.'}
+      </p>
+    </Card>
   );
 }
 

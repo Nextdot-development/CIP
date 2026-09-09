@@ -63,6 +63,16 @@ export type BrainGenerateInput = {
   idempotencyKey?: unknown;
   /** An answer to a question the Brain asked earlier. */
   clarification?: string | null;
+  /**
+   * Called once the brief exists, before the generator is asked for anything.
+   *
+   * There are two long waits inside this one call — retrieving what the company
+   * knows and writing a brief from it, then making the picture — and from
+   * outside they look like one. This is the boundary between them, so a caller
+   * that streams can report the first as finished instead of guessing at it on
+   * a timer.
+   */
+  onPlanned?: (plan: BrainPlanSummary, briefId: string) => void;
 };
 
 export async function generateWithBrain(
@@ -76,6 +86,7 @@ export async function generateWithBrain(
   });
 
   const summary = summarise(plan);
+  input.onPlanned?.(summary, plan.briefId);
 
   if (plan.clarificationQuestion) {
     return {

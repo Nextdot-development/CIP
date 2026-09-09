@@ -48,10 +48,20 @@ export function extensionFor(mimeType: string): string {
 export async function putMediaAsset(key: string, bytes: Buffer, mimeType: string): Promise<void> {
   try {
     await driveStorage().put(key, bytes, mimeType);
-  } catch {
+  } catch (error) {
     // The provider's bytes are in hand and the object store refused them. That
     // is ours, not the provider's, and it is worth retrying.
-    throw new ProviderFailed('STORAGE_ERROR', 'transient', 'The generated file could not be stored.');
+    //
+    // The reason travels with it. Swallowing it left "The generated file could
+    // not be stored" as the only account of a refusal that could be a size
+    // limit, a bad key, an expired credential or a network blip — four
+    // different things to do about it, and no way to tell which.
+    const because = error instanceof Error ? `: ${error.message}` : '';
+    throw new ProviderFailed(
+      'STORAGE_ERROR',
+      'transient',
+      `The generated file could not be stored${because}`.slice(0, 300),
+    );
   }
 }
 
