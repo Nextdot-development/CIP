@@ -31,8 +31,17 @@ export type KnowledgeOverview = {
     facts: number;
     /** Facts with enough evidence behind them to be stated rather than guessed. */
     derived: number;
+    /** Facts seen in exactly one file so far. */
+    observed: number;
     posts: number;
     lessons: number;
+    /**
+     * What the knowledge is about, largest first.
+     *
+     * The four sections the schema allows, named as a person would say them
+     * rather than as the column stores them.
+     */
+    bySection: { section: string; label: string; count: number }[];
   };
   /** Where it came from. */
   sources: {
@@ -44,6 +53,19 @@ export type KnowledgeOverview = {
   };
   /** Nothing has been taught yet. Worth its own state rather than a row of zeroes. */
   empty: boolean;
+};
+
+/**
+ * The four sections the schema allows, in the words a person would use.
+ *
+ * "visual" and "content" are how the rows are stored; nobody asks what CIP
+ * knows about their "content".
+ */
+const SECTION_LABELS: Record<string, string> = {
+  visual: 'Look and feel',
+  content: 'Words and message',
+  video: 'Motion',
+  rules: 'Rules you set',
 };
 
 export async function knowledgeOverview(scope: CompanyScope): Promise<KnowledgeOverview> {
@@ -95,17 +117,27 @@ export async function knowledgeOverview(scope: CompanyScope): Promise<KnowledgeO
     `;
 
     const [learned] = await tx<
-      { facts: number; derived: number; posts: number; lessons: number }[]
+      { facts: number; derived: number; observed: number; posts: number; lessons: number }[]
     >`
       select
         (select count(*)::int from brand_dna_facts
           where company_id = ${scope.companyId} and status = 'active')      as facts,
         (select count(*)::int from brand_dna_facts
           where company_id = ${scope.companyId} and kind = 'derived')       as derived,
+        (select count(*)::int from brand_dna_facts
+          where company_id = ${scope.companyId} and kind = 'observed')      as observed,
         (select count(*)::int from pdf_post
           where company_id = ${scope.companyId})                            as posts,
         (select count(*)::int from brain_lessons
           where company_id = ${scope.companyId})                            as lessons
+    `;
+
+    const sections = await tx<{ section: string; count: number }[]>`
+      select section, count(*)::int as count
+        from brand_dna_facts
+       where company_id = ${scope.companyId} and status = 'active'
+       group by section
+       order by count desc
     `;
 
     const connection = await tx<
@@ -128,8 +160,14 @@ export async function knowledgeOverview(scope: CompanyScope): Promise<KnowledgeO
       learned: {
         facts: learned?.facts ?? 0,
         derived: learned?.derived ?? 0,
+        observed: learned?.observed ?? 0,
         posts: learned?.posts ?? 0,
         lessons: learned?.lessons ?? 0,
+        bySection: sections.map((row) => ({
+          section: row.section,
+          label: SECTION_LABELS[row.section] ?? row.section,
+          count: row.count,
+        })),
       },
       sources: {
         uploaded: totals?.uploaded ?? 0,

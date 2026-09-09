@@ -116,3 +116,72 @@
 .kind-card .kc-sub { font-size: 12.5px; color: var(--ink-500); margin-top: 2px; }
 
 .metric .m-of { font-size: 17px; font-weight: 600; color: var(--ink-400); }
+
+/* ---------------------------------------------------------------------------
+   How much CIP has learned.
+
+   A meter and a part-to-whole bar, both real ratios. The three fills are the
+   app's own brand, positive and warning steps, checked for colour-vision
+   separation rather than chosen by eye — worst adjacent pair sits at ΔE 8.5
+   under protanopia and 20.9 for normal vision. Amber falls below 3:1 against
+   white, so every segment is labelled and carries its value: identity never
+   rests on colour alone.
+   --------------------------------------------------------------------------- */
+.know-panel {
+  display: grid; grid-template-columns: minmax(220px, 1fr) minmax(280px, 1.6fr);
+  gap: 14px; margin-top: 4px;
+}
+@media (max-width: 860px) { .know-panel { grid-template-columns: 1fr; } }
+
+.know-panel .card,
+.know-panel > article { padding: 18px 20px; }
+
+.km-label { font-size: 12.5px; color: var(--ink-500); font-weight: 600; }
+
+/* The one figure this section leads with. Proportional digits: tabular gives
+   every digit the width of a zero, which reads loose at display sizes. */
+.km-figure {
+  font-size: 44px; line-height: 1.05; font-weight: 700;
+  color: var(--ink-900); letter-spacing: -0.03em; margin: 10px 0 14px;
+}
+.km-figure .km-of { font-size: 22px; font-weight: 600; color: var(--ink-400); }
+
+.km-count { font-size: 22px; font-weight: 700; color: var(--ink-900); letter-spacing: -0.02em; }
+
+/* Track and fill are two steps of one ramp, so the state reads across the whole
+   bar and not only where the fill stops. */
+.km-track {
+  height: 10px; border-radius: 999px; background: var(--brand-soft);
+  overflow: hidden;
+}
+.km-fill {
+  display: block; height: 100%; border-radius: 999px;
+  background: var(--brand); transition: width .5s ease;
+}
+
+.km-note { font-size: 12px; color: var(--ink-500); margin-top: 10px; }
+
+/* Part-to-whole. A 2px surface gap between segments keeps two fills from
+   reading as one when their hues are close. */
+.mix-bar {
+  display: flex; height: 14px; border-radius: 999px; overflow: hidden;
+  background: var(--ink-100); margin: 14px 0 12px; gap: 2px;
+}
+.mix-seg { display: block; min-width: 3px; }
+.mix-seg[data-slot='1'] { background: #5b58d6; }
+.mix-seg[data-slot='2'] { background: #12a273; }
+.mix-seg[data-slot='3'] { background: #d38b06; }
+.mix-seg[data-slot='4'] { background: var(--ink-400); }
+.mix-seg:first-child { border-radius: 999px 0 0 999px; }
+.mix-seg:last-child  { border-radius: 0 999px 999px 0; }
+
+.mix-key { display: grid; gap: 7px; }
+.mix-key li { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.mix-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.mix-dot[data-slot='1'] { background: #5b58d6; }
+.mix-dot[data-slot='2'] { background: #12a273; }
+.mix-dot[data-slot='3'] { background: #d38b06; }
+.mix-dot[data-slot='4'] { background: var(--ink-400); }
+/* Text wears text tokens, never the series colour; the dot carries identity. */
+.mix-name { color: var(--ink-700); }
+.mix-value { margin-left: auto; font-weight: 600; color: var(--ink-900); }

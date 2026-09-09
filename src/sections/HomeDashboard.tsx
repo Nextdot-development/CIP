@@ -89,19 +89,16 @@ export function HomeDashboard({ overview }: { overview: KnowledgeOverview }) {
             </Link>
           </div>
 
-          <div className="metrics">
-            <Stat icon="book" label="Files read" value={files.understood} of={files.total} />
-            <Stat
-              icon="sparkle"
-              label="Things learned"
-              value={learned.facts}
-              note={learned.derived > 0 ? `${learned.derived} confirmed by more than one file` : undefined}
-            />
-            {learned.posts > 0 && <Stat icon="image" label="Posts found" value={learned.posts} />}
-            {learned.lessons > 0 && (
-              <Stat icon="check" label="Lessons from feedback" value={learned.lessons} />
-            )}
-          </div>
+          <KnowledgePanel overview={overview} />
+
+          {(learned.posts > 0 || learned.lessons > 0) && (
+            <div className="metrics">
+              {learned.posts > 0 && <Stat icon="image" label="Posts found" value={learned.posts} />}
+              {learned.lessons > 0 && (
+                <Stat icon="check" label="Lessons from feedback" value={learned.lessons} />
+              )}
+            </div>
+          )}
 
           {(files.waiting > 0 || files.failed > 0) && (
             <Card className="pad">
@@ -152,6 +149,111 @@ export function HomeDashboard({ overview }: { overview: KnowledgeOverview }) {
           )}
         </>
       )}
+    </div>
+  );
+}
+
+/**
+ * How much CIP has learned, as something you can read at a glance.
+ *
+ * Two figures, and each is a real ratio rather than a score:
+ *
+ *   - the meter is files read against files held, which moves the moment a file
+ *     finishes;
+ *   - the bar is what the knowledge is about, which is the facts themselves
+ *     grouped by the section they were filed under.
+ *
+ * Neither is a "brand understanding percentage". There was one of those here
+ * before — a seeded 62% with a bar towards a threshold — and it never moved when
+ * a file was uploaded, because nothing computed it.
+ *
+ * The colours are the app's own brand, positive and warning steps, checked for
+ * colour-vision separation rather than picked by eye (worst adjacent pair ΔE 8.5
+ * protan, 20.9 normal). Amber falls under 3:1 against white, so every segment
+ * carries a visible label and a value — identity is never colour alone.
+ */
+function KnowledgePanel({ overview }: { overview: KnowledgeOverview }) {
+  const { files, learned } = overview;
+
+  const read = files.total > 0 ? files.understood / files.total : 0;
+  const sections = learned.bySection.slice(0, 4);
+  const sectionTotal = sections.reduce((sum, s) => sum + s.count, 0);
+
+  // Colour follows the section, never its position in the list. Ordering by
+  // count means the order changes as facts accumulate, and a hue that moves
+  // with rank repaints the whole bar when one category overtakes another.
+  const SLOT: Record<string, number> = { visual: 1, content: 2, video: 3, rules: 4 };
+  const slotFor = (section: string): number => SLOT[section] ?? 4;
+
+  return (
+    <div className="know-panel">
+      <article className="card know-meter">
+        <p className="km-label">Files read</p>
+        <p className="km-figure">
+          {files.understood}
+          <span className="km-of">/{files.total}</span>
+        </p>
+
+        {/* Track and fill are steps of one ramp, so the state reads across the
+            whole bar rather than only where it stops. */}
+        <div
+          className="km-track"
+          role="img"
+          aria-label={`${files.understood} of ${files.total} files read`}
+        >
+          <span className="km-fill" style={{ width: `${Math.round(read * 100)}%` }} />
+        </div>
+
+        <p className="km-note">
+          {files.waiting > 0
+            ? `${files.waiting} still being read`
+            : files.failed > 0
+              ? `${files.failed} could not be read`
+              : 'Everything you have given it'}
+        </p>
+      </article>
+
+      <article className="card know-mix">
+        <div className="row" style={{ justifyContent: 'space-between', alignItems: 'baseline' }}>
+          <p className="km-label">What it has learned about you</p>
+          <p className="km-count">{learned.facts}</p>
+        </div>
+
+        {sectionTotal > 0 ? (
+          <>
+            <div className="mix-bar" role="img" aria-label={sections.map((s) => `${s.label}: ${s.count}`).join(', ')}>
+              {sections.map((s) => (
+                <span
+                  key={s.section}
+                  className="mix-seg"
+                  data-slot={slotFor(s.section)}
+                  style={{ width: `${(s.count / sectionTotal) * 100}%` }}
+                />
+              ))}
+            </div>
+
+            {/* Legend and direct labels in one: three series, each named with its
+                own count, so nothing depends on telling two fills apart. */}
+            <ul className="mix-key">
+              {sections.map((s) => (
+                <li key={s.section}>
+                  <span className="mix-dot" data-slot={slotFor(s.section)} aria-hidden />
+                  <span className="mix-name">{s.label}</span>
+                  <span className="mix-value">{s.count}</span>
+                </li>
+              ))}
+            </ul>
+          </>
+        ) : (
+          <p className="km-note">Nothing learned yet.</p>
+        )}
+
+        <p className="km-note">
+          {learned.derived > 0
+            ? `${learned.derived} confirmed by more than one file`
+            : 'Each seen once so far — add more and CIP starts confirming patterns'}
+        </p>
+      </article>
     </div>
   );
 }
