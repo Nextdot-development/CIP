@@ -35,7 +35,7 @@ export function TrustSection({
   graph: KnowledgeGraphDTO;
   brain: BrainOverviewDTO;
 }) {
-  const [tab, setTab] = useState<Tab>('knowledge');
+  const [tab, setTab] = useState<Tab>('graph');
 
   if (overview.empty) {
     return (
@@ -81,9 +81,11 @@ export function TrustSection({
 }
 
 function Tabs({ tab, setTab }: { tab: Tab; setTab: (t: Tab) => void }) {
+  // The graph leads, because it is the only one that shows the whole shape of
+  // what CIP knows at once; the other two are for looking something up in it.
   const items: { id: Tab; label: string; icon: 'sparkle' | 'grid' | 'book' }[] = [
-    { id: 'knowledge', label: 'What it learned', icon: 'sparkle' },
     { id: 'graph', label: 'How it connects', icon: 'grid' },
+    { id: 'knowledge', label: 'What it learned', icon: 'sparkle' },
     { id: 'files', label: 'What it read', icon: 'book' },
   ];
 
