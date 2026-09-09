@@ -12,23 +12,48 @@ import { readAsset } from '@/server/media/generation';
  * ?assetId= picks one file from a generation that produced several. An asset
  * id from another company does not resolve, because the lookup is joined
  * through this company's own generation.
+ *
+ * ?download=1 sends it as an attachment with a readable filename. Without it
+ * the bytes are inline, which is what the page itself needs to show them.
  */
 export const dynamic = 'force-dynamic';
 
+/** Extensions for the types a generator actually returns. */
+const EXTENSIONS: Record<string, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/webp': 'webp',
+  'video/mp4': 'mp4',
+  'video/quicktime': 'mov',
+  'video/webm': 'webm',
+};
+
 export async function GET(request: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
-  const assetId = new URL(request.url).searchParams.get('assetId');
+  const url = new URL(request.url);
+  const assetId = url.searchParams.get('assetId');
+  const download = url.searchParams.get('download') === '1';
 
   return withMediaScope(async (scope) => {
     const asset = await readAsset(scope, id, assetId);
+
+    // Named from what it is and which generation made it, so a folder of
+    // downloads is still readable a week later. The id is this company's own
+    // and means nothing outside it.
+    const extension = EXTENSIONS[asset.mimeType] ?? 'bin';
+    const filename = `cip-${id.slice(0, 8)}.${extension}`;
 
     return new Response(new Uint8Array(asset.bytes), {
       headers: {
         ...noStore,
         'content-type': asset.mimeType,
         'content-length': String(asset.fileSize),
-        // inline, not attachment: these are meant to be looked at.
-        'content-disposition': 'inline',
+        // Inline by default: these are meant to be looked at. Attachment only
+        // when it was asked for, so the page can keep showing the same bytes
+        // it offers to save.
+        'content-disposition': download
+          ? `attachment; filename="${filename}"`
+          : 'inline',
         'x-content-type-options': 'nosniff',
       },
     });

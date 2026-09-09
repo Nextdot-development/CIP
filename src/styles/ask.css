@@ -107,11 +107,27 @@
 .gen-list { display: grid; gap: 12px; }
 .gen-card { padding: 16px; }
 
+/*
+ * A preview, not the artwork.
+ *
+ * A 1024x1024 image rendered at the card's full width filled the whole screen
+ * and pushed everything else off it, which made a list of results unreadable —
+ * you could see one thing at a time whether you wanted to or not. Bounded on
+ * both axes and sized to its content, so a square, a portrait and a landscape
+ * all sit in the same amount of room. Full size is a click away.
+ */
 .gen-asset {
   border: 1px solid var(--line); border-radius: var(--r-sm);
   overflow: hidden; background: var(--surface-2);
+  display: inline-block; max-width: 100%; line-height: 0;
 }
-.gen-asset img, .gen-asset video { display: block; width: 100%; height: auto; }
+.gen-asset img, .gen-asset video {
+  display: block; max-width: min(340px, 100%); max-height: 260px;
+  width: auto; height: auto; object-fit: contain;
+}
+/* A link around the image, so it opens full size without looking like a button. */
+a.gen-asset { cursor: zoom-in; transition: border-color .14s ease; }
+a.gen-asset:hover { border-color: var(--brand); }
 
 /* The 0-10 scale. Eleven small targets rather than a slider, because a score
    people can name is one they can mean. */

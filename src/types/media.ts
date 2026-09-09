@@ -81,6 +81,18 @@ export function assetUrl(generationId: string, assetId?: string): string {
   return `/api/media/generations/${generationId}/asset${query}`;
 }
 
+/**
+ * The same bytes, asked for as a file to keep.
+ *
+ * A separate URL rather than a flag on the element: the page shows the inline
+ * one and offers this, so the browser saves what is on screen without
+ * re-deciding what it is.
+ */
+export function assetDownloadUrl(generationId: string, assetId?: string): string {
+  const query = assetId ? `?assetId=${encodeURIComponent(assetId)}&download=1` : '?download=1';
+  return `/api/media/generations/${generationId}/asset${query}`;
+}
+
 /** A generation still moving is one the UI should keep polling. */
 export function isInFlight(status: MediaStatus): boolean {
   return status === 'queued' || status === 'processing';

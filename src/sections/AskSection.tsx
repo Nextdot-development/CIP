@@ -8,7 +8,7 @@ import { useToast } from '@/context/toast';
 import { Card, EmptyState, Pill } from '../components/ui/Bits';
 import { Icon } from '../components/ui/Icon';
 import { relativeDay } from '@/lib/format';
-import { IMAGE_PROVIDER_LABELS, assetUrl, isInFlight } from '@/types/media';
+import { IMAGE_PROVIDER_LABELS, assetDownloadUrl, assetUrl, isInFlight } from '@/types/media';
 import type {
   ImageProviderChoice,
   MediaGenerationDTO,
@@ -376,13 +376,37 @@ function Result({
       )}
 
       {generation.hasAsset && generation.status === 'completed' && (
-        <div className="gen-asset" style={{ marginTop: 12 }}>
-          {generation.type === 'video' ? (
-            <video src={assetUrl(generation.id)} controls preload="metadata" />
-          ) : (
-            <img src={assetUrl(generation.id)} alt="" loading="lazy" />
-          )}
-        </div>
+        <>
+          <div className="row" style={{ marginTop: 12, gap: 14, alignItems: 'flex-end' }}>
+            {/* A video keeps its controls, so it is not wrapped in a link that
+                would swallow a click on play. An image opens full size. */}
+            {generation.type === 'video' ? (
+              <span className="gen-asset">
+                <video src={assetUrl(generation.id)} controls preload="metadata" />
+              </span>
+            ) : (
+              <a
+                className="gen-asset"
+                href={assetUrl(generation.id)}
+                target="_blank"
+                rel="noreferrer"
+                title="Open full size"
+              >
+                <img src={assetUrl(generation.id)} alt="" loading="lazy" />
+              </a>
+            )}
+
+            {/* A plain link, so the browser saves it the way it saves anything
+                else — right-click, open in a new tab and keyboard all work. */}
+            <a
+              className="btn btn-ghost btn-sm"
+              href={assetDownloadUrl(generation.id)}
+              download
+            >
+              <Icon name="download" size={15} /> Download
+            </a>
+          </div>
+        </>
       )}
 
       {generation.status === 'completed' && !sent && (
