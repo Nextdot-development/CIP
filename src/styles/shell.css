@@ -148,3 +148,43 @@
   padding: 7px; border-radius: var(--r-xs); display: grid; place-items: center;
 }
 .side-user .sign-out:hover { background: var(--nav-hover); color: var(--nav-fg-strong); }
+
+/* ---------------------------------------------------------------------------
+   Notifications and help, in the side panel.
+   --------------------------------------------------------------------------- */
+.notice-list { display: grid; gap: 12px; padding-top: 14px; }
+
+.notice-row {
+  display: flex; gap: 12px; padding: 14px;
+  border: 1px solid var(--line); border-radius: var(--r-md);
+  background: var(--surface);
+}
+.notice-row .nr-mark {
+  width: 28px; height: 28px; border-radius: 8px; flex: none;
+  display: grid; place-items: center;
+  background: var(--ink-100); color: var(--ink-500);
+}
+/* Tone carries urgency, but never alone — each row is a sentence, and the icon
+   changes with it. */
+.notice-row.problem   .nr-mark { background: var(--stop-050); color: var(--stop-700); }
+.notice-row.attention .nr-mark { background: var(--warn-050); color: var(--warn-700); }
+.notice-row.working   .nr-mark { background: var(--brand-soft); color: var(--brand-deep); }
+.notice-row.good      .nr-mark { background: var(--ok-050); color: var(--ok-700); }
+
+.nr-title  { font-size: 14px; font-weight: 600; color: var(--ink-900); }
+.nr-detail { font-size: 12.5px; color: var(--ink-600); margin-top: 3px; line-height: 1.5; }
+.nr-action {
+  font-size: 12.5px; font-weight: 600; color: var(--brand);
+  display: inline-flex; align-items: center; gap: 4px; margin-top: 8px;
+}
+.nr-action:hover { color: var(--brand-deep); }
+
+.help-list { display: grid; gap: 18px; padding-top: 14px; }
+.help-item { display: flex; gap: 12px; }
+.help-item .hi-icon {
+  width: 32px; height: 32px; border-radius: 9px; flex: none;
+  display: grid; place-items: center;
+  background: var(--brand-soft); color: var(--brand-deep);
+}
+.hi-title { font-size: 14px; font-weight: 600; color: var(--ink-900); }
+.hi-body  { font-size: 12.5px; color: var(--ink-600); margin-top: 4px; line-height: 1.6; }

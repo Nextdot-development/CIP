@@ -8,6 +8,8 @@ import { Avatar, LogoMark } from './ui/Bits';
 import { Icon } from './ui/Icon';
 import type { IconName } from './ui/Icon';
 import { logout } from '@/app/actions';
+import { SideDrawers } from './SideDrawers';
+import type { Notice } from './SideDrawers';
 
 /**
  * Four places, and everything lives inside one of them.
@@ -31,7 +33,7 @@ const NAV: { href: Route; label: string; sub: string; icon: IconName }[] = [
   { href: '/trust', label: 'Trust', sub: 'What CIP knows', icon: 'trust' },
 ];
 
-export function Sidebar() {
+export function Sidebar({ notices }: { notices: Notice[] }) {
   const workspace = useWorkspace();
   const pathname = usePathname();
 
@@ -79,12 +81,7 @@ export function Sidebar() {
       </div>
 
       <div className="side-foot">
-        <button type="button" className="side-link">
-          <Icon name="bell" size={17} /> Notifications
-        </button>
-        <button type="button" className="side-link">
-          <Icon name="help" size={17} /> Help &amp; support
-        </button>
+        <SideDrawers initial={notices} />
         <div className="side-user">
           <Avatar
             initials={workspace.user.initials}
