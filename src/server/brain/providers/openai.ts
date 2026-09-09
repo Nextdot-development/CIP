@@ -1,5 +1,12 @@
 import 'server-only';
-import { BRAIN_LIMITS, BrainFailed, TASK_TYPES, normaliseTaskType } from './types';
+import {
+  BRAIN_LIMITS,
+  BrainFailed,
+  CREATIVE_FORMATS,
+  TASK_TYPES,
+  normaliseFormat,
+  normaliseTaskType,
+} from './types';
 import type {
   AssetAnalysis,
   BrainProvider,
@@ -240,13 +247,14 @@ const BRIEF_SCHEMA = {
   type: 'object',
   additionalProperties: false,
   required: [
-    'taskType', 'platform', 'campaign', 'product', 'visualDirection',
+    'taskType', 'format', 'platform', 'campaign', 'product', 'visualDirection',
     'videoDirection', 'contentDirection', 'brandRules', 'successfulPatterns',
     'negativePatterns', 'learnedPreferences', 'constraints', 'avoid',
     'generationPrompt', 'confidence', 'clarificationQuestion',
   ],
   properties: {
     taskType: { type: 'string', enum: [...TASK_TYPES] },
+    format: { type: 'string', enum: [...CREATIVE_FORMATS] },
     platform: { type: ['string', 'null'] },
     campaign: { type: ['string', 'null'] },
     product: { type: ['string', 'null'] },
@@ -542,6 +550,15 @@ export class OpenAIBrainProvider implements BrainProvider {
 
     sections.push(
       'Build a production brief. The generation prompt must be concrete and ' +
+        'Set `format` from what was asked for. A banner, a billboard, a story, a ' +
+        'carousel card and a feed post are different shapes, and the shape decides ' +
+        'the composition: a banner is wide and reads left to right with room for ' +
+        'text beside the subject; a story is tall and keeps its subject clear of ' +
+        'the top and bottom edges where the interface sits. Compose the prompt for ' +
+        'the shape you name. Do not put pixel dimensions in the prompt — the size ' +
+        'is requested separately, and naming a canvas the generator was not asked ' +
+        'for produces a picture of a banner rather than a banner. ' +
+
         'self-contained — it is sent straight to an image or video model that ' +
         'has none of the context above.\n\n' +
         'Only invent what the request needs and the brand evidence supports; do not ' +
@@ -564,6 +581,7 @@ export class OpenAIBrainProvider implements BrainProvider {
     return {
       ...parsed,
       taskType: normaliseTaskType(parsed.taskType, input.mediaType),
+      format: normaliseFormat(parsed.format),
       confidence: clamp(parsed.confidence),
       clarificationQuestion: parsed.clarificationQuestion?.trim() || null,
       usage,

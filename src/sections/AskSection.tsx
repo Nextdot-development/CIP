@@ -39,10 +39,16 @@ import type {
  * picture — and the server reports the boundary between them rather than the
  * page guessing at it on a timer.
  */
+/** How many past results stand open before the rest are folded away. */
+const HISTORY_PREVIEW = 3;
+
 type Phase = 'idle' | 'planning' | 'making' | 'done';
 
 type PlanSummary = {
   taskType: string | null;
+  formatLabel: string;
+  aspectRatio: string | null;
+  exactShape: boolean;
   platform: string | null;
   campaign: string | null;
   product: string | null;
@@ -87,6 +93,7 @@ export function AskSection({
   const [planned, setPlanned] = useState<PlanSummary | null>(null);
   const [startedAt, setStartedAt] = useState(0);
   const [answer, setAnswer] = useState('');
+  const [showAll, setShowAll] = useState(false);
   const [history, setHistory] = useState(initial);
 
   const chosen = providers.images.find((p) => p.choice === provider) ?? null;
@@ -332,11 +339,31 @@ export function AskSection({
           }
         />
       ) : (
-        <div className="gen-list">
-          {history.map((g) => (
-            <Result key={g.id} generation={g} compact onRated={() => void refresh()} />
-          ))}
-        </div>
+        <>
+          <div className="gen-list">
+            {history.slice(0, showAll ? history.length : HISTORY_PREVIEW).map((g) => (
+              <Result key={g.id} generation={g} compact onRated={() => void refresh()} />
+            ))}
+          </div>
+
+          {history.length > HISTORY_PREVIEW && (
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              style={{ marginTop: 12 }}
+              onClick={() => setShowAll((open) => !open)}
+            >
+              {showAll
+                ? 'Show less'
+                : `Show ${history.length - HISTORY_PREVIEW} more`}
+              <Icon
+                name="chevron-down"
+                size={14}
+                className={showAll ? 'flip' : undefined}
+              />
+            </button>
+          )}
+        </>
       )}
     </div>
   );
@@ -427,8 +454,19 @@ function Plan({ plan }: { plan: PlanSummary }) {
         </Pill>
       </div>
 
-      {context.length > 0 && (
-        <p className="small muted" style={{ marginBottom: 10 }}>{context.join(' · ')}</p>
+      <p className="small muted" style={{ marginBottom: 10 }}>
+        {[plan.formatLabel, ...context].join(' · ')}
+        {plan.aspectRatio ? ` · ${plan.aspectRatio}` : ''}
+      </p>
+
+      {/* Said plainly when the generator has nothing the right shape, rather
+          than handing back something a third as wide as was asked for. */}
+      {!plan.exactShape && (
+        <p className="small" style={{ marginBottom: 10, color: 'var(--warn-700)' }}>
+          <Icon name="alert" size={14} /> Your generator cannot make a
+          {' '}{plan.formatLabel.toLowerCase()} exactly. This is the closest shape it offers
+          {plan.aspectRatio ? ` (${plan.aspectRatio})` : ''} — crop it to size afterwards.
+        </p>
       )}
 
       {plan.brandRules.length > 0 && (

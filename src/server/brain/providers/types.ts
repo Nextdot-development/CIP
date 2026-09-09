@@ -40,6 +40,103 @@ export const TASK_TYPES = [
 
 export type TaskType = (typeof TASK_TYPES)[number];
 
+/**
+ * The shape a piece has to be, named rather than assumed.
+ *
+ * A banner is not a square and a story is not a poster, and asking for one and
+ * getting a 1024x1024 is the difference between a usable asset and a picture of
+ * one. The brief said "recommended canvas 1200 x 400 px" while the generator
+ * produced a square, because nothing carried the shape from the words to the
+ * request.
+ *
+ * A closed list for the same reason task types are closed: free text drifts —
+ * "banner", "web banner" and "hero banner" would be three formats by Thursday —
+ * and every entry here has to map onto something a generator will accept.
+ */
+export const CREATIVE_FORMATS = [
+  'feed_post',
+  'story',
+  'carousel_card',
+  'banner',
+  'billboard',
+  'poster',
+  'thumbnail',
+  'other',
+] as const;
+
+export type CreativeFormat = (typeof CREATIVE_FORMATS)[number];
+
+/**
+ * What each format wants to be, as width:height.
+ *
+ * These are the real shapes of the things, not what any provider offers. What
+ * a provider can actually make is decided separately, against this.
+ */
+export const FORMAT_ASPECT: Record<CreativeFormat, { ratio: number; canvas: string }> = {
+  feed_post:     { ratio: 1,        canvas: '1080 x 1080' },
+  carousel_card: { ratio: 1,        canvas: '1080 x 1080' },
+  story:         { ratio: 9 / 16,   canvas: '1080 x 1920' },
+  poster:        { ratio: 2 / 3,    canvas: '1080 x 1620' },
+  banner:        { ratio: 3,        canvas: '1200 x 400' },
+  billboard:     { ratio: 4,        canvas: '1920 x 480' },
+  thumbnail:     { ratio: 16 / 9,   canvas: '1280 x 720' },
+  other:         { ratio: 1,        canvas: '1080 x 1080' },
+};
+
+/** What a person calls it. */
+export const FORMAT_LABELS: Record<CreativeFormat, string> = {
+  feed_post: 'Feed post',
+  story: 'Story',
+  carousel_card: 'Carousel card',
+  banner: 'Banner',
+  billboard: 'Billboard',
+  poster: 'Poster',
+  thumbnail: 'Thumbnail',
+  other: 'Other',
+};
+
+/** Coerces whatever a provider returned onto the vocabulary. */
+export function normaliseFormat(value: unknown): CreativeFormat {
+  if (typeof value === 'string') {
+    const candidate = value.trim().toLowerCase().replace(/[\s-]+/g, '_');
+    if ((CREATIVE_FORMATS as readonly string[]).includes(candidate)) {
+      return candidate as CreativeFormat;
+    }
+  }
+  return 'other';
+}
+
+/**
+ * The closest shape a generator can actually make, and whether it is the shape
+ * that was wanted.
+ *
+ * `exact` is false when the format's own proportions are not on offer — a
+ * 3:1 banner against a generator whose widest is 3:2. The caller says so
+ * rather than quietly returning something a third as wide as it asked for.
+ */
+export function closestAspectRatio(
+  format: CreativeFormat,
+  supported: readonly string[],
+): { aspectRatio: string | null; exact: boolean } {
+  const want = FORMAT_ASPECT[format].ratio;
+
+  let best: { value: string; ratio: number } | null = null;
+  for (const option of supported) {
+    const [w, h] = option.split(':').map(Number);
+    if (!w || !h) continue;
+    const ratio = w / h;
+    if (best === null || Math.abs(Math.log(ratio / want)) < Math.abs(Math.log(best.ratio / want))) {
+      best = { value: option, ratio };
+    }
+  }
+
+  if (!best) return { aspectRatio: null, exact: false };
+
+  // Within 2% is the same shape as far as anyone looking at it is concerned.
+  return { aspectRatio: best.value, exact: Math.abs(Math.log(best.ratio / want)) < 0.02 };
+}
+
+
 /** The fallback for a media type, when nothing more specific fits. */
 export function defaultTaskType(mediaType: 'image' | 'video'): TaskType {
   return mediaType === 'video' ? 'other_video' : 'other_image';
@@ -226,6 +323,8 @@ export type FeedbackInput = {
 /** What the Brain decided to ask the generator for. */
 export type GenerationBrief = {
   taskType: string;
+  /** The shape the piece has to be. Decides the aspect ratio actually asked for. */
+  format: CreativeFormat;
   platform: string | null;
   campaign: string | null;
   product: string | null;

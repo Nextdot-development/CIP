@@ -5,6 +5,9 @@ import type { MediaGenerationDTO } from '../media/types';
 import { ANALYSABLE_IMAGE_TYPES, BRAIN_LIMITS } from './providers/types';
 import { linkBriefToGeneration, planGeneration, promptFromBrief } from './planner';
 import type { PlannedGeneration } from './planner';
+import { FORMAT_LABELS, closestAspectRatio } from './providers/types';
+import type { CreativeFormat } from './providers/types';
+import { imageGenerationProvider, videoGenerationProvider } from '../media/providers';
 
 /**
  * Generating with the Brain in front.
@@ -41,6 +44,13 @@ export type BrainGenerationResult =
  */
 export type BrainPlanSummary = {
   taskType: string;
+  /** The shape the piece has to be, and what it is called. */
+  format: CreativeFormat;
+  formatLabel: string;
+  /** The ratio actually requested, when the Brain chose it rather than a caller. */
+  aspectRatio: string | null;
+  /** False when the generator has nothing the right shape for this format. */
+  exactShape: boolean;
   platform: string | null;
   campaign: string | null;
   product: string | null;
@@ -85,7 +95,7 @@ export async function generateWithBrain(
     clarification: input.clarification ?? null,
   });
 
-  const summary = summarise(plan);
+  const summary = summarise(plan, shapeFor(input, plan.brief.format));
   input.onPlanned?.(summary, plan.briefId);
 
   if (plan.clarificationQuestion) {
@@ -106,6 +116,12 @@ export async function generateWithBrain(
     .slice(0, BRAIN_LIMITS.maxReferences)
     .map((reference) => reference.fileId);
 
+  // The shape the brief asked for, mapped onto what the chosen generator can
+  // actually produce. A caller that named a ratio keeps it — this only fills in
+  // the gap where nobody said, which used to mean a square whatever was asked
+  // for: "banner" and "story" both came back 1024x1024.
+  const shape = shapeFor(input, plan.brief.format);
+
   const generation =
     input.mediaType === 'image'
       ? await generateImage(scope, {
@@ -114,14 +130,14 @@ export async function generateWithBrain(
           // decides what to generate, never which vendor generates it.
           provider: input.provider,
           referenceFileIds,
-          aspectRatio: input.aspectRatio,
+          aspectRatio: input.aspectRatio ?? shape.aspectRatio,
           imageSize: input.imageSize,
           idempotencyKey: input.idempotencyKey,
         })
       : await generateVideo(scope, {
           prompt,
           referenceFileId: referenceFileIds[0] ?? null,
-          resolution: input.resolution,
+          resolution: input.resolution ?? shape.aspectRatio,
           durationSeconds: input.durationSeconds,
           idempotencyKey: input.idempotencyKey,
         });
@@ -133,9 +149,38 @@ export async function generateWithBrain(
   return { status: 'generated', generation, briefId: plan.briefId, plan: summary };
 }
 
-function summarise(plan: PlannedGeneration): BrainPlanSummary {
+type ChosenShape = { aspectRatio: string | null; exact: boolean };
+
+/**
+ * The shape to ask the generator for.
+ *
+ * Only consulted when the caller named no ratio of its own. Videos and images
+ * have different lists of what they will accept, so the format is matched
+ * against whichever one is about to be used rather than against a fixed table.
+ */
+function shapeFor(input: BrainGenerateInput, format: CreativeFormat): ChosenShape {
+  if (typeof input.aspectRatio === 'string' || typeof input.resolution === 'string') {
+    return { aspectRatio: null, exact: true };
+  }
+
+  const supported =
+    input.mediaType === 'image'
+      ? imageGenerationProvider(input.provider as never).aspectRatios
+      : videoGenerationProvider().resolutions;
+
+  return closestAspectRatio(format, supported);
+}
+
+function summarise(plan: PlannedGeneration, shape?: ChosenShape): BrainPlanSummary {
   return {
     taskType: plan.brief.taskType,
+    format: plan.brief.format,
+    formatLabel: FORMAT_LABELS[plan.brief.format],
+    aspectRatio: shape?.aspectRatio ?? null,
+    // False when the generator has nothing the right shape — a 3:1 banner
+    // against a generator whose widest is 3:2. Said out loud rather than
+    // returning something a third as wide as was asked for.
+    exactShape: shape?.exact ?? true,
     platform: plan.brief.platform,
     campaign: plan.brief.campaign,
     product: plan.brief.product,

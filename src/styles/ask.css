@@ -192,3 +192,6 @@ a.gen-asset:hover { border-color: var(--brand); }
   .work-step.now .ws-dot,
   .work-skeleton { animation: none; }
 }
+
+/* The chevron points the way the next click goes. */
+.flip { transform: rotate(180deg); }

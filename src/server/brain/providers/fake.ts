@@ -2,6 +2,7 @@ import 'server-only';
 import { createHash } from 'node:crypto';
 import { BrainFailed } from './types';
 import type {
+  CreativeFormat,
   AssetAnalysis,
   BrainProvider,
   BriefInput,
@@ -268,6 +269,10 @@ export class FakeBrainProvider implements BrainProvider {
 
     return {
       taskType: input.mediaType === 'video' ? 'promotional_video' : 'promotional_image',
+      // Read off the words, deterministically, the way the rest of this double
+      // works: the tests need a format that follows the request rather than a
+      // constant, so they can assert the shape actually travels.
+      format: formatFromWords(input.requestText),
       platform: input.requestText.toLowerCase().includes('instagram') ? 'instagram' : null,
       campaign: input.knownCampaigns.find((c) => input.requestText.toLowerCase().includes(c.toLowerCase())) ?? null,
       product: input.knownProducts.find((p) => input.requestText.toLowerCase().includes(p.toLowerCase())) ?? null,
@@ -294,4 +299,17 @@ export class FakeBrainProvider implements BrainProvider {
 function pick(digest: string, offset: number, options: string[]): string {
   const value = parseInt(digest.slice(offset, offset + 2), 16);
   return options[value % options.length]!;
+}
+
+/** The shape a request names, matched on the words a person would use. */
+function formatFromWords(requestText: string): CreativeFormat {
+  const text = requestText.toLowerCase();
+  if (text.includes('billboard') || text.includes('hoarding')) return 'billboard';
+  if (text.includes('banner')) return 'banner';
+  if (text.includes('story') || text.includes('reel')) return 'story';
+  if (text.includes('carousel')) return 'carousel_card';
+  if (text.includes('poster')) return 'poster';
+  if (text.includes('thumbnail')) return 'thumbnail';
+  if (text.includes('post')) return 'feed_post';
+  return 'other';
 }
