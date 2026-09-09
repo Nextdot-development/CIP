@@ -8,8 +8,13 @@ import { useToast } from '@/context/toast';
 import { Card, EmptyState, Pill } from '../components/ui/Bits';
 import { Icon } from '../components/ui/Icon';
 import { relativeDay } from '@/lib/format';
-import { assetUrl, isInFlight } from '@/types/media';
-import type { MediaGenerationDTO, MediaType, ProviderStatusDTO } from '@/types/media';
+import { IMAGE_PROVIDER_LABELS, assetUrl, isInFlight } from '@/types/media';
+import type {
+  ImageProviderChoice,
+  MediaGenerationDTO,
+  MediaType,
+  ProviderStatusDTO,
+} from '@/types/media';
 
 /**
  * Ask — describe what you want, and CIP makes it out of what it knows.
@@ -57,14 +62,18 @@ export function AskSection({
 
   const [draft, setDraft] = useState(seed?.text ?? '');
   const [mediaType, setMediaType] = useState<MediaType>('image');
+  // Named explicitly rather than left to the default. Sending no provider is
+  // how a request quietly went to a key Google had revoked while a working one
+  // sat next to it.
+  const [provider, setProvider] = useState<ImageProviderChoice>(providers.defaultImageProvider);
   const [phase, setPhase] = useState<Phase>('idle');
   const [result, setResult] = useState<BrainResult | null>(null);
   const [answer, setAnswer] = useState('');
   const [history, setHistory] = useState(initial);
 
-  const imageReady = providers.image.configured;
+  const chosen = providers.images.find((p) => p.choice === provider) ?? null;
   const videoReady = providers.video.configured;
-  const ready = mediaType === 'image' ? imageReady : videoReady;
+  const ready = mediaType === 'image' ? Boolean(chosen?.configured) : videoReady;
 
   const refresh = useCallback(async () => {
     const res = await fetch('/api/media/generations', { cache: 'no-store' });
@@ -94,6 +103,7 @@ export function AskSection({
         body: JSON.stringify({
           request: text,
           mediaType,
+          ...(mediaType === 'image' ? { provider } : {}),
           ...(clarification ? { clarification } : {}),
         }),
       });
@@ -133,7 +143,7 @@ export function AskSection({
       </header>
 
       <Card className="pad">
-        <div className="row" style={{ gap: 8, marginBottom: 14 }}>
+        <div className="row" style={{ gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
           <button
             type="button"
             className={`chip ${mediaType === 'image' ? 'on' : ''}`}
@@ -148,6 +158,29 @@ export function AskSection({
           >
             <Icon name="video" size={15} /> Video
           </button>
+
+          {/* Which generator, named rather than assumed. One with no working
+              key is shown as unavailable instead of being quietly chosen. */}
+          {mediaType === 'image' && providers.images.length > 1 && (
+            <span className="row" style={{ gap: 6, marginLeft: 'auto' }}>
+              {providers.images.map((p) => (
+                <button
+                  key={p.choice}
+                  type="button"
+                  className={`chip ${provider === p.choice ? 'on' : ''}`}
+                  onClick={() => setProvider(p.choice)}
+                  disabled={!p.configured}
+                  title={
+                    p.configured
+                      ? `${p.provider}/${p.model}`
+                      : `${IMAGE_PROVIDER_LABELS[p.choice]} has no key configured`
+                  }
+                >
+                  {IMAGE_PROVIDER_LABELS[p.choice]}
+                </button>
+              ))}
+            </span>
+          )}
         </div>
 
         <textarea
@@ -166,9 +199,11 @@ export function AskSection({
           <span className="tiny muted">
             {ready
               ? mediaType === 'video'
-                ? 'Video is queued and takes a few minutes.'
-                : 'Usually about a minute.'
-              : `No ${mediaType} provider is configured, so this would fail.`}
+                ? `${providers.video.provider}/${providers.video.model} · queued, takes a few minutes.`
+                : `${chosen?.provider}/${chosen?.model} · usually about a minute.`
+              : mediaType === 'image'
+                ? `${IMAGE_PROVIDER_LABELS[provider]} has no key configured.`
+                : 'No video provider is configured.'}
           </span>
           <button
             type="button"
