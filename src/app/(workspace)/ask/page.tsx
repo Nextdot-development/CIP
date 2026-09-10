@@ -1,6 +1,7 @@
 import { requireSession } from '@/server/auth/guards';
 import { listGenerations } from '@/server/media/generation';
 import { providerStatus } from '@/server/media/providers';
+import { companyMarkets } from '@/server/brain/markets';
 import { AskSection } from '@/sections/AskSection';
 
 export const metadata = { title: 'Ask — CIP' };
@@ -18,6 +19,7 @@ export default async function AskPage() {
     <AskSection
       initial={(await listGenerations(session.scope, { limit: 30 })).generations}
       providers={providerStatus()}
+      markets={(await companyMarkets(session.scope)).map((m) => m.market)}
     />
   );
 }

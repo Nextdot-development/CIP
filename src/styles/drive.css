@@ -127,3 +127,24 @@
 .passage .p-where { font-size: 12.5px; color: var(--ink-500); }
 .passage .p-text { font-size: 14px; color: var(--ink-800); line-height: 1.6; margin-top: 5px; }
 .filter-divider { width: 1px; height: 20px; background: var(--line); margin: 0 4px; align-self: center; }
+
+/* Which market a file belongs to. Quiet when unset — most files belong to the
+   brand at large and should not look like they are missing something. */
+.market-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  border: 1px dashed var(--line); background: transparent;
+  border-radius: 999px; padding: 3px 9px;
+  font-size: 11.5px; color: var(--ink-400); cursor: pointer;
+  transition: border-color .14s ease, color .14s ease, background .14s ease;
+}
+.market-chip:hover { border-color: var(--brand); color: var(--brand-deep); }
+.market-chip.set {
+  border-style: solid; border-color: var(--brand-soft);
+  background: var(--brand-soft); color: var(--brand-deep); font-weight: 600;
+}
+.market-input {
+  width: 110px; border: 1px solid var(--brand); border-radius: 999px;
+  padding: 3px 9px; font: inherit; font-size: 11.5px;
+  background: var(--surface); color: var(--ink-900);
+}
+.market-input:focus { outline: none; box-shadow: var(--sh-focus); }

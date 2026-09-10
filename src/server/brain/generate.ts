@@ -73,6 +73,8 @@ export type BrainGenerateInput = {
   idempotencyKey?: unknown;
   /** An answer to a question the Brain asked earlier. */
   clarification?: string | null;
+  /** Which market this is for. The Brain asks when it matters and nobody said. */
+  market?: string | null;
   /**
    * Called once the brief exists, before the generator is asked for anything.
    *
@@ -93,6 +95,7 @@ export async function generateWithBrain(
     requestText: input.requestText,
     mediaType: input.mediaType,
     clarification: input.clarification ?? null,
+    market: input.market ?? null,
   });
 
   const summary = summarise(plan, shapeFor(input, plan.brief.format));

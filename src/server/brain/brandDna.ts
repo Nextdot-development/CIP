@@ -27,6 +27,13 @@ export type BrandFactDTO = {
   confidence: number;
   evidenceCount: number;
   updatedAt: string;
+  /**
+   * The markets whose files produced this fact.
+   *
+   * Empty when none of them has been placed. Two or more means the pattern
+   * holds across countries — it is the brand, not one country's version of it.
+   */
+  markets: string[];
 };
 
 export type BrandFactEvidenceDTO = {
@@ -128,25 +135,65 @@ export async function recomputeBrandDna(scope: CompanyScope): Promise<{
  */
 export async function readBrandDna(
   scope: CompanyScope,
-  options: { section?: BrandSection | null; limit?: number; minEvidence?: number } = {},
+  options: {
+    section?: BrandSection | null;
+    limit?: number;
+    minEvidence?: number;
+    /**
+     * Narrow to one market's knowledge.
+     *
+     * Keeps a fact when it was seen in that market's files, and also when it
+     * was seen in two or more markets — a pattern that holds across countries
+     * is not a local one, and dropping it would leave the brief with only what
+     * makes this market different and none of what makes it the same brand.
+     */
+    market?: string | null;
+  } = {},
 ): Promise<BrandFactDTO[]> {
   const limit = Math.min(Math.max(options.limit ?? 100, 1), 500);
   const minEvidence = options.minEvidence ?? 1;
   const section = options.section ?? null;
+  const market = options.market ?? null;
 
   const rows = await withCompanyScope(scope, async (tx) =>
     tx<
       {
         id: string; section: BrandSection; attribute: string; value: string;
         kind: BrandFactDTO['kind']; confidence: string; evidence_count: number; updated_at: Date;
+        markets: string[];
       }[]
     >`
-      select id, section, attribute, value, kind, confidence, evidence_count, updated_at
-        from brand_dna_facts
-       where status = 'active'
-         and evidence_count >= ${minEvidence}
-         and (${section}::text is null or section = ${section})
-       order by confidence desc, evidence_count desc, attribute
+      with fact_markets as (
+        -- Which markets each fact was actually seen in, from the files that
+        -- evidenced it. Not stored on the fact: relabel a file and every fact
+        -- it supports moves with it, with nothing to keep in step.
+        select e.fact_id,
+               array_remove(array_agg(distinct f.market), null) as markets
+          from brand_dna_evidence e
+          join drive_files f
+            on f.id = e.file_id and f.company_id = e.company_id
+         where e.company_id = ${scope.companyId}
+         group by e.fact_id
+      )
+      select b.id, b.section, b.attribute, b.value, b.kind, b.confidence,
+             b.evidence_count, b.updated_at,
+             coalesce(m.markets, '{}') as markets
+        from brand_dna_facts b
+        left join fact_markets m on m.fact_id = b.id
+       where b.status = 'active'
+         and b.evidence_count >= ${minEvidence}
+         and (${section}::text is null or b.section = ${section})
+         and (
+           ${market}::text is null
+           -- Seen in this market, or seen in enough markets to be the brand
+           -- rather than one country's version of it.
+           or ${market} = any(coalesce(m.markets, '{}'))
+           or coalesce(array_length(m.markets, 1), 0) >= 2
+           -- A fact from a file nobody has placed belongs to the brand at
+           -- large; withholding it would leave a market with less than it has.
+           or coalesce(array_length(m.markets, 1), 0) = 0
+         )
+       order by b.confidence desc, b.evidence_count desc, b.attribute
        limit ${limit}
     `,
   );
@@ -160,6 +207,7 @@ export async function readBrandDna(
     confidence: Number(row.confidence),
     evidenceCount: row.evidence_count,
     updatedAt: row.updated_at.toISOString(),
+    markets: row.markets ?? [],
   }));
 }
 

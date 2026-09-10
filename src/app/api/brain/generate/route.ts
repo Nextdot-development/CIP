@@ -27,6 +27,7 @@ type Body = {
   durationSeconds?: unknown;
   idempotencyKey?: unknown;
   clarification?: unknown;
+  market?: unknown;
 };
 
 export async function POST(request: Request) {
@@ -118,6 +119,7 @@ export async function POST(request: Request) {
       durationSeconds: body.durationSeconds,
       idempotencyKey: body.idempotencyKey,
       clarification: typeof body.clarification === 'string' ? body.clarification : null,
+      market: typeof body.market === 'string' ? body.market : null,
     };
 
     // A caller that asks for a stream is told when the brief is written, which

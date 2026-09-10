@@ -17,6 +17,13 @@ export type BrandFactDTO = {
   confidence: number;
   evidenceCount: number;
   updatedAt: string;
+  /**
+   * The markets whose files produced this fact.
+   *
+   * Empty when none of them has been placed. Two or more means the pattern
+   * holds across countries — it is the brand, not one country's version of it.
+   */
+  markets: string[];
 };
 
 export type BrandEvidenceDTO = {

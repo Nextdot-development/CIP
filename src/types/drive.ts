@@ -47,6 +47,14 @@ export type DriveFileDTO = {
    * ever; whether CIP understands it is this.
    */
   understanding: { status: UnderstandingStatus; kind: string } | null;
+  /**
+   * Which market this file's knowledge belongs to, if anyone has said.
+   *
+   * Suggested from the filename where that is unambiguous, and correctable —
+   * it decides which briefs draw on this file, so a wrong guess should be
+   * visible rather than silent.
+   */
+  market: string | null;
   sourceType: DriveSourceType;
 };
 

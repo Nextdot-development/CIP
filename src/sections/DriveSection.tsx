@@ -52,6 +52,72 @@ const KINDS: { id: FileKind; label: string }[] = [
 ];
 
 /**
+ * Which market a file's knowledge belongs to.
+ *
+ * Shown because it decides which briefs draw on this file: a deck labelled
+ * India shapes Indian work and stays out of Nigerian work. The label is a
+ * suggestion read off the filename, so it has to be correctable — a wrong one
+ * quietly shaping every brief is worse than no label at all.
+ */
+function MarketChip({ file }: { file: DriveFileDTO }) {
+  const { note } = useToast();
+  const [market, setMarket] = useState(file.market);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(file.market ?? '');
+
+  const save = async (value: string | null) => {
+    const res = await fetch(`/api/drive/files/${file.id}/market`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ market: value }),
+    });
+    if (!res.ok) {
+      note('That could not be saved.');
+      return;
+    }
+    setMarket(value);
+    setEditing(false);
+    note(value ? `Filed under ${value}` : 'Market cleared');
+  };
+
+  if (editing) {
+    return (
+      <input
+        className="market-input"
+        value={draft}
+        autoFocus
+        placeholder="Market…"
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => void save(draft.trim() || null)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') void save(draft.trim() || null);
+          if (e.key === 'Escape') setEditing(false);
+        }}
+        aria-label="Which market this file belongs to"
+      />
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      className={`market-chip ${market ? 'set' : ''}`}
+      onClick={() => {
+        setDraft(market ?? '');
+        setEditing(true);
+      }}
+      title={
+        market
+          ? `Filed under ${market}. Click to change.`
+          : 'No market — this counts towards every market. Click to set one.'
+      }
+    >
+      <Icon name="link" size={12} /> {market ?? 'Any market'}
+    </button>
+  );
+}
+
+/**
  * What CIP has made of a file.
  *
  * Every file gets read. What differs is how: a document by its words, an image
@@ -578,7 +644,9 @@ export function DriveSection({
                       {f.uploadedBy ? ` by ${f.uploadedBy.name}` : ''}
                       {searching && where ? ` · in ${where}` : ''}
                     </span>
-                    <ProcessingChip file={f} />
+                    <MarketChip file={f} />
+                    <MarketChip file={f} />
+                <ProcessingChip file={f} />
                   </span>
                 </span>
                 <span className="fr-actions">

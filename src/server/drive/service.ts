@@ -57,6 +57,7 @@ type FileRow = {
   source_type: D.DriveSourceType;
   understanding_status: string | null;
   understanding_kind: string | null;
+  market: string | null;
 };
 
 function toFolder(r: FolderRow): D.DriveFolderDTO {
@@ -93,6 +94,10 @@ function toFile(r: FileRow): D.DriveFileDTO {
     understanding: r.understanding_status
       ? { status: r.understanding_status as D.UnderstandingStatus, kind: r.understanding_kind ?? 'document' }
       : null,
+    // Which market this file's knowledge belongs to. Suggested from the
+    // filename and correctable, so a wrong guess is visible rather than
+    // quietly shaping every brief.
+    market: r.market ?? null,
     // Which source this came from. Safe to show: it names the integration,
     // not the account, the folder or anything about another company.
     sourceType: r.source_type ?? 'cip_drive',
@@ -158,7 +163,7 @@ export async function listFolder(
       `,
       tx<FileRow[]>`
         select f.id, f.name, f.original_filename, f.file_type, f.mime_type, f.file_size,
-               f.created_at, f.updated_at, f.processing_status, f.source_type,
+               f.created_at, f.updated_at, f.processing_status, f.source_type, f.market,
              (select status from asset_understanding
                where file_id = f.id and company_id = f.company_id
                order by updated_at desc limit 1) as understanding_status,
@@ -312,7 +317,7 @@ export async function uploadFile(scope: CompanyScope, input: UploadInput): Promi
           ${spec.extension}, ${mimeType}, ${input.body.length}, ${checksum}, ${storagePath}, ${scope.userId}
         )
         returning id, name, original_filename, file_type, mime_type, file_size,
-                  created_at, updated_at, processing_status, source_type,
+                  created_at, updated_at, processing_status, source_type, market,
                   null::text as understanding_status, null::text as understanding_kind,
                   uploaded_by as uploaded_by_id, null::text as uploaded_by_name
       `;
@@ -358,7 +363,7 @@ export async function renameFile(
           from (select 1) as _
          where f.id = ${fileId} and f.company_id = ${scope.companyId} and f.archived_at is null
         returning f.id, f.name, f.original_filename, f.file_type, f.mime_type, f.file_size,
-                  f.created_at, f.updated_at, f.processing_status, f.source_type,
+                  f.created_at, f.updated_at, f.processing_status, f.source_type, f.market,
              (select status from asset_understanding
                where file_id = f.id and company_id = f.company_id
                order by updated_at desc limit 1) as understanding_status,
@@ -439,7 +444,7 @@ export async function readFile(scope: CompanyScope, fileId: string): Promise<Fil
   const row = await withCompanyScope(scope, async (tx) => {
     const rows = await tx<(FileRow & { storage_path: string })[]>`
       select id, name, original_filename, file_type, mime_type, file_size,
-             created_at, updated_at, processing_status, source_type, storage_path,
+             created_at, updated_at, processing_status, source_type, market, storage_path,
              (select status from asset_understanding u
                where u.file_id = drive_files.id and u.company_id = drive_files.company_id
                order by u.updated_at desc limit 1) as understanding_status,
@@ -465,7 +470,7 @@ export async function listArchived(scope: CompanyScope): Promise<D.DriveFileDTO[
   return withCompanyScope(scope, async (tx) => {
     const rows = await tx<FileRow[]>`
       select f.id, f.name, f.original_filename, f.file_type, f.mime_type, f.file_size,
-             f.created_at, f.updated_at, f.processing_status, f.source_type,
+             f.created_at, f.updated_at, f.processing_status, f.source_type, f.market,
              (select status from asset_understanding
                where file_id = f.id and company_id = f.company_id
                order by updated_at desc limit 1) as understanding_status,
@@ -502,7 +507,7 @@ export async function search(
     const [files, folders] = await Promise.all([
       tx<(FileRow & { folder_id: string | null; folder_name: string | null })[]>`
         select f.id, f.name, f.original_filename, f.file_type, f.mime_type, f.file_size,
-               f.created_at, f.updated_at, f.processing_status, f.source_type,
+               f.created_at, f.updated_at, f.processing_status, f.source_type, f.market,
              (select status from asset_understanding
                where file_id = f.id and company_id = f.company_id
                order by updated_at desc limit 1) as understanding_status,

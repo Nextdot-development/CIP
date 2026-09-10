@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { deflateSync } from 'node:zlib';
+import crypto from 'node:crypto';
 import postgres from 'postgres';
 import { startTestDatabase } from './harness';
 import type { TestDb } from './harness';
@@ -894,5 +895,172 @@ describe('nothing sensitive leaves the server', () => {
     for (const forbidden of [mm.companyId, 'companies/', 'storage_path', 'sk-']) {
       assert.ok(!payload.includes(forbidden), `the brief leaked ${forbidden}`);
     }
+  });
+});
+
+describe('markets', () => {
+  /**
+   * Puts a file in a market and hangs one fact off it, which is the shape the
+   * real thing has: the market is on the file, and a fact belongs to whichever
+   * markets evidenced it.
+   */
+  async function fileInMarket(
+    scope: Scope,
+    name: string,
+    market: string | null,
+    factValue: string,
+  ): Promise<void> {
+    const [file] = await adminSql<{ id: string }[]>`
+      insert into drive_files
+        (company_id, folder_id, name, original_filename, file_type, mime_type,
+         file_size, checksum_sha256, storage_path, uploaded_by, source_type,
+         processing_status, market, metadata)
+      values
+        (${scope.companyId}, null, ${name}, ${name}, 'pdf', 'application/pdf',
+         100, ${`sum-${name}`}, ${`companies/${scope.companyId}/${crypto.randomUUID()}.pdf`},
+         ${scope.userId}, 'cip_drive', 'processed', ${market}, '{}'::jsonb)
+      returning id
+    `;
+
+    const [fact] = await adminSql<{ id: string }[]>`
+      insert into brand_dna_facts
+        (company_id, section, attribute, value, kind, confidence, evidence_count)
+      values (${scope.companyId}, 'visual', 'style', ${factValue}, 'observed', 0.5, 1)
+      returning id
+    `;
+
+    await adminSql`
+      insert into brand_dna_evidence (company_id, fact_id, file_id)
+      values (${scope.companyId}, ${fact!.id}, ${file!.id})
+    `;
+  }
+
+  it('reads the market a filename plainly says, and refuses to guess otherwise', async () => {
+    const markets = await import('../src/server/brain/markets');
+
+    assert.equal(markets.marketFromFilename('India.pdf'), 'India');
+    assert.equal(markets.marketFromFilename('nigeria.pdf'), 'Nigeria');
+    assert.equal(markets.marketFromFilename('europe.pdf'), 'Europe');
+
+    // Nothing in these names says where they belong.
+    assert.equal(markets.marketFromFilename('banner content.jpeg'), null);
+    assert.equal(markets.marketFromFilename('tone-of-voice.txt'), null);
+
+    // Two markets in one name is not one market.
+    assert.equal(markets.marketFromFilename('india-vs-europe.pdf'), null);
+  });
+
+  it('a fact carries the markets whose files produced it', async () => {
+    await fileInMarket(mm, 'India.pdf', 'India', 'warm gold on black');
+    await fileInMarket(mm, 'nigeria.pdf', 'Nigeria', 'bright cyan blocks');
+
+    const facts = await brandDna.readBrandDna(mm, { minEvidence: 1, limit: 50 });
+    const indian = facts.find((f) => f.value === 'warm gold on black')!;
+    const nigerian = facts.find((f) => f.value === 'bright cyan blocks')!;
+
+    assert.deepEqual(indian.markets, ['India']);
+    assert.deepEqual(nigerian.markets, ['Nigeria']);
+  });
+
+  it("one market's look does not leak into another's brief", async () => {
+    await fileInMarket(mm, 'India.pdf', 'India', 'warm gold on black');
+    await fileInMarket(mm, 'nigeria.pdf', 'Nigeria', 'bright cyan blocks');
+
+    const indian = await brandDna.readBrandDna(mm, { minEvidence: 1, limit: 50, market: 'India' });
+    assert.ok(indian.some((f) => f.value === 'warm gold on black'), 'India lost its own style');
+    assert.ok(
+      !indian.some((f) => f.value === 'bright cyan blocks'),
+      "Nigeria's style reached an Indian brief",
+    );
+  });
+
+  it('a pattern seen in two markets is the brand, and reaches both', async () => {
+    // The same claim, evidenced by a file in each market.
+    await fileInMarket(mm, 'India.pdf', 'India', 'bottle centred');
+    const [shared] = await adminSql<{ id: string }[]>`
+      select id from brand_dna_facts where company_id = ${mm.companyId} and value = 'bottle centred'
+    `;
+    const [nigerFile] = await adminSql<{ id: string }[]>`
+      insert into drive_files
+        (company_id, folder_id, name, original_filename, file_type, mime_type,
+         file_size, checksum_sha256, storage_path, uploaded_by, source_type,
+         processing_status, market, metadata)
+      values
+        (${mm.companyId}, null, 'nigeria.pdf', 'nigeria.pdf', 'pdf', 'application/pdf',
+         100, 'sum-ng', ${`companies/${mm.companyId}/${crypto.randomUUID()}.pdf`},
+         ${mm.userId}, 'cip_drive', 'processed', 'Nigeria', '{}'::jsonb)
+      returning id
+    `;
+    await adminSql`
+      insert into brand_dna_evidence (company_id, fact_id, file_id)
+      values (${mm.companyId}, ${shared!.id}, ${nigerFile!.id})
+    `;
+
+    for (const market of ['India', 'Nigeria']) {
+      const facts = await brandDna.readBrandDna(mm, { minEvidence: 1, limit: 50, market });
+      assert.ok(
+        facts.some((f) => f.value === 'bottle centred'),
+        `a cross-market pattern was withheld from ${market}`,
+      );
+    }
+  });
+
+  it('a file nobody has placed counts towards every market', async () => {
+    await fileInMarket(mm, 'tone-of-voice.txt', null, 'never mention the alcohol');
+
+    const facts = await brandDna.readBrandDna(mm, { minEvidence: 1, limit: 50, market: 'India' });
+    assert.ok(
+      facts.some((f) => f.value === 'never mention the alcohol'),
+      'unplaced knowledge was withheld from a market that should have it',
+    );
+  });
+
+  it('THE TEST: asks which market when there are several and the request says none', async () => {
+    await fileInMarket(mm, 'India.pdf', 'India', 'warm gold on black');
+    await fileInMarket(mm, 'nigeria.pdf', 'Nigeria', 'bright cyan blocks');
+
+    const plan = await planner.planGeneration(mm, {
+      requestText: 'Make a Diwali post',
+      mediaType: 'image',
+    });
+
+    assert.ok(plan.clarificationQuestion, 'the Brain averaged three markets instead of asking');
+    assert.match(plan.clarificationQuestion!, /India/);
+    assert.match(plan.clarificationQuestion!, /Nigeria/);
+  });
+
+  it('does not ask when the request already names the market', async () => {
+    await fileInMarket(mm, 'India.pdf', 'India', 'warm gold on black');
+    await fileInMarket(mm, 'nigeria.pdf', 'Nigeria', 'bright cyan blocks');
+
+    const plan = await planner.planGeneration(mm, {
+      requestText: 'Make a Diwali post for Nigeria',
+      mediaType: 'image',
+    });
+
+    assert.equal(plan.clarificationQuestion, null, 'the Brain asked something it had been told');
+  });
+
+  it('does not ask when there is only one market to choose from', async () => {
+    await fileInMarket(mm, 'India.pdf', 'India', 'warm gold on black');
+
+    const plan = await planner.planGeneration(mm, {
+      requestText: 'Make a Diwali post',
+      mediaType: 'image',
+    });
+
+    assert.equal(plan.clarificationQuestion, null, 'the Brain asked a question with one answer');
+  });
+
+  it('one company cannot see another company markets', async () => {
+    await fileInMarket(mm, 'India.pdf', 'India', 'warm gold on black');
+    await fileInMarket(nh, 'kenya.pdf', 'Kenya', 'clinical white');
+
+    const markets = await import('../src/server/brain/markets');
+    const ours = (await markets.companyMarkets(mm)).map((m) => m.market);
+    const theirs = (await markets.companyMarkets(nh)).map((m) => m.market);
+
+    assert.deepEqual(ours, ['India']);
+    assert.deepEqual(theirs, ['Kenya']);
   });
 });

@@ -72,9 +72,12 @@ type BrainResult =
 export function AskSection({
   initial,
   providers,
+  markets,
 }: {
   initial: MediaGenerationDTO[];
   providers: ProviderStatusDTO;
+  /** Markets this company has knowledge about. Empty when nothing is placed. */
+  markets: string[];
 }) {
   const workspace = useWorkspace();
   const { seed } = useAskSeed();
@@ -94,6 +97,10 @@ export function AskSection({
   const [startedAt, setStartedAt] = useState(0);
   const [answer, setAnswer] = useState('');
   const [showAll, setShowAll] = useState(false);
+  // Left unset on purpose when there is a choice: the Brain asks rather than
+  // picking one, because guessing the market is the one mistake that makes
+  // everything else in the brief wrong.
+  const [market, setMarket] = useState<string | null>(markets.length === 1 ? markets[0]! : null);
   const [history, setHistory] = useState(initial);
 
   const chosen = providers.images.find((p) => p.choice === provider) ?? null;
@@ -133,6 +140,7 @@ export function AskSection({
           request: text,
           mediaType,
           ...(mediaType === 'image' ? { provider } : {}),
+          ...(market ? { market } : {}),
           ...(clarification ? { clarification } : {}),
         }),
       });
@@ -249,6 +257,28 @@ export function AskSection({
             </span>
           )}
         </div>
+
+        {/* Which market, when this company has more than one. Unset is a real
+            choice: the Brain then asks, instead of averaging three countries
+            that do not look alike. */}
+        {markets.length > 1 && (
+          <div className="row" style={{ gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
+            <span className="tiny muted" style={{ marginRight: 2 }}>For:</span>
+            {markets.map((name) => (
+              <button
+                key={name}
+                type="button"
+                className={`chip ${market === name ? 'on' : ''}`}
+                onClick={() => setMarket(market === name ? null : name)}
+              >
+                {name}
+              </button>
+            ))}
+            {market === null && (
+              <span className="tiny muted">— CIP will ask if you do not say</span>
+            )}
+          </div>
+        )}
 
         <textarea
           className="field-input"
