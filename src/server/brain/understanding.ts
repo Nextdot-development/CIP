@@ -7,6 +7,7 @@ import { driveStorage } from '../drive/storage';
 import { embedder, toVectorLiteral } from '../drive/embedding';
 import { brain } from './providers';
 import { similaritySupported } from './capabilities';
+import { fitForVision } from './fitImage';
 import {
   ANALYSABLE_IMAGE_TYPES,
   ANALYSABLE_VIDEO_TYPES,
@@ -207,11 +208,16 @@ export async function understandClaimedAsset(claim: ClaimedAsset): Promise<Under
     // Empty for most companies, and then nothing about this changes.
     const brands = await rosterFor(scope);
 
+    // Print-resolution artwork is scaled to something a vision model will
+    // actually accept. A brand's own asset library is full of it, and refusing
+    // a 90 MB bottle shot taught CIP nothing about that brand at all.
+    const fitted = kind === 'image' ? await fitForVision(bytes, claim.mimeType) : null;
+
     const analysis =
       kind === 'image'
         ? await provider.analyzeImage({
-            bytes,
-            mimeType: claim.mimeType,
+            bytes: fitted!.bytes,
+            mimeType: fitted!.mimeType,
             filename: claim.filename,
             brands,
           })

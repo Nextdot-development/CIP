@@ -246,6 +246,78 @@ describe('image understanding', () => {
   });
 });
 
+describe('an image too large to send', () => {
+  /** A real PNG of a given size, so the test measures bytes rather than a stub. */
+  async function png(width: number, height: number): Promise<Buffer> {
+    const { createCanvas } = await import('@napi-rs/canvas');
+    const canvas = createCanvas(width, height);
+    const ctx = canvas.getContext('2d');
+    // Noise, not a flat fill: a flat fill compresses to nothing and a test
+    // about size would then be testing PNG's run-length encoding.
+    const image = ctx.createImageData(width, height);
+    for (let i = 0; i < image.data.length; i += 4) {
+      image.data[i] = (i * 7) % 256;
+      image.data[i + 1] = (i * 13) % 256;
+      image.data[i + 2] = (i * 29) % 256;
+      image.data[i + 3] = 255;
+    }
+    ctx.putImageData(image, 0, 0);
+    return canvas.toBuffer('image/png');
+  }
+
+  it('is scaled down to fit rather than refused', async () => {
+    const { fitForVision } = await import('../src/server/brain/fitImage');
+    const big = await png(3000, 3000);
+
+    const fitted = await fitForVision(big, 'image/png', { maxBytes: 512 * 1024, maxEdge: 600 });
+
+    assert.equal(fitted.resized, true, 'an oversized image should have been scaled');
+    assert.ok(
+      fitted.bytes.byteLength <= 512 * 1024,
+      `still ${fitted.bytes.byteLength} bytes, over the budget it was given`,
+    );
+
+    const { createCanvas: _c, loadImage } = await import('@napi-rs/canvas');
+    const out = await loadImage(fitted.bytes);
+    assert.ok(Math.max(out.width, out.height) <= 600, `long edge is still ${out.width}x${out.height}`);
+    // Scaled, not cropped: a cropped bottle shot is a different picture.
+    assert.equal(out.width, out.height, 'the aspect ratio changed');
+  });
+
+  it('leaves an image that already fits exactly as it was', async () => {
+    const { fitForVision } = await import('../src/server/brain/fitImage');
+    const small = await png(200, 120);
+
+    const fitted = await fitForVision(small, 'image/png', { maxBytes: 20 * 1024 * 1024, maxEdge: 2000 });
+
+    assert.equal(fitted.resized, false);
+    assert.equal(fitted.mimeType, 'image/png');
+    assert.ok(fitted.bytes.equals(small), 're-encoding an image that fits wastes work and quality');
+  });
+
+  it('hands an undecodable image on unchanged instead of failing in its place', async () => {
+    const { fitForVision } = await import('../src/server/brain/fitImage');
+    const rubbish = Buffer.from('this is not a png at all', 'utf8');
+
+    const fitted = await fitForVision(rubbish, 'image/png', { maxBytes: 4, maxEdge: 10 });
+
+    // Whether these bytes are analysable is the provider's judgement. This step
+    // exists only to help, so it must never turn a real answer into its own error.
+    assert.equal(fitted.resized, false);
+    assert.ok(fitted.bytes.equals(rubbish));
+  });
+
+  it('does not touch a GIF, because flattening an animation is a decision', async () => {
+    const { fitForVision } = await import('../src/server/brain/fitImage');
+    const frames = Buffer.alloc(64 * 1024, 7);
+
+    const fitted = await fitForVision(frames, 'image/gif', { maxBytes: 1024, maxEdge: 100 });
+
+    assert.equal(fitted.resized, false);
+    assert.equal(fitted.mimeType, 'image/gif');
+  });
+});
+
 describe('document understanding', () => {
   it('reads the text Phase 3 already extracted rather than re-extracting', async () => {
     await uploadText(mm, 'tone.txt', 'Warm, witty and a little cinematic. Talk about the occasion.');

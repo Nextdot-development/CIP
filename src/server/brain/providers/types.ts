@@ -437,6 +437,18 @@ export const BRAIN_LIMITS = {
   get maxImageBytes(): number {
     return fromEnv('CIP_BRAIN_MAX_IMAGE_BYTES', 20 * 1024 * 1024);
   },
+  /**
+   * The longest edge an image is sent at.
+   *
+   * Vision models downsample to roughly this before they look at anything, so
+   * a 9000-pixel packshot costs bandwidth and a rejection and buys no extra
+   * detail. Anything larger is scaled down to fit rather than refused — a
+   * 90 MB bottle shot is still a bottle shot, and "too large to analyse" is a
+   * fact about the request, not about the asset.
+   */
+  get visionEdgePixels(): number {
+    return fromEnv('CIP_BRAIN_VISION_EDGE_PIXELS', 2000);
+  },
   /** Frames sampled from a video. More costs more and says little extra. */
   get maxVideoFrames(): number {
     return fromEnv('CIP_BRAIN_MAX_VIDEO_FRAMES', 6);

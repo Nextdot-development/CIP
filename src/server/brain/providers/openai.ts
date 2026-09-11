@@ -883,6 +883,17 @@ export function pngOrJpegSize(bytes: Buffer): { width: number; height: number } 
 }
 
 /**
+ * A provider error code, reduced to something that cannot carry content.
+ *
+ * OpenAI's codes are a short enum — invalid_image, image_too_large — but this
+ * is a value from a remote server being put into a message a person will read,
+ * so it is bounded in both alphabet and length rather than trusted.
+ */
+function safeCode(code: string): string {
+  return code.toLowerCase().replace(/[^a-z0-9_.-]/g, '').slice(0, 48) || 'unknown';
+}
+
+/**
  * Turns an error response into one of ours.
  *
  * Only the status and OpenAI's own error code shape the outcome. The message is
@@ -915,7 +926,18 @@ async function classify(response: Response): Promise<BrainFailed> {
     return new BrainFailed('NOT_CONFIGURED', 'permanent', 'The Brain provider rejected our credentials.');
   }
   if (response.status === 400 || response.status === 422) {
-    return new BrainFailed('PROVIDER_ERROR', 'permanent', 'The Brain provider refused that request.');
+    // The provider's own error code is an enum it chose, not anything from the
+    // asset, so it is safe to repeat and it is the difference between a person
+    // being able to act and not. "refused that request" sent somebody looking
+    // for a content problem when the real answer was an image with absurd
+    // dimensions.
+    return new BrainFailed(
+      'PROVIDER_ERROR',
+      'permanent',
+      code
+        ? `The Brain provider refused that request (${safeCode(code)}).`
+        : 'The Brain provider refused that request.',
+    );
   }
   if (response.status >= 500) {
     return new BrainFailed('PROVIDER_ERROR', 'transient', 'The Brain provider is having trouble.');
