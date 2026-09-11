@@ -180,7 +180,16 @@ export async function planGeneration(
 
   // Everything the Brain gets to reason with, all of it this company's own.
   const [facts, assets, posts, subjects] = await Promise.all([
-    readBrandDna(scope, { limit: BRAIN_LIMITS.maxBrandFacts, minEvidence: 1, market, brand }),
+    readBrandDna(scope, {
+      limit: BRAIN_LIMITS.maxBrandFacts,
+      minEvidence: 1,
+      market,
+      brand,
+      // Lead with the knowledge that is about the thing being made. A film
+      // brief should open with how this brand cuts and paces, not with how it
+      // crops a poster; both still reach the model, in the order that matters.
+      prefer: input.mediaType === 'video' ? 'video' : 'visual',
+    }),
     similarAssets(scope, requestText),
     // Individual posts read off this company's PDFs. A whole deck retrieved as
     // one asset says "there is a deck"; the four posts inside it that match

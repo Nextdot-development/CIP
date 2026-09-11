@@ -1205,6 +1205,83 @@ describe('brands', () => {
     }
   });
 
+  it("a brand's own knowledge outranks facts that belong to nobody", async () => {
+    // The shape that caused it: one heavily-photographed brand leaves behind a
+    // pile of facts nothing could attribute, and they then outnumber a smaller
+    // brand's own knowledge by four to one.
+    for (let i = 0; i < 200; i += 1) await factForBrand(mm, null, `unattributed detail ${i}`);
+    for (let i = 0; i < 40; i += 1) await factForBrand(mm, '8PM', `8PM detail ${i}`);
+
+    const facts = await brandDna.readBrandDna(mm, { minEvidence: 1, limit: 40, brand: '8PM' });
+    const own = facts.filter((f) => f.brand === '8PM').length;
+
+    // Asked for 8PM, CIP used to return 25 unattributed facts against 15 about
+    // 8PM, and generated a creative for the other brand entirely.
+    assert.ok(
+      own > facts.length - own,
+      `a brief for 8PM carried ${own} facts about 8PM and ${facts.length - own} about nobody`,
+    );
+  });
+
+  it('still leaves room for what belongs to the house', async () => {
+    // The brand has more than enough to fill the brief on its own. A legal
+    // constraint applies whichever brand is being made, so it must survive
+    // being outnumbered.
+    for (let i = 0; i < 200; i += 1) await factForBrand(mm, '8PM', `8PM plenty ${i}`);
+    await factForBrand(mm, null, 'never imply drinking improves performance');
+
+    const facts = await brandDna.readBrandDna(mm, { minEvidence: 1, limit: 40, brand: '8PM' });
+    assert.ok(
+      facts.some((f) => f.value === 'never imply drinking improves performance'),
+      'a house-wide rule was crowded out by the brand it applies to',
+    );
+  });
+
+  it('fills the brief from the house when a brand has little of its own', async () => {
+    for (let i = 0; i < 100; i += 1) await factForBrand(mm, null, `house detail ${i}`);
+    await factForBrand(mm, 'Sangam', 'the one thing known about Sangam');
+
+    const facts = await brandDna.readBrandDna(mm, { minEvidence: 1, limit: 40, brand: 'Sangam' });
+    // Reserving room for the brand must not mean returning an empty brief when
+    // the brand has nothing to put in it.
+    assert.equal(facts.length, 40, 'the brief came back short rather than being filled');
+    assert.ok(facts.some((f) => f.value === 'the one thing known about Sangam'));
+  });
+
+  it('leads a film brief with what is known about film', async () => {
+    /** A fact in a named section, which factForBrand always files as visual. */
+    const inSection = async (section: string, value: string): Promise<void> => {
+      await adminSql`
+        insert into brand_dna_facts
+          (company_id, section, attribute, value, brand, kind, confidence, evidence_count)
+        values (${mm.companyId}, ${section}, 'style', ${value}, '8PM', 'observed', 0.5, 1)
+        on conflict (company_id, section, attribute, value, coalesce(brand, '')) do nothing
+      `;
+    };
+
+    // Deliberately outnumbered, and deliberately lower confidence than the
+    // poster knowledge would be: ordering must come from what is being made,
+    // not from how much of each kind happens to exist.
+    for (let i = 0; i < 30; i += 1) await inSection('visual', `poster detail ${i}`);
+    await inSection('video', 'cuts on the pour, never on the face');
+
+    const film = await brandDna.readBrandDna(mm, {
+      minEvidence: 1, limit: 10, brand: '8PM', prefer: 'video',
+    });
+    assert.ok(
+      film.some((f) => f.value === 'cuts on the pour, never on the face'),
+      'a film brief never mentioned the one thing known about this brand on film',
+    );
+
+    const poster = await brandDna.readBrandDna(mm, {
+      minEvidence: 1, limit: 10, brand: '8PM', prefer: 'visual',
+    });
+    assert.ok(
+      poster.every((f) => f.section === 'visual'),
+      'a poster brief led with something other than how this brand looks',
+    );
+  });
+
   it('the same claim about two brands stays two facts', async () => {
     await factForBrand(mm, 'Whytehall', 'tone is confident');
     await factForBrand(mm, 'Magic Moments', 'tone is confident');

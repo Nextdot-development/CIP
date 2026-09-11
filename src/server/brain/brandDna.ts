@@ -157,15 +157,51 @@ export async function readBrandDna(
      * a rule that applies to everything the house makes belongs to each of
      * its brands. A fact about a sibling brand is dropped: Whytehall's
      * restraint has no business in a Magic Moments brief.
+     *
+     * The brand's own facts lead, and always get most of the room. Letting
+     * the two compete on confidence alone looked fair and was not: a house
+     * with one heavily-photographed brand accumulates unattributed facts that
+     * are really about that brand, and they then outrank a smaller brand's own
+     * knowledge in its own brief. Asked for 8PM, CIP returned 75 unattributed
+     * facts against 25 about 8PM, and produced a Magic Moments creative.
+     *
+     * House facts keep a reserved share rather than being pushed out
+     * altogether: a legal constraint applies whichever brand is being made,
+     * and a brief without it is worse than one that is slightly less specific.
      */
     brand?: string | null;
+    /**
+     * Which kind of knowledge to lead with, without discarding the rest.
+     *
+     * A video brief and an image brief used to receive exactly the same
+     * facts, because the planner never said which it was making. But how a
+     * brand cuts, paces and scores a film is not how it crops a poster, and
+     * the film knowledge sat below the poster knowledge and fell off the end
+     * of the limit.
+     *
+     * A preference rather than a filter, because there is never enough of one
+     * section alone: a brand's palette and its logo rules apply to a film as
+     * much as to a banner, and a section filter would throw them away to make
+     * room for nothing.
+     */
+    prefer?: BrandSection | null;
   } = {},
 ): Promise<BrandFactDTO[]> {
   const limit = Math.min(Math.max(options.limit ?? 100, 1), 500);
+  /**
+   * The room kept for facts that belong to the house rather than to the brand.
+   *
+   * A quarter: enough that a legal constraint or a way of working always
+   * reaches the brief, small enough that it cannot drown the brand it is
+   * supposed to be describing.
+   */
+  const houseSlots = Math.ceil(limit * 0.25);
+  const brandSlots = limit - houseSlots;
   const minEvidence = options.minEvidence ?? 1;
   const section = options.section ?? null;
   const market = options.market ?? null;
   const brand = options.brand ?? null;
+  const prefer = options.prefer ?? null;
 
   const rows = await withCompanyScope(scope, async (tx) =>
     tx<
@@ -186,28 +222,66 @@ export async function readBrandDna(
             on f.id = e.file_id and f.company_id = e.company_id
          where e.company_id = ${scope.companyId}
          group by e.fact_id
+      ),
+      candidate as (
+        select b.id, b.section, b.attribute, b.value, b.brand, b.kind, b.confidence,
+               b.evidence_count, b.updated_at,
+               coalesce(m.markets, '{}') as markets,
+               -- Whether this fact is about the brand that was asked for.
+               -- False for every row when no brand was named, which collapses
+               -- the reservation below into the plain ordering.
+               --
+               -- Compared with "is not distinct from" rather than "=", because
+               -- a house fact has no brand, and null = '8PM' is null rather
+               -- than false. That null then failed both "where not is_brand"
+               -- and the count filters below, and every house fact silently
+               -- disappeared from the brief — the opposite of the bug this
+               -- was written to fix.
+               (${brand}::text is not null and b.brand is not distinct from ${brand}) as is_brand,
+               -- The section this request is actually about, if it said.
+               (${prefer}::text is not null and b.section = ${prefer}) as is_preferred
+          from brand_dna_facts b
+          left join fact_markets m on m.fact_id = b.id
+         where b.status = 'active'
+           and b.evidence_count >= ${minEvidence}
+           -- This brand's knowledge, plus everything that belongs to the house.
+           and (${brand}::text is null or b.brand is null or b.brand = ${brand})
+           and (${section}::text is null or b.section = ${section})
+           and (
+             ${market}::text is null
+             -- Seen in this market, or seen in enough markets to be the brand
+             -- rather than one country's version of it.
+             or ${market} = any(coalesce(m.markets, '{}'))
+             or coalesce(array_length(m.markets, 1), 0) >= 2
+             -- A fact from a file nobody has placed belongs to the brand at
+             -- large; withholding it would leave a market with less than it has.
+             or coalesce(array_length(m.markets, 1), 0) = 0
+           )
+      ),
+      ranked as (
+        select c.*,
+               row_number() over (
+                 partition by c.is_brand
+                 order by c.is_preferred desc, c.confidence desc,
+                          c.evidence_count desc, c.attribute
+               ) as rank_in_group
+          from candidate c
+      ),
+      totals as (
+        select count(*) filter (where is_brand)     as branded,
+               count(*) filter (where not is_brand) as house
+          from candidate
       )
-      select b.id, b.section, b.attribute, b.value, b.brand, b.kind, b.confidence,
-             b.evidence_count, b.updated_at,
-             coalesce(m.markets, '{}') as markets
-        from brand_dna_facts b
-        left join fact_markets m on m.fact_id = b.id
-       where b.status = 'active'
-         and b.evidence_count >= ${minEvidence}
-         -- This brand's knowledge, plus everything that belongs to the house.
-         and (${brand}::text is null or b.brand is null or b.brand = ${brand})
-         and (${section}::text is null or b.section = ${section})
-         and (
-           ${market}::text is null
-           -- Seen in this market, or seen in enough markets to be the brand
-           -- rather than one country's version of it.
-           or ${market} = any(coalesce(m.markets, '{}'))
-           or coalesce(array_length(m.markets, 1), 0) >= 2
-           -- A fact from a file nobody has placed belongs to the brand at
-           -- large; withholding it would leave a market with less than it has.
-           or coalesce(array_length(m.markets, 1), 0) = 0
-         )
-       order by b.confidence desc, b.evidence_count desc, b.attribute
+      select r.id, r.section, r.attribute, r.value, r.brand, r.kind, r.confidence,
+             r.evidence_count, r.updated_at, r.markets
+        from ranked r cross join totals t
+       -- Each side takes what the other does not need. The brand leads and
+       -- gets the larger share; whichever side is short, the other fills the
+       -- gap, so the caller always gets as many facts as it asked for.
+       where (r.is_brand and r.rank_in_group <= ${limit} - least(${houseSlots}, t.house))
+          or (not r.is_brand and r.rank_in_group <= ${limit} - least(${brandSlots}, t.branded))
+       order by r.is_brand desc, r.is_preferred desc, r.confidence desc,
+                r.evidence_count desc, r.attribute
        limit ${limit}
     `,
   );

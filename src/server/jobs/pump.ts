@@ -7,6 +7,7 @@ import {
   understandClaimedAsset,
 } from '../brain/understanding';
 import { recomputeEverywhere } from '../brain/brandDna';
+import { claimConnectionForSync, runClaimedSync } from '../integrations/googleDrive/jobs';
 
 /**
  * Moving the queue along, from inside the app.
@@ -26,6 +27,12 @@ import { recomputeEverywhere } from '../brain/brandDna';
  * without a separate worker still makes progress, and so that pressing Sync Now
  * does something visible.
  *
+ * It also sweeps connected Google Drive folders, on its own timer. Dropping a
+ * file into a watched folder and then having to come back and press Sync Now
+ * is not a connected Drive — it is a manual import with extra steps. Now the
+ * folder is checked whenever somebody opens CIP, and anything new is found,
+ * read and understood in the same pass.
+ *
  * Three things it deliberately will not do:
  *
  *   - It does not run media generation. That stage spends money at a provider,
@@ -40,6 +47,22 @@ import { recomputeEverywhere } from '../brain/brandDna';
 const PER_STAGE = 12;
 
 /**
+ * How stale a connected folder may be before a pass sweeps it.
+ *
+ * Short, because the point is that adding a file to Drive is enough on its own
+ * — but not zero. A sweep is a walk through somebody else's API with a quota,
+ * and every page view would otherwise start one. Three minutes reads as
+ * immediate to a person and costs Google one listing per folder.
+ *
+ * The standalone worker keeps its own, longer interval: it runs unattended on
+ * a timer, where nobody is waiting and a slower sweep costs nothing.
+ */
+const SYNC_EVERY_MINUTES = 3;
+
+/** Folders swept in one pass. The rest are due again in moments. */
+const SYNCS_PER_PASS = 2;
+
+/**
  * Long enough to get a few pages of a PDF through the vision model, short
  * enough that a serverless host does not kill it mid-write. Work already
  * claimed is finished; the rest waits for the next pass.
@@ -47,6 +70,8 @@ const PER_STAGE = 12;
 const MAX_RUN_MS = 60_000;
 
 export type PumpTally = {
+  /** Files newly found in a connected Google Drive folder. */
+  synced: number;
   extracted: number;
   embedded: number;
   understood: number;
@@ -95,7 +120,7 @@ export function pumpInBackground(): void {
 }
 
 async function runPass(): Promise<PumpTally> {
-  const tally: PumpTally = { extracted: 0, embedded: 0, understood: 0, failed: 0, moreWaiting: false };
+  const tally: PumpTally = { synced: 0, extracted: 0, embedded: 0, understood: 0, failed: 0, moreWaiting: false };
   const deadline = Date.now() + MAX_RUN_MS;
   const outOfTime = (): boolean => Date.now() > deadline;
 
@@ -116,6 +141,26 @@ async function runPass(): Promise<PumpTally> {
       // the next pass will find the same work still waiting.
     }
   };
+
+  // 0. Anything new in a connected Google Drive. First, so a file added to the
+  //    folder a moment ago is extracted and understood by the end of this same
+  //    pass rather than the next one.
+  await stage(async () => {
+    for (let i = 0; i < SYNCS_PER_PASS; i += 1) {
+      if (outOfTime()) {
+        tally.moreWaiting = true;
+        return;
+      }
+      const claim = await claimConnectionForSync({ intervalMinutes: SYNC_EVERY_MINUTES });
+      if (!claim) break;
+
+      const outcome = await runClaimedSync(claim);
+      // A folder that needs reauthorising, or one whose sync failed, has
+      // already recorded that against the connection — the person sees it on
+      // Teach. Nothing to do here but carry on with the next one.
+      if (outcome.status === 'synced') tally.synced += outcome.outcome.added;
+    }
+  });
 
   // 1. Text out of anything new.
   await stage(async () => {

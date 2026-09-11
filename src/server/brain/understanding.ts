@@ -180,6 +180,22 @@ export type UnderstandingOutcome =
   | { status: 'failed'; message: string; willRetry: boolean };
 
 /**
+ * What kind of thing went wrong, with nothing of the asset in it.
+ *
+ * An error's message and stack can quote the content that was being analysed,
+ * so neither is ever recorded. The constructor name cannot: it is a name
+ * chosen by whoever wrote the class. It is still bounded in alphabet and
+ * length, because some of these classes come from a remote SDK.
+ */
+function errorKind(error: unknown): string {
+  const raw =
+    error instanceof Error
+      ? (error.name || error.constructor?.name || 'Error')
+      : typeof error;
+  return raw.replace(/[^A-Za-z0-9_]/g, '').slice(0, 40) || 'unknown';
+}
+
+/**
  * Analyses one claimed asset and stores what it means.
  *
  * The provider sees the asset's content and its display name. It never sees the
@@ -246,11 +262,20 @@ export async function understandClaimedAsset(claim: ClaimedAsset): Promise<Under
     const failure =
       error instanceof BrainFailed
         ? error
-        : new BrainFailed('PROVIDER_ERROR', 'transient', 'The asset could not be understood.');
+        : new BrainFailed(
+            'PROVIDER_ERROR',
+            'transient',
+            // The error's class name, and nothing else from it. A TimeoutError
+            // and a SyntaxError are entirely different problems with entirely
+            // different fixes, and "the asset could not be understood" said
+            // neither — a video failed for an hour with nothing to go on.
+            `The asset could not be understood (${errorKind(error)}).`,
+          );
 
     if (!(error instanceof BrainFailed)) {
-      // Never log the error itself: it can carry the asset's content.
-      console.error('[brain] an asset failed to analyse unexpectedly');
+      // The class name only. Never the message or the stack: both can quote
+      // the asset's content, which belongs to the company and not in a log.
+      console.error(`[brain] an asset failed to analyse unexpectedly: ${errorKind(error)}`);
     }
 
     if (failure.code === 'UNSUPPORTED_ASSET' || failure.code === 'ASSET_TOO_SMALL') {

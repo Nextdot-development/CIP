@@ -1241,6 +1241,51 @@ describe('the queue moves without anybody running a worker', () => {
     assert.equal(after[0]!.processing_status, 'processed');
   });
 
+  it('finds a file added to Drive without anybody pressing Sync', async () => {
+    await connect(mm, MM_FOLDER);
+
+    // Connected, and already swept once — so the only thing that has happened
+    // since is somebody dropping a file into the folder.
+    await sync.syncNow(mm);
+    await adminSql`
+      update google_drive_connections
+         set last_sync_at = now() - interval '10 minutes'
+       where company_id = ${mm.companyId}
+    `;
+
+    fake.put(
+      MM_FOLDER,
+      { id: 'gd-unattended', name: 'dropped-in.txt', mimeType: 'text/plain', md5Checksum: 'md5-drop' },
+      'A voice note on how the brand should sound when it is being playful.',
+    );
+
+    const { pumpQueues } = await import('../src/server/jobs/pump');
+    const tally = await pumpQueues();
+
+    assert.ok(tally.synced > 0, 'the pump never looked in the Drive folder');
+
+    // Found, and read, in the same pass — not merely noticed.
+    const rows = await adminSql<{ processing_status: string }[]>`
+      select processing_status from drive_files
+       where company_id = ${mm.companyId} and name = 'dropped-in.txt'
+    `;
+    assert.equal(rows.length, 1, 'the new file never arrived');
+    assert.equal(rows[0]!.processing_status, 'processed', 'it was found but never read');
+  });
+
+  it('does not sweep the same folder on every page view', async () => {
+    await connect(mm, MM_FOLDER);
+    await sync.syncNow(mm);
+
+    // Just swept. Google's quota is per project, so a pump started by every
+    // request that happens to arrive must not turn into a listing per request.
+    const { pumpQueues } = await import('../src/server/jobs/pump');
+    const before = fake.listCalls;
+    await pumpQueues();
+
+    assert.equal(fake.listCalls, before, 'a folder swept moments ago was swept again');
+  });
+
   it('two pumps at once do the work once', async () => {
     await connect(mm, MM_FOLDER);
     for (let i = 0; i < 3; i += 1) {
