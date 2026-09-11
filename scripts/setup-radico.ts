@@ -104,6 +104,60 @@ async function main() {
   `;
   console.log('  sign-in    brand@radico.test');
 
+  // --- what the workspace shell needs to render at all --------------------
+  // The layout refuses to load a company with no branding, so a company
+  // created without it signs in and then 500s on every page.
+  await admin`
+    insert into company_branding
+      (company_id, primary_color, deep_color, nav_theme,
+       hero_title, hero_subtitle, hero_from, hero_to, hero_glow, hero_ink)
+    values
+      (${companyId}, '#8E2035', '#5C1322', 'dark',
+       'Nine brands. One memory.',
+       'Each brand keeps its own voice. CIP keeps track of which is which.',
+       '#8E2035', '#3B0C17', '#C9414F', '#FFFFFF')
+    on conflict (company_id) do update
+       set primary_color = excluded.primary_color,
+           deep_color    = excluded.deep_color,
+           nav_theme     = excluded.nav_theme,
+           hero_title    = excluded.hero_title,
+           hero_subtitle = excluded.hero_subtitle,
+           hero_from     = excluded.hero_from,
+           hero_to       = excluded.hero_to,
+           hero_glow     = excluded.hero_glow,
+           hero_ink      = excluded.hero_ink
+  `;
+
+  // The composer's placeholder and its suggestions live here. The percentage
+  // columns are Phase-1 scaffolding that nothing reads any more; they are set
+  // to zero rather than to a number that would look like a measurement.
+  await admin`
+    insert into brand_profiles
+      (company_id, understanding_pct, paid_unlock_pct, headline, note,
+       composer_placeholder, prompt_suggestions, voice_sounds, voice_never)
+    values
+      (${companyId}, 0, 0,
+       'Radico Khaitan',
+       'Nine brands, each with its own voice.',
+       ${'e.g. "A Diwali post for Magic Moments" or "a matchday poster for 8PM in Ghana"'},
+       ${[
+         'A Diwali post for Magic Moments',
+         'A matchday poster for 8PM',
+         'A tasting-notes visual for Whytehall Peanut Butter',
+         'A heritage film still for Royal Ranthambore',
+       ]},
+       ${['Specific', 'Visual', 'Human', 'Brand-owned', 'Concise']},
+       ${['Generic', 'Forced', 'Over-written', 'Like any other whisky brand']})
+    on conflict (company_id) do update
+       set headline             = excluded.headline,
+           note                 = excluded.note,
+           composer_placeholder = excluded.composer_placeholder,
+           prompt_suggestions   = excluded.prompt_suggestions,
+           voice_sounds         = excluded.voice_sounds,
+           voice_never          = excluded.voice_never
+  `;
+  console.log('  branding   set');
+
   const scope: CompanyScope = { companyId, userId: user!.id, role: 'owner' };
 
   // --- the brands, before the document -------------------------------------
