@@ -505,11 +505,11 @@ async function storePage(
     for (const fact of analysis.facts) {
       const factRows = await tx<{ id: string }[]>`
         insert into brand_dna_facts
-          (company_id, section, attribute, value, kind, confidence, evidence_count)
+          (company_id, section, attribute, value, brand, kind, confidence, evidence_count)
         values
           (${scope.companyId}, ${fact.section}, ${fact.attribute}, ${fact.value},
-           'observed', 0.2, 1)
-        on conflict (company_id, section, attribute, value) do update
+           ${fact.brand ?? null}, 'observed', 0.2, 1)
+        on conflict (company_id, section, attribute, value, coalesce(brand, '')) do update
            set evidence_count = brand_dna_facts.evidence_count + 1,
                updated_at = now()
         returning id

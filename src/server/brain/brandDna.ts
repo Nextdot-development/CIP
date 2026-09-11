@@ -34,6 +34,8 @@ export type BrandFactDTO = {
    * holds across countries — it is the brand, not one country's version of it.
    */
   markets: string[];
+  /** Which brand it is about. Null means it belongs to the whole house. */
+  brand: string | null;
 };
 
 export type BrandFactEvidenceDTO = {
@@ -148,19 +150,29 @@ export async function readBrandDna(
      * makes this market different and none of what makes it the same brand.
      */
     market?: string | null;
+    /**
+     * Narrow to one brand's knowledge.
+     *
+     * Keeps facts about that brand and facts about no brand in particular —
+     * a rule that applies to everything the house makes belongs to each of
+     * its brands. A fact about a sibling brand is dropped: Whytehall's
+     * restraint has no business in a Magic Moments brief.
+     */
+    brand?: string | null;
   } = {},
 ): Promise<BrandFactDTO[]> {
   const limit = Math.min(Math.max(options.limit ?? 100, 1), 500);
   const minEvidence = options.minEvidence ?? 1;
   const section = options.section ?? null;
   const market = options.market ?? null;
+  const brand = options.brand ?? null;
 
   const rows = await withCompanyScope(scope, async (tx) =>
     tx<
       {
         id: string; section: BrandSection; attribute: string; value: string;
         kind: BrandFactDTO['kind']; confidence: string; evidence_count: number; updated_at: Date;
-        markets: string[];
+        markets: string[]; brand: string | null;
       }[]
     >`
       with fact_markets as (
@@ -175,13 +187,15 @@ export async function readBrandDna(
          where e.company_id = ${scope.companyId}
          group by e.fact_id
       )
-      select b.id, b.section, b.attribute, b.value, b.kind, b.confidence,
+      select b.id, b.section, b.attribute, b.value, b.brand, b.kind, b.confidence,
              b.evidence_count, b.updated_at,
              coalesce(m.markets, '{}') as markets
         from brand_dna_facts b
         left join fact_markets m on m.fact_id = b.id
        where b.status = 'active'
          and b.evidence_count >= ${minEvidence}
+         -- This brand's knowledge, plus everything that belongs to the house.
+         and (${brand}::text is null or b.brand is null or b.brand = ${brand})
          and (${section}::text is null or b.section = ${section})
          and (
            ${market}::text is null
@@ -208,6 +222,7 @@ export async function readBrandDna(
     evidenceCount: row.evidence_count,
     updatedAt: row.updated_at.toISOString(),
     markets: row.markets ?? [],
+    brand: row.brand,
   }));
 }
 

@@ -9,6 +9,7 @@ import {
 } from './types';
 import type {
   AssetAnalysis,
+  BrandRoster,
   BrainProvider,
   BrainUsage,
   BriefInput,
@@ -273,6 +274,62 @@ const BRIEF_SCHEMA = {
   },
 } as const;
 
+/**
+ * The same fact shape, with `brand` closed over this company's own roster.
+ *
+ * Built per request rather than declared once, because the list of brands is a
+ * fact about the company rather than about CIP. An enum is what keeps
+ * "Whytehall", "Whytehall Whisky" and "WhyteHall" from becoming three brands
+ * by Thursday — the same reason task types are a closed list.
+ *
+ * A company with no roster gets the plain schema and never sees the field.
+ */
+function withBrands(schema: unknown, brands: BrandRoster | undefined): unknown {
+  if (!brands || brands.length === 0) return schema;
+
+  const base = schema as { properties: Record<string, unknown> };
+
+  return {
+    ...base,
+    properties: {
+      ...base.properties,
+      facts: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['section', 'attribute', 'value', 'brand'],
+          properties: {
+            section: { type: 'string', enum: ['visual', 'video', 'content'] },
+            attribute: { type: 'string' },
+            value: { type: 'string' },
+            brand: { type: ['string', 'null'], enum: [...brands.map((b) => b.name), null] },
+          },
+        },
+      },
+    },
+  };
+}
+
+/** What to tell the model about attributing a fact to a brand. */
+function brandInstruction(brands: BrandRoster | undefined): string {
+  if (!brands || brands.length === 0) return '';
+
+  const listed = brands
+    .map((b) => (b.note ? `- ${b.name}: ${b.note}` : `- ${b.name}`))
+    .join('\n');
+
+  return (
+    '\n\nThis company works on several brands, and they do not share a voice:\n' +
+    listed +
+    '\n\nSet `brand` on each fact to the one it is about. Use null when the fact ' +
+    'belongs to the company rather than to one brand — a rule that applies to ' +
+    'everything they make, a legal constraint, a way of working. Do not guess: ' +
+    'if the asset does not say which brand a detail belongs to, null is the ' +
+    'honest answer, and a wrong attribution teaches one brand another one\'s look.'
+  );
+}
+
 type Content =
   | { type: 'text'; text: string }
   | { type: 'image_url'; image_url: { url: string; detail: 'auto' | 'low' | 'high' } };
@@ -319,7 +376,8 @@ export class OpenAIBrainProvider implements BrainProvider {
           'shown. Leave a field empty rather than inventing a value. Extract any text ' +
           'you can read verbatim. Facts should be small, individually checkable claims ' +
           'about what is present. Never record an absence as a fact: if there is no ' +
-          'logo, no visible text or no discernible style, simply omit it.',
+          'logo, no visible text or no discernible style, simply omit it.' +
+          brandInstruction(input.brands),
       },
       {
         type: 'image_url',
@@ -327,7 +385,7 @@ export class OpenAIBrainProvider implements BrainProvider {
       },
     ];
 
-    return this.analyse(content, ASSET_SCHEMA, 'asset_analysis');
+    return this.analyse(content, withBrands(ASSET_SCHEMA, input.brands), 'asset_analysis');
   }
 
   async analyzeFrames(input: FramesInput): Promise<AssetAnalysis> {
@@ -360,7 +418,7 @@ export class OpenAIBrainProvider implements BrainProvider {
       content.push({ type: 'text', text: `Transcript:\n${spoken.slice(0, 6_000)}` });
     }
 
-    return this.analyse(content, VIDEO_SCHEMA, 'video_analysis');
+    return this.analyse(content, withBrands(VIDEO_SCHEMA, input.brands), 'video_analysis');
   }
 
   async analyzeDocument(input: DocumentInput): Promise<AssetAnalysis> {
@@ -376,11 +434,11 @@ export class OpenAIBrainProvider implements BrainProvider {
           `Analyse this brand document named "${input.filename}". Identify tone of voice, ` +
           'vocabulary, calls to action, messaging patterns, products and campaigns it ' +
           'names, and any explicit brand rules it states. Report only what the document ' +
-          `actually says.\n\n${text}`,
+          `actually says.${brandInstruction(input.brands)}\n\n${text}`,
       },
     ];
 
-    return this.analyse(content, ASSET_SCHEMA, 'document_analysis');
+    return this.analyse(content, withBrands(ASSET_SCHEMA, input.brands), 'document_analysis');
   }
 
   async analyzePdfPage(input: PdfPageInput): Promise<PdfPageAnalysis> {

@@ -60,3 +60,8 @@ Thumbs.db
 
 # Local Drive object store (development)
 .storage/
+
+# Client brand collateral. Real creative assets belong in the product, not in
+# a public repository.
+tests/fwmagicmomentsjamunbrandcollaterals/
+*.collaterals/

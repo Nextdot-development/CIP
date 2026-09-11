@@ -201,6 +201,15 @@ export type AssetFact = {
   section: 'visual' | 'video' | 'content';
   attribute: string;
   value: string;
+  /**
+   * Which of the company's brands this is about, when it is about one.
+   *
+   * Null is the common case and the right one for anything belonging to the
+   * house — a rule about never targeting minors is every brand's. Only ever a
+   * name from the company's own roster; a company without a roster gets null
+   * throughout and behaves exactly as it did before.
+   */
+  brand?: string | null;
 };
 
 export type AssetAnalysis = {
@@ -212,6 +221,8 @@ export type AssetAnalysis = {
 };
 
 export type ImageInput = {
+  /** Brands to attribute facts to. Empty when the company has no roster. */
+  brands?: BrandRoster;
   bytes: Buffer;
   mimeType: string;
   /** The display name only. Never a path, never an id. */
@@ -219,6 +230,8 @@ export type ImageInput = {
 };
 
 export type FramesInput = {
+  /** Brands to attribute facts to. Empty when the company has no roster. */
+  brands?: BrandRoster;
   /** Sampled key frames, in order. Never the whole video. */
   frames: { bytes: Buffer; mimeType: string; atSeconds: number }[];
   durationSeconds: number;
@@ -229,7 +242,12 @@ export type FramesInput = {
   filename: string;
 };
 
+/** The brands a company works on, handed to the model as a closed list. */
+export type BrandRoster = readonly { name: string; note: string | null }[];
+
 export type DocumentInput = {
+  /** Brands to attribute facts to. Empty when the company has no roster. */
+  brands?: BrandRoster;
   /** Already-extracted text, truncated by the caller. */
   text: string;
   filename: string;
@@ -281,6 +299,8 @@ export type PdfPageAnalysis = AssetAnalysis & {
 };
 
 export type PdfPageInput = {
+  /** Brands to attribute facts to. Empty when the company has no roster. */
+  brands?: BrandRoster;
   /** The rendered page image. Never the PDF itself. */
   bytes: Buffer;
   mimeType: string;

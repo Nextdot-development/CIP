@@ -7,7 +7,7 @@ import type { GenerationBrief } from './providers/types';
 import { knownSubjects, readBrandDna } from './brandDna';
 import { applicableLessons, ratedExamples, similarAssets, similarPosts } from './retrieval';
 import { companyMarkets, marketInRequest } from './markets';
-import type { MarketSummary } from './markets';
+import { brandInRequest, brandNames } from './brands';
 
 /**
  * Deciding what to generate, before anything is generated.
@@ -42,6 +42,8 @@ export type PlanInput = {
   platform?: string | null;
   /** A prior clarification answer, folded into the request. */
   clarification?: string | null;
+  /** Which brand this is for. Asked about the same way as a market. */
+  brand?: string | null;
   /**
    * Which market this is for.
    *
@@ -53,27 +55,30 @@ export type PlanInput = {
 };
 
 /**
- * Stops and asks which market this is for.
+ * Spells a list the way a person would say it.
+ */
+function listOptions(options: readonly string[]): string {
+  if (options.length <= 1) return options[0] ?? '';
+  if (options.length === 2) return options.join(' or ');
+  return `${options.slice(0, -1).join(', ')} or ${options[options.length - 1]}`;
+}
+
+/**
+ * Stops and asks which brand, or which market, this is for.
  *
  * Built here rather than by the model: the question is the same every time and
  * the options are a fact about this company, so there is nothing to reason
- * about and no reason to pay for a call that might invent a fourth country.
+ * about and no way to invent a tenth brand or a fourth country.
  *
- * The brief is still written and stored — the caller answers the question and
- * comes back through the same path with the market filled in.
+ * The brief is still written and stored — the caller answers and comes back
+ * through the same path with the answer filled in.
  */
-async function askWhichMarket(
+async function askWhich(
   scope: CompanyScope,
   input: PlanInput,
   requestText: string,
-  markets: MarketSummary[],
+  asking: { kind: 'brand' | 'market'; options: readonly string[]; question: string },
 ): Promise<PlannedGeneration> {
-  const names = markets.map((m) => m.market);
-  const listed =
-    names.length === 2
-      ? names.join(' or ')
-      : `${names.slice(0, -1).join(', ')} or ${names[names.length - 1]}`;
-
   const brief: GenerationBrief = {
     taskType: defaultTaskType(input.mediaType),
     format: 'other',
@@ -91,9 +96,7 @@ async function askWhichMarket(
     avoid: [],
     generationPrompt: '',
     confidence: 0,
-    clarificationQuestion:
-      `Which market is this for — ${listed}? They look different from each other, ` +
-      'so CIP would rather ask than average them.',
+    clarificationQuestion: asking.question,
   };
 
   const briefId = await storeBrief(scope, {
@@ -109,7 +112,7 @@ async function askWhichMarket(
     references: [],
     lessonIds: [],
     confidence: 0,
-    clarificationQuestion: brief.clarificationQuestion,
+    clarificationQuestion: asking.question,
   };
 }
 
@@ -137,8 +140,24 @@ export async function planGeneration(
     throw new BrainFailed('PROVIDER_ERROR', 'permanent', 'A request is required.');
   }
 
-  // Which market this is for, before anything is retrieved: it decides which
-  // knowledge is even relevant.
+  // Which brand this is for, before anything else. It matters more than the
+  // market: Whytehall in Nigeria is still Whytehall, but Magic Moments' voice
+  // in a Whytehall brief is simply the wrong brand.
+  const brands = await brandNames(scope);
+  const brand = input.brand?.trim() || brandInRequest(requestText, brands) || null;
+
+  if (!brand && brands.length > 1) {
+    return askWhich(scope, input, requestText, {
+      kind: 'brand',
+      options: brands,
+      question:
+        `Which brand is this for — ${listOptions(brands)}? They do not share a ` +
+        'voice, so CIP would rather ask than blend them.',
+    });
+  }
+
+  // Which market this is for. It decides which of that brand's knowledge is
+  // even relevant.
   const markets = await companyMarkets(scope);
   const marketNames = markets.map((m) => m.market);
   const market =
@@ -150,12 +169,18 @@ export async function planGeneration(
   // them is the one answer that is wrong for everybody, and the clarification
   // path already exists for exactly this.
   if (!market && marketNames.length > 1) {
-    return askWhichMarket(scope, input, requestText, markets);
+    return askWhich(scope, input, requestText, {
+      kind: 'market',
+      options: marketNames,
+      question:
+        `Which market is this for — ${listOptions(marketNames)}? They look ` +
+        'different from each other, so CIP would rather ask than average them.',
+    });
   }
 
   // Everything the Brain gets to reason with, all of it this company's own.
   const [facts, assets, posts, subjects] = await Promise.all([
-    readBrandDna(scope, { limit: BRAIN_LIMITS.maxBrandFacts, minEvidence: 1, market }),
+    readBrandDna(scope, { limit: BRAIN_LIMITS.maxBrandFacts, minEvidence: 1, market, brand }),
     similarAssets(scope, requestText),
     // Individual posts read off this company's PDFs. A whole deck retrieved as
     // one asset says "there is a deck"; the four posts inside it that match

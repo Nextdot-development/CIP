@@ -361,8 +361,19 @@ describe('the queue is safe to share', () => {
     await drainQueue();
   });
 
-  it('the registry and the list the browser uses agree', () => {
-    assert.deepEqual([...extraction.EXTRACTABLE_TYPES].sort(), ['csv', 'docx', 'pdf', 'txt']);
+  it('the registry and the list the browser uses agree', async () => {
+    // The invariant, not a snapshot of it. Asserting a literal list meant this
+    // failed whenever a readable type was added — which is the one moment it
+    // should be checking that both places were updated, not complaining that
+    // one was.
+    const { EXTRACTABLE_FILE_TYPES } = await import('../src/lib/fileTypes');
+
+    assert.deepEqual(
+      [...extraction.EXTRACTABLE_TYPES].sort(),
+      [...EXTRACTABLE_FILE_TYPES].sort(),
+      'the extractor registry and the list the browser reads have drifted apart',
+    );
+    assert.ok(extraction.EXTRACTABLE_TYPES.length > 0, 'nothing is readable at all');
   });
 });
 

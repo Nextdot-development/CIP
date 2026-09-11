@@ -25,6 +25,7 @@ export const ACCEPTED_TYPES: FileTypeSpec[] = [
   { extension: 'xlsx', mimeTypes: ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'], kind: 'spreadsheet', label: 'Excel', previewable: false },
   { extension: 'ppt',  mimeTypes: ['application/vnd.ms-powerpoint'], kind: 'presentation', label: 'PowerPoint', previewable: false },
   { extension: 'pptx', mimeTypes: ['application/vnd.openxmlformats-officedocument.presentationml.presentation'], kind: 'presentation', label: 'PowerPoint', previewable: false },
+  { extension: 'md',   mimeTypes: ['text/markdown', 'text/x-markdown'], kind: 'document', label: 'Markdown', previewable: true },
   { extension: 'csv',  mimeTypes: ['text/csv', 'application/csv'], kind: 'data', label: 'CSV', previewable: true },
   { extension: 'txt',  mimeTypes: ['text/plain'], kind: 'document', label: 'Text', previewable: true },
   { extension: 'jpg',  mimeTypes: ['image/jpeg'], kind: 'image', label: 'JPEG', previewable: true },
@@ -65,7 +66,7 @@ export function maxFileSizeLabel(): string {
  *
  * src/server/drive/extraction asserts its registry matches this exactly.
  */
-export const EXTRACTABLE_FILE_TYPES = ['pdf', 'docx', 'txt', 'csv'] as const;
+export const EXTRACTABLE_FILE_TYPES = ['pdf', 'docx', 'txt', 'csv', 'md'] as const;
 
 export function isExtractable(fileType: string): boolean {
   return (EXTRACTABLE_FILE_TYPES as readonly string[]).includes(fileType.toLowerCase());

@@ -9,7 +9,7 @@ import type { Extractor } from './types';
 export const textExtractor: Extractor = {
   name: 'utf8',
   version: '1',
-  fileTypes: ['txt'],
+  fileTypes: ['txt', 'md'],
 
   async extract(body) {
     const warnings: string[] = [];

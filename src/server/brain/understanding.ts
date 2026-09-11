@@ -1,4 +1,5 @@
 import 'server-only';
+import { EXTRACTABLE_FILE_TYPES, isExtractable } from '@/lib/fileTypes';
 import { withCompanyScope } from '../db';
 import type { CompanyScope } from '../db';
 import { adminSql } from '../db-admin';
@@ -12,7 +13,7 @@ import {
   BRAIN_LIMITS,
   BrainFailed,
 } from './providers/types';
-import type { AssetAnalysis } from './providers/types';
+import type { AssetAnalysis, BrandRoster } from './providers/types';
 import { needsVisualPass, understandPdfVisually } from './pdfVisual';
 import { profilePdf } from '../drive/extraction/pdfRender';
 import {
@@ -44,7 +45,10 @@ export function kindFor(mimeType: string, fileType: string): AssetKind | null {
   const mime = mimeType.toLowerCase();
   if ((ANALYSABLE_IMAGE_TYPES as readonly string[]).includes(mime)) return 'image';
   if ((ANALYSABLE_VIDEO_TYPES as readonly string[]).includes(mime)) return 'video';
-  if (['pdf', 'docx', 'txt', 'csv'].includes(fileType.toLowerCase())) return 'document';
+  // The types Phase 3 reads as text, taken from the one list that decides it.
+  // This used to repeat them, and adding Markdown in two of the three places it
+  // is named left a file that extracted cleanly and was never understood.
+  if (isExtractable(fileType)) return 'document';
   return null;
 }
 
@@ -79,7 +83,10 @@ export async function enqueueUnderstanding(scope: CompanyScope): Promise<number>
         from candidate c
        where lower(c.mime_type) in ('image/png','image/jpeg','image/webp','image/gif',
                                     'video/mp4','video/quicktime','video/webm','video/x-matroska')
-          or lower(c.file_type) in ('pdf','docx','txt','csv')
+          -- Passed in rather than written out again. The readable types were
+          -- listed in three places, and adding Markdown to two of them left a
+          -- file that extracted cleanly and was never understood.
+          or lower(c.file_type) = any(${[...EXTRACTABLE_FILE_TYPES]})
       on conflict (file_id, content_hash) do nothing
       returning 1 as n
     `;
@@ -196,11 +203,20 @@ export async function understandClaimedAsset(claim: ClaimedAsset): Promise<Under
       ? await pdfKind(bytes)
       : claim.kind;
 
+    // The brands this company works on, so a fact can be attributed to one.
+    // Empty for most companies, and then nothing about this changes.
+    const brands = await rosterFor(scope);
+
     const analysis =
       kind === 'image'
-        ? await provider.analyzeImage({ bytes, mimeType: claim.mimeType, filename: claim.filename })
+        ? await provider.analyzeImage({
+            bytes,
+            mimeType: claim.mimeType,
+            filename: claim.filename,
+            brands,
+          })
         : kind === 'video'
-          ? await understandVideo(claim, bytes)
+          ? await understandVideo(claim, bytes, brands)
           : kind === 'pdf_visual'
             ? (await understandPdfVisually(scope, {
                 fileId: claim.fileId,
@@ -208,7 +224,7 @@ export async function understandClaimedAsset(claim: ClaimedAsset): Promise<Under
                 filename: claim.filename,
                 bytes,
               })).analysis
-            : await understandDocument(scope, claim);
+            : await understandDocument(scope, claim, brands);
 
     await store(scope, { ...claim, kind }, analysis);
 
@@ -285,12 +301,28 @@ async function bytesFor(claim: ClaimedAsset): Promise<Buffer> {
 }
 
 /**
+ * The brands this company works on, as the analysis providers want them.
+ *
+ * Empty for a company that has not listed any, which is most of them — and
+ * then every fact comes back with no brand and nothing downstream changes.
+ */
+async function rosterFor(scope: CompanyScope): Promise<BrandRoster> {
+  const { companyBrands } = await import('./brands');
+  const brands = await companyBrands(scope);
+  return brands.map((b) => ({ name: b.name, note: b.note }));
+}
+
+/**
  * A video, reduced to something analysable.
  *
  * Metadata, then a bounded sample of frames, then the audio if there is any.
  * Never the whole file.
  */
-async function understandVideo(claim: ClaimedAsset, bytes: Buffer): Promise<AssetAnalysis> {
+async function understandVideo(
+  claim: ClaimedAsset,
+  bytes: Buffer,
+  brands: BrandRoster,
+): Promise<AssetAnalysis> {
   if (bytes.byteLength > BRAIN_LIMITS.maxVideoBytes) {
     throw new BrainFailed('UNSUPPORTED_ASSET', 'permanent', 'That video is too large to analyse.');
   }
@@ -324,6 +356,7 @@ async function understandVideo(claim: ClaimedAsset, bytes: Buffer): Promise<Asse
     const transcript = audio ? await transcribe(audio, claim.filename) : null;
 
     const analysis = await brain().analyzeFrames({
+      brands,
       frames,
       durationSeconds: metadata.durationSeconds,
       width: metadata.width,
@@ -383,7 +416,11 @@ async function countPdfFacts(scope: CompanyScope, fileId: string): Promise<numbe
 }
 
 /** A document, read from the text Phase 3 already extracted. */
-async function understandDocument(scope: CompanyScope, claim: ClaimedAsset): Promise<AssetAnalysis> {
+async function understandDocument(
+  scope: CompanyScope,
+  claim: ClaimedAsset,
+  brands: BrandRoster,
+): Promise<AssetAnalysis> {
   const rows = await withCompanyScope(scope, async (tx) =>
     tx<{ content: string }[]>`
       select content from drive_file_extractions
@@ -402,7 +439,113 @@ async function understandDocument(scope: CompanyScope, claim: ClaimedAsset): Pro
     );
   }
 
-  return brain().analyzeDocument({ text, filename: claim.filename });
+  return analyseWholeDocument(text, claim.filename, brands);
+}
+
+/**
+ * Reads a document that is longer than one call can hold.
+ *
+ * A single analyse call takes about 12,000 characters. Radico's brand brief is
+ * 51,000, so passing it straight through read the first quarter and silently
+ * dropped the rest — a document that names nine brands produced facts about
+ * whichever ones happened to appear early.
+ *
+ * So it is read in sections, the same way a tall PDF page is looked at in
+ * bands. Sections overlap by a little, because the sentence that states a rule
+ * and the sentence that qualifies it should not be separated by a cut, and the
+ * facts are merged afterwards on what they actually say.
+ */
+async function analyseWholeDocument(
+  text: string,
+  filename: string,
+  brands: BrandRoster,
+): Promise<AssetAnalysis> {
+  const sections = sectionsOf(text, BRAIN_LIMITS.maxDocumentChars);
+
+  if (sections.length === 1) {
+    return brain().analyzeDocument({ text, filename, brands });
+  }
+
+  const results: AssetAnalysis[] = [];
+  for (const [index, section] of sections.entries()) {
+    results.push(
+      await brain().analyzeDocument({
+        // Said plainly, so the model knows it is reading a part and does not
+        // summarise the whole from a quarter of it.
+        text: `[Part ${index + 1} of ${sections.length} of this document]\n\n${section}`,
+        filename,
+        brands,
+      }),
+    );
+  }
+
+  const seen = new Set<string>();
+  const facts = results
+    .flatMap((result) => result.facts)
+    .filter((fact) => {
+      const key = `${fact.section}|${fact.attribute}|${fact.value}|${fact.brand ?? ''}`.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+  const first = results[0]!;
+
+  return {
+    // The first section's summary describes the document's opening, which for a
+    // brief is what it is about. The rest add detail, not a new subject.
+    summary: first.summary,
+    extractedText: null,
+    structured: {
+      ...first.structured,
+      partsRead: sections.length,
+      charactersRead: text.length,
+    },
+    facts,
+    usage: {
+      inputTokens: sumOf(results.map((r) => r.usage.inputTokens)),
+      outputTokens: sumOf(results.map((r) => r.usage.outputTokens)),
+      durationMs: sumOf(results.map((r) => r.usage.durationMs)),
+    },
+  };
+}
+
+/**
+ * Cuts text into readable sections, preferring to cut where it already breaks.
+ *
+ * A cut through the middle of a sentence loses the half-rule on either side of
+ * it, so the split walks back to the last blank line — a heading boundary in
+ * anything structured — and only falls back to a hard cut when there is none.
+ */
+export function sectionsOf(text: string, limit: number): string[] {
+  if (text.length <= limit) return [text];
+
+  const overlap = Math.floor(limit * 0.08);
+  const sections: string[] = [];
+  let start = 0;
+
+  while (start < text.length) {
+    const hardEnd = Math.min(start + limit, text.length);
+
+    let end = hardEnd;
+    if (hardEnd < text.length) {
+      // Look for a paragraph break in the last fifth of the window.
+      const window = text.slice(start + Math.floor(limit * 0.8), hardEnd);
+      const brk = window.lastIndexOf('\n\n');
+      if (brk > 0) end = start + Math.floor(limit * 0.8) + brk;
+    }
+
+    sections.push(text.slice(start, end));
+    if (end >= text.length) break;
+    start = Math.max(end - overlap, start + 1);
+  }
+
+  return sections;
+}
+
+function sumOf(values: (number | null | undefined)[]): number | null {
+  const present = values.filter((value): value is number => typeof value === 'number');
+  return present.length > 0 ? present.reduce((a, b) => a + b, 0) : null;
 }
 
 /**
@@ -468,11 +611,11 @@ async function store(
     for (const fact of analysis.facts) {
       const factRows = await tx<{ id: string }[]>`
         insert into brand_dna_facts
-          (company_id, section, attribute, value, kind, confidence, evidence_count)
+          (company_id, section, attribute, value, brand, kind, confidence, evidence_count)
         values
           (${scope.companyId}, ${fact.section}, ${fact.attribute}, ${fact.value},
-           'observed', 0.2, 1)
-        on conflict (company_id, section, attribute, value) do update
+           ${fact.brand ?? null}, 'observed', 0.2, 1)
+        on conflict (company_id, section, attribute, value, coalesce(brand, '')) do update
            set evidence_count = brand_dna_facts.evidence_count + 1,
                updated_at = now()
         returning id

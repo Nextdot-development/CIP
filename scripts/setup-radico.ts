@@ -1,0 +1,149 @@
+import { readFileSync } from 'node:fs';
+import postgres from 'postgres';
+import { hashPassword } from '../src/server/auth/password';
+import { addBrand } from '../src/server/brain/brands';
+import { uploadFile } from '../src/server/drive/service';
+import type { CompanyScope } from '../src/server/db';
+
+/**
+ * Sets Radico Khaitan up as a company, with its brands and its brief.
+ *
+ *   npm run setup:radico -- path/to/Radico_Khaitan_Project_Context_SLM.md
+ *
+ * Radico is a house with nine brands, and its own document says the thing that
+ * matters most about it: "do not allow all brands to collapse into the same
+ * vocabulary". So the roster goes in before the document does — the Brain
+ * attributes each fact to a brand as it reads, and it can only do that against
+ * a list it already has.
+ *
+ * Safe to run twice. The company, the people and the brands are all upserted,
+ * and re-uploading the document produces a second file rather than a duplicate
+ * fact, because facts are keyed by what they say.
+ */
+
+const SLUG = 'radico-khaitan';
+
+/**
+ * The roster, from the brand voice matrix in the document itself.
+ *
+ * Each note is what tells one from another when a fact could belong to
+ * either — "Whytehall" and "Whytehall Honey" share a name and not a mood.
+ */
+const BRANDS: { name: string; note: string }[] = [
+  {
+    name: 'Magic Moments',
+    note: 'Vodka. Fun, playful, social, magical. Bright premium visuals, movement, cocktails, flavour. Platform: MAKE IT MAGIC.',
+  },
+  {
+    name: '8PM',
+    note: 'Whisky. Social, lifestyle, occasion-led. Nightlife, football, community. Conversational and culturally aware.',
+  },
+  {
+    name: 'Whytehall',
+    note: 'Premium whisky. Regal, sophisticated, restrained. Gold, black, ivory, crest and crown. Refined and confident.',
+  },
+  {
+    name: 'Whytehall Honey',
+    note: 'Warm, smooth, indulgent. Golden honey tones, lifestyle settings, African-market work in Lagos and Accra.',
+  },
+  {
+    name: 'Whytehall Fire',
+    note: 'Bold, intense, energetic. Fire and heat against dark premium. Punchy and confident.',
+  },
+  {
+    name: 'Whytehall Peanut Butter',
+    note: 'Experimental, sensory, indulgent. Roasted peanuts, creamy peanut butter, smooth whisky warmth. UNDERRATED. UNAPOLOGETIC. UNFORGETTABLE.',
+  },
+  {
+    name: 'Morpheus',
+    note: 'Premium whisky. Human, polished, restrained. Positioning is deliberately thin — do not invent a manifesto for it.',
+  },
+  {
+    name: 'Royal Ranthambore',
+    note: 'Majestic, heritage-led, powerful. Tiger, fort, royal India, gold and maroon. Cinematic and evocative. Platform: THE ROYALTY.',
+  },
+  {
+    name: 'Blue Finest',
+    note: 'Traditional, premium, classic. Blue, cream, gold, castle heritage. Straightforward and premium.',
+  },
+];
+
+const admin = postgres(process.env.DATABASE_ADMIN_URL!, { ssl: 'require', max: 1, onnotice: () => {} });
+
+async function main() {
+  const documentPath = process.argv[2];
+  if (!documentPath) {
+    console.error('Give me the context document:\n  npm run setup:radico -- path/to/context.md\n');
+    process.exit(1);
+  }
+
+  console.log('\nSetting up Radico Khaitan\n');
+
+  // --- the company ---------------------------------------------------------
+  const [company] = await admin<{ id: string }[]>`
+    insert into companies (slug, name, industry)
+    values (${SLUG}, 'Radico Khaitan', 'Spirits')
+    on conflict (slug) do update set name = excluded.name, industry = excluded.industry
+    returning id
+  `;
+  const companyId = company!.id;
+  console.log(`  company    ${SLUG}`);
+
+  // --- somebody to sign in as ----------------------------------------------
+  const password = process.env.CIP_SEED_PASSWORD ?? 'cip-demo-password';
+  const [user] = await admin<{ id: string }[]>`
+    insert into users (email, full_name, password_hash)
+    values ('brand@radico.test', 'Radico Brand Team', ${await hashPassword(password)})
+    on conflict (email) do update set full_name = excluded.full_name
+    returning id
+  `;
+  await admin`
+    insert into memberships (company_id, user_id, role)
+    values (${companyId}, ${user!.id}, 'owner')
+    on conflict (company_id, user_id) do update set role = excluded.role
+  `;
+  console.log('  sign-in    brand@radico.test');
+
+  const scope: CompanyScope = { companyId, userId: user!.id, role: 'owner' };
+
+  // --- the brands, before the document -------------------------------------
+  // The Brain attributes each fact to a brand as it reads, and it can only do
+  // that against a roster it already has.
+  for (const [index, brand] of BRANDS.entries()) {
+    await addBrand(scope, { name: brand.name, note: brand.note, position: index });
+  }
+  console.log(`  brands     ${BRANDS.length} on the roster`);
+
+  // --- the brief -----------------------------------------------------------
+  const body = readFileSync(documentPath);
+  const filename = 'Radico brand context.md';
+
+  // Replace an earlier copy rather than stacking them up.
+  const previous = await admin<{ id: string }[]>`
+    select id from drive_files
+     where company_id = ${companyId} and name = ${filename} and archived_at is null
+  `;
+  for (const old of previous) {
+    await admin`update drive_files set archived_at = now() where id = ${old.id}`;
+  }
+
+  const file = await uploadFile(scope, {
+    folderId: null,
+    filename,
+    mimeType: 'text/markdown',
+    body,
+  });
+  console.log(`  document   ${filename} (${(body.length / 1024).toFixed(0)} KB)`);
+
+  console.log(`\n  Now read it:  npm run cip:worker`);
+  console.log(`  Then sign in: brand@radico.test\n`);
+
+  void file;
+  await admin.end();
+}
+
+main().catch(async (error) => {
+  console.error('\nsetup failed:', error instanceof Error ? error.message : error);
+  await admin.end().catch(() => {});
+  process.exit(1);
+});
