@@ -23,6 +23,16 @@ import type { CompanyScope } from '../db';
 export type Brand = {
   name: string;
   note: string | null;
+  /**
+   * The other names this brand appears under.
+   *
+   * A brand is rarely written down as its own name. Rampur's bottles arrive
+   * called Asava_Bottle.png and Jugalbandi_5_Bottle.png — expressions of
+   * Rampur, none of them containing the word. Without these, that knowledge
+   * is attributed to nobody and ends up in the pool that competes with every
+   * other brand's own brief.
+   */
+  aliases: string[];
   /** Facts attributed to it. */
   facts: number;
 };
@@ -30,17 +40,17 @@ export type Brand = {
 /** The brands this company works on, in the order it put them. */
 export async function companyBrands(scope: CompanyScope): Promise<Brand[]> {
   return withCompanyScope(scope, async (tx) => {
-    const rows = await tx<{ name: string; note: string | null; facts: number }[]>`
-      select b.name, b.note,
+    const rows = await tx<{ name: string; note: string | null; aliases: string[] | null; facts: number }[]>`
+      select b.name, b.note, b.aliases,
              count(f.id) filter (where f.status = 'active')::int as facts
         from company_brands b
         left join brand_dna_facts f
           on f.company_id = b.company_id and f.brand = b.name
        where b.company_id = ${scope.companyId}
-       group by b.name, b.note, b.position
+       group by b.name, b.note, b.aliases, b.position
        order by b.position, b.name
     `;
-    return rows;
+    return rows.map((row) => ({ ...row, aliases: row.aliases ?? [] }));
   });
 }
 
@@ -69,6 +79,54 @@ export function brandInRequest(requestText: string, brands: readonly string[]): 
 }
 
 /**
+ * The brand a piece of text is about, including the other names it goes by.
+ *
+ * The same longest-first rule, over names and aliases together, so "Whytehall
+ * Honey" still beats "Whytehall" and "Rampur Asava" still beats "Asava". Used
+ * wherever a filename or a request has to be resolved to a brand and the
+ * brand's own name may not appear in it at all.
+ *
+ * Two different brands matching means no match, exactly as for markets: a file
+ * called "rampur-and-jaisalmer.png" is about both and belongs to neither, and
+ * picking one would file its knowledge under the wrong half.
+ */
+export function brandForText(text: string, brands: readonly Brand[]): string | null {
+  const haystack = text.toLowerCase();
+
+  // Every name a brand answers to, longest first so the most specific wins.
+  const needles: { needle: string; brand: string }[] = [];
+  for (const brand of brands) {
+    needles.push({ needle: brand.name.toLowerCase(), brand: brand.name });
+    for (const alias of brand.aliases) needles.push({ needle: alias, brand: brand.name });
+  }
+  needles.sort((a, b) => b.needle.length - a.needle.length);
+
+  // Longest first, and a match swallows the stretch of text it used. Without
+  // that, "WHYTEHALL HONEY Logo.png" matches both Whytehall Honey and
+  // Whytehall and looks like two brands — when the second is only the first
+  // one's own name showing through. The specific match consumes the span, so
+  // the general one has nothing left to match on.
+  const consumed: { start: number; end: number }[] = [];
+  const matched = new Set<string>();
+
+  for (const { needle, brand } of needles) {
+    const at = haystack.indexOf(needle);
+    if (at < 0) continue;
+
+    const inside = consumed.some((span) => at >= span.start && at + needle.length <= span.end);
+    if (inside) continue;
+
+    consumed.push({ start: at, end: at + needle.length });
+    matched.add(brand);
+  }
+
+  // One brand's own sub-names collapsing to itself is a single match, which is
+  // the point: "Rampur Asava" hits both and still means Rampur. Two different
+  // brands is no match at all.
+  return matched.size === 1 ? [...matched][0]! : null;
+}
+
+/**
  * Puts a name onto the roster, or leaves it alone.
  *
  * Matched case-insensitively so "whytehall" does not become a second
@@ -88,18 +146,33 @@ export function normaliseBrand(value: unknown, brands: readonly string[]): strin
 /** Adds a brand to the roster. Idempotent: the same name twice is once. */
 export async function addBrand(
   scope: CompanyScope,
-  input: { name: string; note?: string | null; position?: number },
+  input: { name: string; note?: string | null; position?: number; aliases?: readonly string[] },
 ): Promise<void> {
   const name = input.name.trim().slice(0, 80);
   if (name.length === 0) return;
 
+  // Lower-cased and de-duplicated here, because this is the one place a name
+  // enters the roster and matching is case-insensitive everywhere it is used.
+  const aliases = [
+    ...new Set(
+      (input.aliases ?? [])
+        .map((a) => a.trim().toLowerCase())
+        .filter((a) => a.length > 1 && a !== name.toLowerCase()),
+    ),
+  ];
+
   await withCompanyScope(scope, async (tx) => {
     await tx`
-      insert into company_brands (company_id, name, note, position)
-      values (${scope.companyId}, ${name}, ${input.note?.trim() || null}, ${input.position ?? 0})
+      insert into company_brands (company_id, name, note, position, aliases)
+      values (${scope.companyId}, ${name}, ${input.note?.trim() || null},
+              ${input.position ?? 0}, ${aliases})
       on conflict (company_id, name) do update
          set note = coalesce(excluded.note, company_brands.note),
-             position = excluded.position
+             position = excluded.position,
+             -- Aliases are replaced rather than merged when any are given, so
+             -- removing one is possible; leaving them out keeps what is there.
+             aliases = case when cardinality(excluded.aliases) > 0
+                            then excluded.aliases else company_brands.aliases end
     `;
   });
 }

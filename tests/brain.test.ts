@@ -1216,6 +1216,51 @@ describe('brands', () => {
     assert.equal(brands.brandInRequest('a post for Morpheus', roster), null);
   });
 
+  it('knows the other names a brand goes by', async () => {
+    const brands = await import('../src/server/brain/brands');
+    const roster = [
+      { name: 'Rampur', note: null, aliases: ['asava', 'jugalbandi', 'double cask'], facts: 0 },
+      { name: 'Magic Moments', note: null, aliases: ['jamun'], facts: 0 },
+      { name: 'Whytehall', note: null, aliases: [], facts: 0 },
+      { name: 'Whytehall Honey', note: null, aliases: [], facts: 0 },
+    ];
+
+    // The case this exists for: a bottle whose filename never says Rampur.
+    assert.equal(brands.brandForText('Asava_Bottle.png', roster), 'Rampur');
+    assert.equal(brands.brandForText('Jugalbandi_5_Bottle - Revised.png', roster), 'Rampur');
+    assert.equal(brands.brandForText('261517 Radico FOI Jamun Creatives.jpg', roster), 'Magic Moments');
+
+    // The brand's own name still works, and the more specific one still wins.
+    assert.equal(brands.brandForText('WHYTEHALL HONEY Logo.png', roster), 'Whytehall Honey');
+    assert.equal(brands.brandForText('a post for Rampur', roster), 'Rampur');
+
+    // A name and one of its own aliases together is still one brand.
+    assert.equal(brands.brandForText('Rampur Asava tilted.png', roster), 'Rampur');
+
+    // Two different brands is no match: filing it under either would put the
+    // knowledge on a brand it is only half about.
+    assert.equal(brands.brandForText('rampur-and-jamun-lockup.png', roster), null);
+    assert.equal(brands.brandForText('bottle.png', roster), null);
+  });
+
+  it('keeps the aliases it was given', async () => {
+    const brands = await import('../src/server/brain/brands');
+    await brands.addBrand(mm, { name: 'Rampur', aliases: ['Asava', 'ASAVA', ' jugalbandi '] });
+
+    const roster = await brands.companyBrands(mm);
+    const rampur = roster.find((b) => b.name === 'Rampur');
+    assert.ok(rampur, 'the brand was not added');
+    // Lower-cased and de-duplicated on the way in, because every use of them
+    // is case-insensitive and two spellings of one alias is one alias.
+    assert.deepEqual([...rampur!.aliases].sort(), ['asava', 'jugalbandi']);
+
+    // Adding it again without aliases keeps the ones it has, rather than
+    // silently emptying them.
+    await brands.addBrand(mm, { name: 'Rampur', note: 'Single malt' });
+    const again = (await brands.companyBrands(mm)).find((b) => b.name === 'Rampur');
+    assert.deepEqual([...again!.aliases].sort(), ['asava', 'jugalbandi']);
+  });
+
   it('only accepts a brand the company actually has', async () => {
     const brands = await import('../src/server/brain/brands');
     const roster = ['Whytehall', 'Magic Moments'];
