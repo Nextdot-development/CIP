@@ -176,6 +176,9 @@ beforeEach(async () => {
   await adminSql`delete from asset_understanding`;
   await adminSql`delete from media_generations`;
   await adminSql`delete from drive_files`;
+  // The roster too: a case that adds brands would otherwise leave the next one
+  // being asked which brand, about brands it never created.
+  await adminSql`delete from company_brands`;
 });
 
 after(async () => {
@@ -1062,5 +1065,176 @@ describe('markets', () => {
 
     assert.deepEqual(ours, ['India']);
     assert.deepEqual(theirs, ['Kenya']);
+  });
+});
+
+describe('brands', () => {
+  /** Files a fact to a brand, the way understanding does. */
+  async function factForBrand(
+    scope: Scope,
+    brand: string | null,
+    value: string,
+  ): Promise<void> {
+    await adminSql`
+      insert into brand_dna_facts
+        (company_id, section, attribute, value, brand, kind, confidence, evidence_count)
+      values (${scope.companyId}, 'visual', 'style', ${value}, ${brand}, 'observed', 0.5, 1)
+      on conflict (company_id, section, attribute, value, coalesce(brand, '')) do nothing
+    `;
+  }
+
+  it('reads the brand a request names, longest name first', async () => {
+    const brands = await import('../src/server/brain/brands');
+    const roster = ['Whytehall', 'Whytehall Honey', 'Magic Moments'];
+
+    // The flavour must win over its parent, or every flavour resolves to the
+    // parent and loses exactly the distinction that matters.
+    assert.equal(brands.brandInRequest('a post for Whytehall Honey', roster), 'Whytehall Honey');
+    assert.equal(brands.brandInRequest('a post for Whytehall', roster), 'Whytehall');
+    assert.equal(brands.brandInRequest('something for magic moments', roster), 'Magic Moments');
+    assert.equal(brands.brandInRequest('a post for Morpheus', roster), null);
+  });
+
+  it('only accepts a brand the company actually has', async () => {
+    const brands = await import('../src/server/brain/brands');
+    const roster = ['Whytehall', 'Magic Moments'];
+
+    assert.equal(brands.normaliseBrand('whytehall', roster), 'Whytehall', 'case should not matter');
+    assert.equal(brands.normaliseBrand('Whytehall Fire', roster), null, 'not on this roster');
+    assert.equal(brands.normaliseBrand('', roster), null);
+    assert.equal(brands.normaliseBrand(null, roster), null);
+  });
+
+  it("one brand's voice does not reach another's brief", async () => {
+    await factForBrand(mm, 'Whytehall', 'restrained gold on black');
+    await factForBrand(mm, 'Magic Moments', 'bright playful colour');
+
+    const whytehall = await brandDna.readBrandDna(mm, { minEvidence: 1, limit: 50, brand: 'Whytehall' });
+    assert.ok(
+      whytehall.some((f) => f.value === 'restrained gold on black'),
+      'Whytehall lost its own style',
+    );
+    assert.ok(
+      !whytehall.some((f) => f.value === 'bright playful colour'),
+      "Magic Moments' voice reached a Whytehall brief",
+    );
+  });
+
+  it("what belongs to the house reaches every brand", async () => {
+    await factForBrand(mm, null, 'never target minors');
+    await factForBrand(mm, 'Whytehall', 'restrained gold on black');
+
+    for (const brand of ['Whytehall', 'Magic Moments']) {
+      const facts = await brandDna.readBrandDna(mm, { minEvidence: 1, limit: 50, brand });
+      assert.ok(
+        facts.some((f) => f.value === 'never target minors'),
+        `a house-wide rule was withheld from ${brand}`,
+      );
+    }
+  });
+
+  it('the same claim about two brands stays two facts', async () => {
+    await factForBrand(mm, 'Whytehall', 'tone is confident');
+    await factForBrand(mm, 'Magic Moments', 'tone is confident');
+
+    const rows = await adminSql<{ n: number }[]>`
+      select count(*)::int as n from brand_dna_facts
+       where company_id = ${mm.companyId} and value = 'tone is confident'
+    `;
+    // Merging them would hand each brand the other's evidence, and a claim
+    // twice as well evidenced as it really is.
+    assert.equal(rows[0]!.n, 2, 'two brands making the same claim were merged into one fact');
+  });
+
+  it('THE TEST: asks which brand when there are several and the request says none', async () => {
+    const brands = await import('../src/server/brain/brands');
+    await brands.addBrand(mm, { name: 'Whytehall', note: 'Regal', position: 0 });
+    await brands.addBrand(mm, { name: 'Magic Moments', note: 'Playful', position: 1 });
+
+    const plan = await planner.planGeneration(mm, {
+      requestText: 'Make a festive post',
+      mediaType: 'image',
+    });
+
+    assert.ok(plan.clarificationQuestion, 'the Brain blended two brands instead of asking');
+    assert.match(plan.clarificationQuestion!, /Whytehall/);
+    assert.match(plan.clarificationQuestion!, /Magic Moments/);
+  });
+
+  it('does not ask when the request already names the brand', async () => {
+    const brands = await import('../src/server/brain/brands');
+    await brands.addBrand(mm, { name: 'Whytehall', note: 'Regal', position: 0 });
+    await brands.addBrand(mm, { name: 'Magic Moments', note: 'Playful', position: 1 });
+
+    const plan = await planner.planGeneration(mm, {
+      requestText: 'Make a festive post for Whytehall',
+      mediaType: 'image',
+    });
+
+    assert.equal(plan.clarificationQuestion, null, 'the Brain asked something it had been told');
+  });
+
+  it('a company with no roster behaves exactly as it did before', async () => {
+    await factForBrand(mm, null, 'warm and human');
+
+    const plan = await planner.planGeneration(mm, {
+      requestText: 'Make a festive post',
+      mediaType: 'image',
+    });
+
+    assert.equal(plan.clarificationQuestion, null, 'asked about brands that do not exist');
+    assert.ok(plan.brief.brandRules.length >= 0);
+  });
+
+  it('one company cannot see another company brands', async () => {
+    const brands = await import('../src/server/brain/brands');
+    await brands.addBrand(mm, { name: 'Whytehall', note: 'Regal', position: 0 });
+    await brands.addBrand(nh, { name: 'Cardiac Care', note: 'Clinical', position: 0 });
+
+    const ours = (await brands.companyBrands(mm)).map((b) => b.name);
+    const theirs = (await brands.companyBrands(nh)).map((b) => b.name);
+
+    assert.deepEqual(ours, ['Whytehall']);
+    assert.deepEqual(theirs, ['Cardiac Care']);
+  });
+});
+
+describe('a document longer than one call', () => {
+  it('is read in sections rather than truncated', async () => {
+    const { sectionsOf } = await import('../src/server/brain/understanding');
+
+    const short = 'a'.repeat(500);
+    assert.deepEqual(sectionsOf(short, 1000), [short], 'a short document should not be cut');
+
+    // Paragraph breaks, so the split has somewhere sensible to land.
+    const long = Array.from({ length: 40 }, (_, i) => `Section ${i}. ${'x'.repeat(200)}`).join('\n\n');
+    const sections = sectionsOf(long, 1000);
+
+    assert.ok(sections.length > 1, 'a long document was not cut at all');
+    assert.ok(
+      sections.every((s) => s.length <= 1000),
+      'a section came back longer than the limit',
+    );
+
+    // Every character has to survive somewhere, or the read is silently partial
+    // in exactly the way this exists to prevent.
+    const joined = sections.join('');
+    for (const marker of ['Section 0.', 'Section 20.', 'Section 39.']) {
+      assert.ok(joined.includes(marker), `${marker} was dropped entirely`);
+    }
+  });
+
+  it('overlaps its sections, so a rule split by a cut survives whole', async () => {
+    const { sectionsOf } = await import('../src/server/brain/understanding');
+
+    const long = Array.from({ length: 30 }, (_, i) => `Line ${i} ${'y'.repeat(120)}`).join('\n\n');
+    const sections = sectionsOf(long, 800);
+
+    assert.ok(sections.length > 1);
+    const overlapped = sections.slice(1).some((section, index) => {
+      const tail = sections[index]!.slice(-40);
+      return section.includes(tail.slice(0, 20));
+    });
+    assert.ok(overlapped, 'sections were cut with no overlap between them');
   });
 });

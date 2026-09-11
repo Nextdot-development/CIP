@@ -34,7 +34,8 @@
     "test:pdf": "node --conditions=react-server --import tsx --test --test-concurrency=1 --test-force-exit tests/pdfVisual.test.ts",
     "prove:pdf": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/prove-pdf.ts",
     "prove:mm-pdfs": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/prove-mm-pdfs.ts",
-    "setup:radico": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/setup-radico.ts"
+    "setup:radico": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/setup-radico.ts",
+    "ingest": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/ingest-folder.ts"
   },
   "dependencies": {
     "@google/genai": "^2.21.0",
