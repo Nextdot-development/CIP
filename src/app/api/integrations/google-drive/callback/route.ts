@@ -28,8 +28,11 @@ export async function GET(request: Request) {
 
   // A plain HTTP redirect rather than next/navigation's, because the outcome
   // travels as a query parameter and typed routes will not carry one.
+  // Teach is where connecting happens. This used to send people to /knowledge,
+  // which stopped existing when the nav collapsed to four sections — so every
+  // round trip through Google, successful or not, landed on a 404.
   const back = (outcome: string) =>
-    Response.redirect(new URL(`/knowledge?google=${outcome}`, url.origin), 303);
+    Response.redirect(new URL(`/teach?google=${outcome}`, url.origin), 303);
 
   if (declined) return back('declined');
   if (!code || !state) return back('invalid');

@@ -41,7 +41,7 @@ export function KnowledgeSection({
     if (!outcome) return;
     const message = OUTCOMES[outcome];
     if (message) note(message);
-    window.history.replaceState(null, '', '/knowledge');
+    window.history.replaceState(null, '', '/teach');
   }, [note, outcome]);
 
   const refresh = useCallback(async () => {
