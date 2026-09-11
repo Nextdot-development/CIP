@@ -24,6 +24,17 @@ import { GoogleDriveNeedsReauth, ingestedFilename, planFor, storedMimeFor } from
  * listing and nothing else.
  */
 
+/** Google's own type for a folder. */
+const FOLDER_MIME = 'application/vnd.google-apps.folder';
+
+/**
+ * How many folders one sync will walk.
+ *
+ * A bound rather than a depth limit: what matters is that the walk ends, and a
+ * Drive with a shortcut pointing at its own ancestor has no depth at all.
+ */
+const MAX_FOLDERS = 200;
+
 export type SyncOutcome = {
   scanned: number;
   added: number;
@@ -37,6 +48,8 @@ export type SyncOutcome = {
   pages: number;
   /** Files put into the processing queue by this sync. */
   queued: number;
+  /** Folders walked, including the one that was connected. */
+  folders: number;
 };
 
 type ExistingRow = {
@@ -81,26 +94,56 @@ export async function syncNow(scope: CompanyScope): Promise<SyncOutcome> {
 
   const outcome: SyncOutcome = {
     scanned: 0, added: 0, updated: 0, unchanged: 0,
-    unsupported: 0, tooLarge: 0, removed: 0, failed: 0, pages: 0, queued: 0,
+    unsupported: 0, tooLarge: 0, removed: 0, failed: 0, pages: 0, queued: 0, folders: 0,
   };
 
   try {
-    let pageToken: string | null = null;
+    // Subfolders are walked, not skipped. People file assets by brand — a
+    // folder per brand, a folder of bottles — and a sync that read only the
+    // top level found one logo and reported the other twenty-six as
+    // unsupported, when most of them were simply never looked in.
+    //
+    // Breadth first, with a seen-set, because a shortcut in Drive can point
+    // back at an ancestor and turn the walk into a loop. Bounded, so a Drive
+    // nested deeper than anyone intended cannot hold the sync open for ever.
+    const queue: string[] = [connection.folderId];
+    const visited = new Set<string>([connection.folderId]);
+    const folderNames = new Map<string, string>();
 
-    // Google returns a folder a page at a time and a large folder is many
-    // pages. Stopping at the first page would silently ingest a prefix of the
-    // Drive and report success.
-    do {
-      const page = await api.listFolder(connection.accessToken, connection.folderId, pageToken);
-      outcome.pages += 1;
+    while (queue.length > 0 && visited.size <= MAX_FOLDERS) {
+      const folderId = queue.shift()!;
+      let pageToken: string | null = null;
 
-      for (const file of page.files) {
-        outcome.scanned += 1;
-        await syncOneFile(scope, connection.id, connection.accessToken, file, startedAt, outcome);
-      }
+      // Google returns a folder a page at a time and a large folder is many
+      // pages. Stopping at the first page would silently ingest a prefix of
+      // the Drive and report success.
+      do {
+        const page = await api.listFolder(connection.accessToken, folderId, pageToken);
+        outcome.pages += 1;
 
-      pageToken = page.nextPageToken;
-    } while (pageToken);
+        for (const file of page.files) {
+          if (file.mimeType === FOLDER_MIME) {
+            // A folder is not ingested; what is inside it is.
+            if (!file.trashed && !visited.has(file.id) && visited.size < MAX_FOLDERS) {
+              visited.add(file.id);
+              folderNames.set(file.id, file.name);
+              queue.push(file.id);
+            }
+            continue;
+          }
+
+          outcome.scanned += 1;
+          await syncOneFile(
+            scope, connection.id, connection.accessToken, file, startedAt, outcome,
+            folderId === connection.folderId ? null : (folderNames.get(folderId) ?? null),
+          );
+        }
+
+        pageToken = page.nextPageToken;
+      } while (pageToken);
+    }
+
+    outcome.folders = visited.size;
 
     // Anything not seen in this pass has gone from the folder — deleted, moved
     // out, or unshared. It is archived rather than deleted: the extraction and
@@ -142,6 +185,17 @@ async function syncOneFile(
   file: GoogleFile,
   seenAt: Date,
   outcome: SyncOutcome,
+  /**
+   * The Drive folder it came from, when that is not the connected folder
+   * itself.
+   *
+   * Every synced file lands in the root of the CIP Drive, so two files called
+   * 8PM.png in two different Drive folders collide on a name that has to be
+   * unique. The folder is what tells them apart — and since people file assets
+   * by brand, it is usually the brand's own name, which makes it the right
+   * thing to qualify with rather than a number.
+   */
+  folderName: string | null,
 ): Promise<void> {
   const existing = await withCompanyScope(scope, async (tx) => {
     const rows = await tx<ExistingRow[]>`
@@ -241,7 +295,7 @@ async function syncOneFile(
 
     const fileId = await writeDriveFile(scope, {
       existingFileId: existing?.file_id ?? null,
-      name: ingestedFilename(file.name, plan.fileType),
+      name: await uniqueName(scope, file.name, plan.fileType, folderName, existing?.file_id ?? null),
       fileType: plan.fileType,
       mimeType: storedMimeFor(plan.fileType),
       bytes,
@@ -299,6 +353,57 @@ async function syncOneFile(
     });
     outcome.failed += 1;
   }
+}
+
+/**
+ * A name no other live file in this Drive already holds.
+ *
+ * Everything synced lands in the root, so a Drive organised into folders
+ * produces collisions the moment two of them hold a logo with the same name.
+ * The Drive folder disambiguates, and reads well because it is usually the
+ * brand: "8PM.png" from the 8PM folder becomes "8PM (8PM).png".
+ *
+ * If that is still taken — the same name in the same folder, which Drive does
+ * allow — a number is appended, because something has to give and a number is
+ * at least honest about being arbitrary.
+ */
+async function uniqueName(
+  scope: CompanyScope,
+  rawName: string,
+  fileType: string,
+  folderName: string | null,
+  existingFileId: string | null,
+): Promise<string> {
+  const taken = async (name: string): Promise<boolean> =>
+    withCompanyScope(scope, async (tx) => {
+      const rows = await tx<{ id: string }[]>`
+        select id from drive_files
+         where company_id = ${scope.companyId}
+           and folder_id is null
+           and archived_at is null
+           and lower(btrim(name)) = lower(btrim(${name}))
+           and (${existingFileId}::uuid is null or id <> ${existingFileId}::uuid)
+         limit 1
+      `;
+      return rows.length > 0;
+    });
+
+  const plain = ingestedFilename(rawName, fileType);
+  if (!(await taken(plain))) return plain;
+
+  if (folderName) {
+    const stem = rawName.replace(/\.[^.]+$/, '');
+    const qualified = ingestedFilename(`${stem} (${folderName})`, fileType);
+    if (!(await taken(qualified))) return qualified;
+  }
+
+  const stem = rawName.replace(/\.[^.]+$/, '');
+  for (let n = 2; n < 50; n += 1) {
+    const numbered = ingestedFilename(`${stem} (${n})`, fileType);
+    if (!(await taken(numbered))) return numbered;
+  }
+
+  return ingestedFilename(`${stem} (${Date.now()})`, fileType);
 }
 
 /** Google's view of the version, as far as it gives us one. */

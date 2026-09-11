@@ -441,18 +441,98 @@ describe('sync discovers, ingests and hands over to the existing pipeline', () =
 
   it('records an unsupported file with a reason instead of pretending it worked', async () => {
     await connect(mm, MM_FOLDER);
-    fake.put(MM_FOLDER, { id: 'gd-image', name: 'logo.png', mimeType: 'image/png' }, 'notadocument');
+    // Genuinely unreadable: a Photoshop document is not something CIP can read
+    // or look at. This used to be asserted with a PNG, back when the sync
+    // accepted only text formats — which turned a folder of brand logos into
+    // rows saying "not a document type CIP can read", true of the extractor
+    // and quite wrong about CIP.
+    fake.put(MM_FOLDER, { id: 'gd-psd', name: 'artwork.psd', mimeType: 'image/x-photoshop' }, 'binary');
 
     const outcome = await sync.syncNow(mm);
     assert.equal(outcome.unsupported, 1);
     assert.equal(outcome.added, 0);
 
     const rows = await adminSql<{ state: string; reason: string | null; file_id: string | null }[]>`
-      select state, reason, file_id from google_drive_files where external_id = 'gd-image'
+      select state, reason, file_id from google_drive_files where external_id = 'gd-psd'
     `;
     assert.equal(rows[0]!.state, 'unsupported');
     assert.ok(rows[0]!.reason, 'an unsupported file must say why');
     assert.equal(rows[0]!.file_id, null, 'an unsupported file must not become a knowledge record');
+  });
+
+  it('takes an image, because CIP reads one by looking at it', async () => {
+    await connect(mm, MM_FOLDER);
+    fake.put(MM_FOLDER, { id: 'gd-logo', name: 'logo.png', mimeType: 'image/png', md5Checksum: 'm-logo' }, 'pixels');
+
+    const outcome = await sync.syncNow(mm);
+    assert.equal(outcome.added, 1, 'a brand logo was refused');
+
+    const rows = await adminSql<{ file_type: string; mime_type: string }[]>`
+      select f.file_type, f.mime_type
+        from google_drive_files g join drive_files f on f.id = g.file_id
+       where g.external_id = 'gd-logo'
+    `;
+    assert.equal(rows[0]!.file_type, 'png');
+    assert.equal(rows[0]!.mime_type, 'image/png');
+  });
+
+  it('walks into subfolders, because that is how people file assets', async () => {
+    await connect(mm, MM_FOLDER);
+
+    // A folder per brand, which is what a real asset library looks like.
+    const brandFolder = 'folder-whytehall';
+    fake.put(MM_FOLDER, {
+      id: brandFolder,
+      name: 'WHYTEHALL',
+      mimeType: 'application/vnd.google-apps.folder',
+    });
+    fake.put(brandFolder, { id: 'gd-nested', name: 'crest.png', mimeType: 'image/png', md5Checksum: 'm-crest' }, 'pixels');
+
+    const outcome = await sync.syncNow(mm);
+    assert.ok(outcome.folders >= 2, 'the sync never opened the subfolder');
+
+    const rows = await adminSql<{ n: number }[]>`
+      select count(*)::int as n from google_drive_files
+       where company_id = ${mm.companyId} and external_id = 'gd-nested' and state = 'synced'
+    `;
+    assert.equal(rows[0]!.n, 1, 'a file inside a subfolder was never reached');
+  });
+
+  it('tells two files of the same name apart by the folder they came from', async () => {
+    await connect(mm, MM_FOLDER);
+
+    // Drive allows it and brand folders make it likely: every brand has a logo.
+    for (const [folderId, label] of [['folder-a', '8PM'], ['folder-b', 'MORPHEUS']] as const) {
+      fake.put(MM_FOLDER, { id: folderId, name: label, mimeType: 'application/vnd.google-apps.folder' });
+      fake.put(
+        folderId,
+        { id: `gd-logo-${label}`, name: 'logo.png', mimeType: 'image/png', md5Checksum: `m-${label}` },
+        'pixels',
+      );
+    }
+
+    const outcome = await sync.syncNow(mm);
+    assert.equal(outcome.failed, 0, 'a name collision was reported as a failure');
+    assert.equal(outcome.added, 2, 'one of the two logos was lost');
+
+    const names = await adminSql<{ name: string }[]>`
+      select name from drive_files
+       where company_id = ${mm.companyId} and archived_at is null and lower(name) like 'logo%'
+       order by name
+    `;
+    assert.equal(names.length, 2, 'both logos should exist under distinguishable names');
+    assert.notEqual(names[0]!.name, names[1]!.name);
+    // The first one through keeps the name it had; the one that would have
+    // collided is qualified by its folder, which is usually the brand and so
+    // reads as an explanation rather than as a number.
+    assert.ok(
+      names.some((n) => n.name === 'logo.png'),
+      `the first logo should have kept its own name, got ${names.map((n) => n.name).join(', ')}`,
+    );
+    assert.ok(
+      names.some((n) => n.name.includes('8PM') || n.name.includes('MORPHEUS')),
+      `expected the folder to disambiguate, got ${names.map((n) => n.name).join(', ')}`,
+    );
   });
 
   it('walks every page of a large folder', async () => {
