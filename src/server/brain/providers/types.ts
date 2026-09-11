@@ -365,6 +365,19 @@ export type GenerationBrief = {
    * stops and asks rather than guessing.
    */
   clarificationQuestion: string | null;
+  /**
+   * Which brand and market this was built for.
+   *
+   * Decided by the planner rather than by the model — they come from the
+   * roster and from what the request implied, and a model asked to restate
+   * them can get them wrong. Recorded because a brief that cannot say which
+   * country it drew on cannot be checked, and "why does this look Nigerian?"
+   * is the first question anybody asks of a piece they did not expect.
+   *
+   * Null means there was only one to choose from, or none at all.
+   */
+  brand: string | null;
+  market: string | null;
 };
 
 export type BriefInput = {

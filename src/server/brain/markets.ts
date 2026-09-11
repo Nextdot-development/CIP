@@ -109,6 +109,133 @@ export function marketInRequest(requestText: string, markets: readonly string[])
 }
 
 /**
+ * Words too common to say anything about where a request belongs.
+ *
+ * Not a language model's stopword list — a short one aimed at the sentences
+ * people actually type here. Anything longer starts discarding real signal.
+ */
+const NOT_A_SIGNAL = new Set([
+  'the', 'and', 'for', 'with', 'this', 'that', 'make', 'create', 'design',
+  'post', 'image', 'video', 'banner', 'poster', 'story', 'reel', 'carousel',
+  'billboard', 'please', 'need', 'want', 'some', 'something', 'new', 'about',
+  'brand', 'bottle', 'product', 'social', 'media', 'campaign', 'ad', 'ads',
+  'banao', 'karo', 'chahiye', 'wala', 'wali', 'hai', 'mein', 'kar', 'bana',
+]);
+
+/** The words in a request that could plausibly point at one market. */
+function signalsIn(requestText: string): string[] {
+  const seen = new Set<string>();
+  for (const raw of requestText.toLowerCase().split(/[^a-z0-9]+/)) {
+    // Three letters or fewer is noise at this scale; "eid" is the exception
+    // worth keeping and it is three, so the bar is set below it.
+    if (raw.length < 3 || NOT_A_SIGNAL.has(raw)) continue;
+    seen.add(raw);
+    if (seen.size >= 12) break;
+  }
+  return [...seen];
+}
+
+/**
+ * The market a request is about, worked out from what each market's own files
+ * actually contain.
+ *
+ * Naming the country is the easy case and `marketInRequest` already handles
+ * it. This is the other one: "a Diwali post" names no country and obviously
+ * means India, and being asked to pick from a list is the software admitting
+ * it did not read its own knowledge.
+ *
+ * So the request's words are looked for in each market's assets, and a word
+ * only counts when it appears in one market and not the others. Diwali is in
+ * the India deck and nowhere else, so it decides; a bottle is in all three and
+ * decides nothing. Nothing here is hardcoded about festivals or cities — the
+ * vocabulary is whatever this company's own files happen to contain, so it is
+ * right for their markets rather than for a general idea of the world.
+ *
+ * Returns null rather than guessing. A weak signal is worse than a question:
+ * the caller asks, exactly as it did before.
+ */
+export async function marketFromEvidence(
+  scope: CompanyScope,
+  requestText: string,
+  markets: readonly string[],
+): Promise<string | null> {
+  if (markets.length < 2) return null;
+
+  const terms = signalsIn(requestText);
+  if (terms.length === 0) return null;
+
+  const rows = await withCompanyScope(scope, async (tx) =>
+    tx<{ market: string; score: number; terms: number }[]>`
+      with term as (
+        select unnest(${terms}::text[]) as word
+      ),
+      -- Two places a word can be found, and both count. What an asset says is
+      -- the raw material; a Brand DNA fact is what CIP concluded from it, and
+      -- a conclusion is the better signal of the two — so neither is dropped.
+      seen as (
+        select f.market, f.id as file_id, t.word
+          from drive_files f
+          join asset_understanding u
+            on u.file_id = f.id and u.company_id = f.company_id
+          cross join term t
+         where f.company_id = ${scope.companyId}
+           and f.archived_at is null
+           and f.market is not null
+           and f.market = any(${[...markets]}::text[])
+           and u.status = 'ready'
+           and (
+             u.summary ilike '%' || t.word || '%'
+             or coalesce(u.extracted_text, '') ilike '%' || t.word || '%'
+           )
+
+        union
+
+        select f.market, f.id as file_id, t.word
+          from brand_dna_facts b
+          join brand_dna_evidence e
+            on e.fact_id = b.id and e.company_id = b.company_id
+          join drive_files f
+            on f.id = e.file_id and f.company_id = e.company_id
+          cross join term t
+         where b.company_id = ${scope.companyId}
+           and b.status = 'active'
+           and f.archived_at is null
+           and f.market is not null
+           and f.market = any(${[...markets]}::text[])
+           and (
+             b.value ilike '%' || t.word || '%'
+             or b.attribute ilike '%' || t.word || '%'
+           )
+      ),
+      hit as (
+        -- Counted per market and per word by distinct file, so one enormous
+        -- document cannot outvote a market.
+        select market, word, count(distinct file_id)::int as files
+          from seen group by market, word
+      ),
+      distinctive as (
+        -- A word seen in every market says nothing about which one this is.
+        select word from hit group by word having count(distinct market) = 1
+      )
+      select h.market, sum(h.files)::int as score, count(*)::int as terms
+        from hit h join distinctive d on d.word = h.word
+       group by h.market
+       order by score desc, terms desc, h.market
+    `,
+  );
+
+  const [best, next] = rows;
+  if (!best || best.score === 0) return null;
+
+  // A clear winner, or nothing. Two markets that both half-match a request is
+  // the case the question exists for, and answering it anyway would be the
+  // silent averaging this whole module was written to prevent.
+  if (next && next.score * 2 > best.score) return null;
+
+  return best.market;
+}
+
+/**
  * Sets, or clears, which market a file belongs to.
  *
  * Answers false when no such file belongs to this company, so the caller can

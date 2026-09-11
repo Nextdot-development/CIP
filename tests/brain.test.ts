@@ -1090,6 +1090,55 @@ describe('markets', () => {
     );
   });
 
+  it('works out the market from the request rather than asking', async () => {
+    // Each deck carries its own occasion. Nothing anywhere says "Diwali means
+    // India" — it is true because the India deck is the one that mentions it.
+    await fileInMarket(mm, 'India.pdf', 'India', 'warm gold on black for Diwali');
+    await fileInMarket(mm, 'nigeria.pdf', 'Nigeria', 'bright cyan blocks for Detty December');
+
+    const markets = await import('../src/server/brain/markets');
+    const inferred = await markets.marketFromEvidence(mm, 'Make a Diwali post', ['India', 'Nigeria']);
+    assert.equal(inferred, 'India', "the word was in one market's files and nowhere else");
+
+    const plan = await planner.planGeneration(mm, {
+      requestText: 'Make a Diwali post',
+      mediaType: 'image',
+    });
+
+    assert.equal(
+      plan.clarificationQuestion,
+      null,
+      'CIP asked which country a Diwali post was for, with the answer in its own files',
+    );
+    assert.equal(plan.brief?.market ?? null, 'India');
+  });
+
+  it('still asks when the request matches two markets equally', async () => {
+    // The same word in both decks decides nothing, and answering anyway would
+    // be the silent averaging the question exists to prevent.
+    await fileInMarket(mm, 'India.pdf', 'India', 'a new year campaign in warm gold');
+    await fileInMarket(mm, 'nigeria.pdf', 'Nigeria', 'a new year campaign in bright cyan');
+
+    const plan = await planner.planGeneration(mm, {
+      requestText: 'Make a new year campaign',
+      mediaType: 'image',
+    });
+
+    assert.ok(plan.clarificationQuestion, 'CIP picked one of two markets that matched equally');
+  });
+
+  it('does not read a market into a word every market uses', async () => {
+    await fileInMarket(mm, 'India.pdf', 'India', 'bottle centred on gold');
+    await fileInMarket(mm, 'nigeria.pdf', 'Nigeria', 'bottle centred on cyan');
+
+    const plan = await planner.planGeneration(mm, {
+      requestText: 'Show the bottle centred',
+      mediaType: 'image',
+    });
+
+    assert.ok(plan.clarificationQuestion, 'a word common to every market was treated as a signal');
+  });
+
   it('THE TEST: asks which market when there are several and the request says none', async () => {
     await fileInMarket(mm, 'India.pdf', 'India', 'warm gold on black');
     await fileInMarket(mm, 'nigeria.pdf', 'Nigeria', 'bright cyan blocks');

@@ -268,6 +268,10 @@ export class FakeBrainProvider implements BrainProvider {
     const promptParts = [input.requestText, ...brandRules, ...preferred];
 
     return {
+      // The planner decides these and overwrites them; a provider is never
+      // asked which brand or market a request is for.
+      brand: null,
+      market: null,
       taskType: input.mediaType === 'video' ? 'promotional_video' : 'promotional_image',
       // Read off the words, deterministically, the way the rest of this double
       // works: the tests need a format that follows the request rather than a

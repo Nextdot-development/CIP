@@ -642,6 +642,12 @@ export class OpenAIBrainProvider implements BrainProvider {
       format: normaliseFormat(parsed.format),
       confidence: clamp(parsed.confidence),
       clarificationQuestion: parsed.clarificationQuestion?.trim() || null,
+      // Not in the schema, and never asked of the model: the planner resolved
+      // these from the roster and the request before this call was made, and
+      // overwrites them on the way out. Nulled here so a model that invents
+      // the fields anyway cannot have them survive.
+      brand: null,
+      market: null,
       usage,
     };
   }

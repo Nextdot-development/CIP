@@ -6,7 +6,7 @@ import { BRAIN_LIMITS, BrainFailed, defaultTaskType } from './providers/types';
 import type { GenerationBrief } from './providers/types';
 import { knownSubjects, readBrandDna } from './brandDna';
 import { applicableLessons, ratedExamples, similarAssets, similarPosts } from './retrieval';
-import { companyMarkets, marketInRequest } from './markets';
+import { companyMarkets, marketFromEvidence, marketInRequest } from './markets';
 import { brandInRequest, brandNames } from './brands';
 
 /**
@@ -80,6 +80,10 @@ async function askWhich(
   asking: { kind: 'brand' | 'market'; options: readonly string[]; question: string },
 ): Promise<PlannedGeneration> {
   const brief: GenerationBrief = {
+    // Whichever of the two is being asked about is still undecided; the other
+    // may already be known, and is carried so the answer does not lose it.
+    brand: asking.kind === 'brand' ? null : (input.brand?.trim() || null),
+    market: asking.kind === 'market' ? null : (input.market?.trim() || null),
     taskType: defaultTaskType(input.mediaType),
     format: 'other',
     platform: input.platform ?? null,
@@ -163,9 +167,14 @@ export async function planGeneration(
   const market =
     input.market?.trim() ||
     marketInRequest(requestText, marketNames) ||
+    // Nobody named a country, which is the normal case: people ask for a
+    // Diwali post, not a post for India. Being handed a list to pick from
+    // when the answer is written across the India deck is the software
+    // declining to read its own knowledge, so it looks before it asks.
+    (await marketFromEvidence(scope, requestText, marketNames)) ||
     null;
 
-  // More than one market and nobody has said which: stop and ask. Averaging
+  // More than one market and still nothing to go on: stop and ask. Averaging
   // them is the one answer that is wrong for everybody, and the clarification
   // path already exists for exactly this.
   if (!market && marketNames.length > 1) {
@@ -284,6 +293,10 @@ export async function planGeneration(
     ...brief,
     confidence,
     clarificationQuestion: clarification,
+    // What this brief was actually built from. The model never sees these as
+    // fields to fill in; they are what the planner resolved before it asked.
+    brand,
+    market,
     learnedPreferences: [
       ...new Set([
         ...brief.learnedPreferences,
