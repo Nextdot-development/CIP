@@ -16,6 +16,7 @@ import {
 import { recomputeEverywhere } from '../src/server/brain/brandDna';
 import { analyseNextFeedback } from '../src/server/brain/learning';
 import { brainStatus } from '../src/server/brain/providers';
+import { watchLoop } from './watchLoop';
 
 /**
  * Everything, in the order things depend on each other.
@@ -48,6 +49,7 @@ const SYNC_EVERY_MINUTES = syncArg ? Number(syncArg.split('=')[1]) : 5;
 
 /** Bounds one pass so a backlog cannot hold any single stage for ever. */
 const PER_STAGE = 25;
+
 
 let stopping = false;
 process.on('SIGINT', () => {
@@ -171,18 +173,20 @@ async function main() {
     `Watching every ${POLL_MS / 1000}s, sweeping Google Drive every ${SYNC_EVERY_MINUTES}m. ` +
       'Ctrl+C to stop.\n',
   );
-  while (!stopping) {
-    const tally = await pass();
-    const summary = describe(tally);
-    if (summary !== 'nothing to do') console.log(`  -> ${summary}`);
-    if (stopping) break;
-    await new Promise((r) => setTimeout(r, POLL_MS));
-  }
+  process.exitCode = await watchLoop({
+    name: 'cip',
+    pollMs: POLL_MS,
+    shouldStop: () => stopping,
+    pass: async () => {
+      const summary = describe(await pass());
+      if (summary !== 'nothing to do') console.log(`  -> ${summary}`);
+    },
+  });
   console.log('Stopped.');
 }
 
 main()
-  .then(() => process.exit(0))
+  .then(() => process.exit(process.exitCode ?? 0))
   .catch((err) => {
     console.error('Worker failed:', err instanceof Error ? err.message : err);
     process.exit(1);

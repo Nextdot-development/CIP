@@ -1,5 +1,6 @@
 import { claimGeneration, mediaQueueDepth, processGeneration } from '../src/server/media/jobs';
 import { providerStatus } from '../src/server/media/providers';
+import { watchLoop } from './watchLoop';
 
 /**
  * The media generation worker.
@@ -82,16 +83,17 @@ async function main() {
   }
 
   console.log(`Watching for work every ${POLL_MS / 1000}s. Ctrl+C to stop.\n`);
-  while (!stopping) {
-    await drain();
-    if (stopping) break;
-    await new Promise((r) => setTimeout(r, POLL_MS));
-  }
+  process.exitCode = await watchLoop({
+    name: 'media',
+    pollMs: POLL_MS,
+    shouldStop: () => stopping,
+    pass: drain,
+  });
   console.log('Stopped.');
 }
 
 main()
-  .then(() => process.exit(0))
+  .then(() => process.exit(process.exitCode ?? 0))
   .catch((err) => {
     // The message only; a stack from deep inside a provider call can quote the
     // request back, and the request contains the prompt.

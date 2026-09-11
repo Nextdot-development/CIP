@@ -8,6 +8,7 @@ import { recomputeEverywhere } from '../src/server/brain/brandDna';
 import { analyseNextFeedback } from '../src/server/brain/learning';
 import { brainStatus } from '../src/server/brain/providers';
 import { ffmpegAvailable } from '../src/server/brain/media';
+import { watchLoop } from './watchLoop';
 
 /**
  * The Brain worker.
@@ -116,16 +117,17 @@ async function main() {
   }
 
   console.log(`Watching every ${POLL_MS / 1000}s. Ctrl+C to stop.\n`);
-  while (!stopping) {
-    await pass();
-    if (stopping) break;
-    await new Promise((r) => setTimeout(r, POLL_MS));
-  }
+  process.exitCode = await watchLoop({
+    name: 'brain',
+    pollMs: POLL_MS,
+    shouldStop: () => stopping,
+    pass,
+  });
   console.log('Stopped.');
 }
 
 main()
-  .then(() => process.exit(0))
+  .then(() => process.exit(process.exitCode ?? 0))
   .catch((err) => {
     // The message only: a stack from inside a provider call can quote content.
     console.error('Brain worker failed:', err instanceof Error ? err.message : err);

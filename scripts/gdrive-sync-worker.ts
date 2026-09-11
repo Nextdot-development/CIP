@@ -4,6 +4,7 @@ import {
   syncQueueDepth,
 } from '../src/server/integrations/googleDrive/jobs';
 import { googleDrive } from '../src/server/integrations/googleDrive';
+import { watchLoop } from './watchLoop';
 
 /**
  * The Google Drive sync worker.
@@ -91,16 +92,17 @@ async function main() {
   }
 
   console.log(`Watching every ${POLL_MS / 1000}s. Ctrl+C to stop.\n`);
-  while (!stopping) {
-    await drain();
-    if (stopping) break;
-    await new Promise((r) => setTimeout(r, POLL_MS));
-  }
+  process.exitCode = await watchLoop({
+    name: 'drive sync',
+    pollMs: POLL_MS,
+    shouldStop: () => stopping,
+    pass: drain,
+  });
   console.log('Stopped.');
 }
 
 main()
-  .then(() => process.exit(0))
+  .then(() => process.exit(process.exitCode ?? 0))
   .catch((err) => {
     console.error('Sync worker failed:', err instanceof Error ? err.message : err);
     process.exit(1);

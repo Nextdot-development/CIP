@@ -10,6 +10,7 @@ import {
   embeddingQueueDepth,
 } from '../src/server/drive/embeddingQueue';
 import { embedder } from '../src/server/drive/embedding';
+import { watchLoop } from './watchLoop';
 
 /**
  * The extraction worker.
@@ -130,20 +131,26 @@ async function main() {
   }
 
   console.log(`Watching for work every ${POLL_MS / 1000}s, embedding with ${embedder().model}. Ctrl+C to stop.\n`);
-  while (!stopping) {
-    await drain();
-    await drainEmbeddings();
-    if (stopping) break;
-    await new Promise((r) => setTimeout(r, POLL_MS));
-    await recoverStuckFiles();
-    const waiting = await embeddingQueueDepth();
-    if (waiting.pending > 0) console.log(`  ${waiting.pending} chunk(s) waiting to be embedded`);
-  }
+  process.exitCode = await watchLoop({
+    name: 'drive',
+    pollMs: POLL_MS,
+    shouldStop: () => stopping,
+    pass: async () => {
+      await drain();
+      await drainEmbeddings();
+      if (stopping) return;
+      // A worker that died mid-file left a claim behind; releasing those is
+      // what stops one crash from stranding a file for ever.
+      await recoverStuckFiles();
+      const waiting = await embeddingQueueDepth();
+      if (waiting.pending > 0) console.log(`  ${waiting.pending} chunk(s) waiting to be embedded`);
+    },
+  });
   console.log('Stopped.');
 }
 
 main()
-  .then(() => process.exit(0))
+  .then(() => process.exit(process.exitCode ?? 0))
   .catch((err) => {
     console.error('Worker failed:', err instanceof Error ? err.message : err);
     process.exit(1);
