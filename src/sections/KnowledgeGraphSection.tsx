@@ -81,6 +81,9 @@ const ForceGraph2D = dynamic(() => import('react-force-graph-2d'), {
 }) as unknown as ComponentType<ForceGraphProps>;
 
 const TYPE_COLOR: Record<GraphNodeType, string> = {
+  // A brand is the only kind of node that is not a place a file lives, so it
+  // is the only warm one. Everything structural stays on the cool side.
+  brand: '#f9a8d4',
   source: '#c4b5fd',
   folder: '#7dd3fc',
   file: '#86efac',
@@ -88,6 +91,7 @@ const TYPE_COLOR: Record<GraphNodeType, string> = {
 };
 
 const TYPE_ICON: Record<GraphNodeType, IconName> = {
+  brand: 'sparkle',
   source: 'box',
   folder: 'folder',
   file: 'doc',
@@ -112,7 +116,7 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
   const [query, setQuery] = useState('');
   const [sourceFilter, setSourceFilter] = useState<GraphSource | 'all'>('all');
   const [typeFilter, setTypeFilter] = useState<GraphNodeType | 'all'>('all');
-  const [edgeFilter, setEdgeFilter] = useState<'all' | 'contains' | 'related'>('all');
+  const [edgeFilter, setEdgeFilter] = useState<'all' | 'contains' | 'related' | 'resembles'>('all');
   const [busy, setBusy] = useState(false);
   const [size, setSize] = useState({ width: 800, height: 600 });
 
@@ -311,6 +315,29 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
     return near;
   }, [edges, selected]);
 
+  /**
+   * The brands the selected one is most like, closest first.
+   *
+   * Read off the edges already drawn rather than fetched: the reason is
+   * carried on the edge precisely so that showing it costs nothing.
+   */
+  const resemblances = useMemo(() => {
+    if (!selected || selected.type !== 'brand') return [];
+    const endId = (end: string | { id: string }): string =>
+      typeof end === 'string' ? end : end.id;
+
+    return edges
+      .filter((e) => e.kind === 'resembles')
+      .filter((e) => endId(e.source) === selected.id || endId(e.target) === selected.id)
+      .map((e) => ({
+        other: (endId(e.source) === selected.id ? endId(e.target) : endId(e.source)).replace(/^brand:/, ''),
+        score: e.score ?? 0,
+        shared: e.shared ?? [],
+      }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 5);
+  }, [edges, selected]);
+
   const visibleEdges = useMemo(
     () => (edgeFilter === 'all' ? edges : edges.filter((e) => e.kind === edgeFilter)),
     [edgeFilter, edges],
@@ -376,6 +403,7 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
           void reload({ ...(value !== 'all' ? { type: value } : {}) });
         }}>
           <option value="all">All types</option>
+          <option value="brand">Brands</option>
           <option value="folder">Folders</option>
           <option value="file">Files</option>
           <option value="chunk">Passages</option>
@@ -384,7 +412,8 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
         <select value={edgeFilter} onChange={(e) => setEdgeFilter(e.target.value as typeof edgeFilter)}>
           <option value="all">All links</option>
           <option value="contains">Contains</option>
-          <option value="related">Related</option>
+          <option value="related">Related passages</option>
+          <option value="resembles">Brands alike</option>
         </select>
 
         <div className="graph-zoom">
@@ -422,10 +451,18 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
             }}
             linkColor={(edge) => {
               const dim = selected !== null && !touches(edge, neighbours);
+              if (edge.kind === 'resembles') {
+                // Stronger resemblance draws stronger, so the shape of the
+                // portfolio is readable without clicking anything.
+                const strength = Math.min(1, Math.max(0.25, edge.score ?? 0.3));
+                return dim ? 'rgba(249,168,212,0.08)' : `rgba(249,168,212,${strength})`;
+              }
               if (edge.kind === 'related') return dim ? 'rgba(252,211,77,0.07)' : 'rgba(252,211,77,0.45)';
               return dim ? 'rgba(148,163,184,0.07)' : 'rgba(148,163,184,0.35)';
             }}
-            linkWidth={(edge) => (edge.kind === 'related' ? 1.6 : 1)}
+            linkWidth={(edge) =>
+              edge.kind === 'resembles' ? 1.2 + 2.4 * (edge.score ?? 0) : edge.kind === 'related' ? 1.6 : 1
+            }
             linkDirectionalParticles={(edge) =>
               selected !== null && touches(edge, neighbours) ? 2 : 0
             }
@@ -508,6 +545,22 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
             </dl>
 
             {selected.snippet && <p className="insp-snippet">{selected.snippet}…</p>}
+
+            {/* Why this brand is joined to the others. A line drawn between
+                two brands is a claim, and a claim nobody can check is worse
+                than no claim — so the words both were described with are
+                listed rather than the number behind them. */}
+            {selected.type === 'brand' && resemblances.length > 0 && (
+              <div className="insp-resemblance">
+                <p className="insp-label">Most like</p>
+                {resemblances.map((r) => (
+                  <div key={r.other} className="insp-resembles">
+                    <span className="strong">{r.other}</span>
+                    <span className="muted"> · both: {r.shared.join(', ')}</span>
+                  </div>
+                ))}
+              </div>
+            )}
 
             <div className="insp-actions">
               {selected.expandable && !expanded.has(selected.id) && (

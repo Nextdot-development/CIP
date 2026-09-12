@@ -63,15 +63,6 @@ const NOT_A_RELATION = new Set([
   'orientation', 'aspect ratio',
 ]);
 
-/**
- * Separates the two halves of a trait key.
- *
- * A newline, because it cannot occur in either half — an attribute name is a
- * word or two and a value has had its whitespace collapsed. Packing them with
- * a space put "liquid" in one column and "colour amber" in the other.
- */
-const KEY_SEPARATOR = '\n';
-
 /** A value two brands can be compared on, or null if it is not one. */
 function normaliseValue(raw: string): string | null {
   const value = raw
@@ -85,6 +76,73 @@ function normaliseValue(raw: string): string | null {
   // first matches by accident, the second never matches at all.
   if (value.length < 3 || value.length > 60) return null;
   return value;
+}
+
+/**
+ * Words that carry no information about which brand this is.
+ *
+ * Function words, and the vocabulary a vision model uses to describe
+ * anything at all - "appears", "visible", "centered". Rarity weighting would
+ * give most of them almost nothing anyway; they are dropped outright because
+ * they are numerous, and a hundred worthless terms per brand drown the
+ * handful of real ones in the length each brand is measured by.
+ *
+ * Words about spirits - bottle, label, whisky, gold - are deliberately NOT
+ * here. Whether "whisky" distinguishes anything is a question about this
+ * company's roster rather than about English, and the rarity weighting
+ * answers it with that company's own numbers.
+ */
+const NOT_A_TERM = new Set([
+  'the', 'and', 'for', 'with', 'that', 'this', 'than', 'into', 'over', 'from',
+  'under', 'above', 'below', 'also', 'such', 'very', 'more', 'most', 'some',
+  'each', 'both', 'when', 'where', 'which', 'while', 'their', 'there', 'here',
+  'been', 'being', 'have', 'has', 'had', 'are', 'was', 'were', 'will',
+  'would', 'could', 'should', 'its', 'his', 'her', 'not', 'but', 'all', 'any',
+  'one', 'two', 'three', 'other', 'another', 'same', 'own',
+  'text', 'word', 'words', 'image', 'picture', 'photo', 'shows', 'showing',
+  'shown', 'seen', 'looks', 'appears', 'appearing', 'contains', 'containing',
+  'including', 'placed', 'placement', 'presented', 'presentation', 'visible',
+  'large', 'small', 'main', 'left', 'right', 'centre', 'center', 'centered',
+  'centred', 'top', 'bottom', 'middle', 'front', 'back', 'side', 'sides',
+  'area', 'areas', 'part', 'parts', 'element', 'elements', 'style', 'styling',
+  'design', 'overall', 'general', 'clear', 'clearly', 'slight', 'slightly',
+  // Added after reading what the first real run produced. Every one of these
+  // linked two brands by nothing: "Magic Moments and Morpheus both: displayed,
+  // wears, rather". They are frequent enough to collide by accident and rare
+  // enough that the rarity weighting cannot catch them.
+  'brand', 'brands', 'rather', 'displayed', 'display', 'wears', 'wearing',
+  'reads', 'reading', 'smaller', 'larger', 'bigger', 'matching', 'outer',
+  'inner', 'across', 'along', 'around', 'near', 'next', 'colour', 'color',
+  'colours', 'colors', 'tone', 'tones', 'look', 'feel', 'features',
+  'featuring', 'used', 'uses', 'using', 'set', 'sets', 'type', 'types',
+  'panel', 'panels', 'boxes', 'holding', 'placed-on', 'sits', 'sitting',
+]);
+
+/**
+ * The comparable terms in one described attribute.
+ *
+ * The attribute name is deliberately not one of them. It is the model's own
+ * phrasing of what it was looking at, freshly invented each time - the same
+ * observation came back as "alcohol strength text", "alcohol strength
+ * visible" and "alcohol by volume" - so keying on it meant that across 1231
+ * traits on a real roster, not one single trait was held by two brands.
+ *
+ * The value is kept whole AND broken into words. Whole, because "non-chill
+ * filtered" is one thing and three brands said exactly that. In words,
+ * because two brands describing the same gold serif wordmark will not phrase
+ * the sentence identically, and "gold" and "serif" survive where the whole
+ * sentence does not.
+ */
+function termsIn(rawValue: string): string[] {
+  const value = normaliseValue(rawValue);
+  if (!value) return [];
+
+  const terms = new Set<string>([value]);
+  for (const word of value.split(' ')) {
+    if (word.length < 3 || NOT_A_TERM.has(word)) continue;
+    terms.add(word);
+  }
+  return [...terms];
 }
 
 /** A trait a brand holds, and how many of its facts said so. */
@@ -146,18 +204,26 @@ export async function recomputeRelations(scope: CompanyScope): Promise<{
     const add = (brand: string, kind: string, rawValue: string, n: number): void => {
       const cleanKind = kind.toLowerCase().trim();
       if (NOT_A_RELATION.has(cleanKind)) return;
-      const value = normaliseValue(rawValue);
-      if (!value) return;
 
-      const key = `${cleanKind}${KEY_SEPARATOR}${value}`;
+      // A market is stated, not described, so it is one term exactly as given.
+      // Its key is prefixed so a country can never collide with a word
+      // somebody happened to use in a sentence; the prefix is on the key
+      // only, because the thing a person reads is the country.
+      const terms: { key: string; value: string }[] =
+        cleanKind === 'market'
+          ? [{ key: `market:${rawValue.toLowerCase().trim()}`, value: rawValue.toLowerCase().trim() }]
+          : termsIn(rawValue).map((term) => ({ key: term, value: term }));
+
       const forBrand = traits.get(brand) ?? new Map<string, Held>();
-      const existing = forBrand.get(key);
-      forBrand.set(
-        key,
-        existing
-          ? { ...existing, count: existing.count + n }
-          : { kind: cleanKind, value, count: n },
-      );
+      for (const term of terms) {
+        const existing = forBrand.get(term.key);
+        forBrand.set(
+          term.key,
+          existing
+            ? { ...existing, count: existing.count + n }
+            : { kind: cleanKind, value: term.value, count: n },
+        );
+      }
       traits.set(brand, forBrand);
     };
 

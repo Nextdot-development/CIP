@@ -26,7 +26,7 @@ import { embedder } from '../drive/embedding';
  * is the filter even where a WHERE clause also names the company.
  */
 
-export type GraphNodeType = 'source' | 'folder' | 'file' | 'chunk';
+export type GraphNodeType = 'source' | 'folder' | 'file' | 'chunk' | 'brand';
 
 export type GraphSource = 'cip_drive' | 'google_drive';
 
@@ -59,14 +59,26 @@ export type GraphNode = {
   expandable: boolean;
 };
 
-export type GraphEdgeKind = 'contains' | 'related';
+/**
+ * 'contains' is structure - a folder holds a file, a brand owns one.
+ * 'related' is two passages about the same thing.
+ * 'resembles' is two brands that share what they are described as.
+ */
+export type GraphEdgeKind = 'contains' | 'related' | 'resembles';
 
 export type GraphEdge = {
   source: string;
   target: string;
   kind: GraphEdgeKind;
-  /** Similarity, for related edges only. Drives edge opacity. */
+  /** Similarity, for related and resembles edges. Drives edge opacity. */
   score?: number;
+  /**
+   * Why two brands resemble each other, in their own words.
+   *
+   * Carried on the edge so the answer to "why are these joined?" is a list of
+   * things both were described as, rather than a number nobody can check.
+   */
+  shared?: string[];
 };
 
 export type GraphStats = {
@@ -126,6 +138,8 @@ type FileRow = {
   source_type: GraphSource;
   processing_status: string;
   chunk_count: number;
+  /** Which brand the file is about, when its name said. */
+  brand: string | null;
 };
 type ChunkRow = {
   id: string;
@@ -170,7 +184,7 @@ async function overview(
     search: string;
   },
 ): Promise<KnowledgeGraphDTO> {
-  const { folders, files, totals } = await withCompanyScope(scope, async (tx) => {
+  const { folders, files, brands, relations, totals } = await withCompanyScope(scope, async (tx) => {
     const folderRows = await tx<FolderRow[]>`
       select f.id, f.name, f.parent_id,
              (select count(*)::int from drive_files df
@@ -182,7 +196,7 @@ async function overview(
     `;
 
     const fileRows = await tx<FileRow[]>`
-      select f.id, f.name, f.folder_id, f.file_type, f.source_type, f.processing_status,
+      select f.id, f.name, f.folder_id, f.file_type, f.source_type, f.processing_status, f.brand,
              (select count(*)::int from drive_file_chunks c
                where c.file_id = f.id) as chunk_count
         from drive_files f
@@ -190,6 +204,29 @@ async function overview(
          and (${options.sourceFilter}::text is null or f.source_type = ${options.sourceFilter})
        order by f.created_at desc
        limit ${options.limit}
+    `;
+
+    // The roster, and how CIP worked out its brands relate to each other.
+    // Both are cheap: a roster is a handful of rows and the relations are
+    // already computed, so drawing them costs a page load nothing.
+    const brandRows = await tx<{ name: string; file_count: number }[]>`
+      select b.name,
+             (select count(*)::int from drive_files df
+               where df.company_id = b.company_id and df.brand = b.name
+                 and df.archived_at is null) as file_count
+        from company_brands b
+       where b.company_id = ${scope.companyId}
+       order by b.position, b.name
+    `;
+
+    const relationRows = await tx<
+      { brand_a: string; brand_b: string; score: string; shared: { value: string }[] }[]
+    >`
+      select brand_a, brand_b, score, shared
+        from brand_relations
+       where company_id = ${scope.companyId}
+       order by score desc
+       limit 120
     `;
 
     // Real counts for the whole company, not just what is drawn.
@@ -200,7 +237,7 @@ async function overview(
         (select count(*)::int from drive_file_chunks)                       as chunks
     `;
 
-    return { folders: folderRows, files: fileRows, totals: counts[0]! };
+    return { folders: folderRows, files: fileRows, brands: brandRows, relations: relationRows, totals: counts[0]! };
   });
 
   const nodes: GraphNode[] = [];
@@ -266,6 +303,44 @@ async function overview(
         edges.push({ source: sourceNodeId('cip_drive'), target: folder.id, kind: 'contains' });
       }
     }
+  }
+
+  // Brands sit beside the sources rather than inside them: a brand is not a
+  // place a file lives, it is what a file is about, and the same folder can
+  // hold several brands' work.
+  const drawn = new Set(nodes.map((n) => n.id));
+  for (const brand of brands) {
+    nodes.push({
+      id: brandNodeId(brand.name),
+      type: 'brand',
+      label: brand.name,
+      source: null,
+      weight: 4 + Math.min(brand.file_count, 12),
+      expandable: brand.file_count > 0,
+    });
+  }
+
+  // A brand owns the files that are about it. Only the ones already drawn, so
+  // the edge never points at something that is not on the page.
+  for (const file of files) {
+    if (!file.brand) continue;
+    const owner = brandNodeId(file.brand);
+    if (!drawn.has(file.id)) continue;
+    if (!brands.some((b) => b.name === file.brand)) continue;
+    edges.push({ source: owner, target: file.id, kind: 'contains' });
+  }
+
+  // And how the brands relate to each other, with the reason attached.
+  const onRoster = new Set(brands.map((b) => b.name));
+  for (const relation of relations) {
+    if (!onRoster.has(relation.brand_a) || !onRoster.has(relation.brand_b)) continue;
+    edges.push({
+      source: brandNodeId(relation.brand_a),
+      target: brandNodeId(relation.brand_b),
+      kind: 'resembles',
+      score: Number(relation.score),
+      shared: (relation.shared ?? []).slice(0, 6).map((s) => s.value),
+    });
   }
 
   const filtered = applyTypeFilter(nodes, edges, options.typeFilter);
@@ -638,6 +713,16 @@ function chunkNode(row: ChunkRow): GraphNode {
 
 function sourceNodeId(source: GraphSource): string {
   return `source:${source}`;
+}
+
+/**
+ * A node id for a brand.
+ *
+ * Prefixed for the same reason a source is: these ids share a namespace with
+ * row uuids, and a brand called "file" must not be able to collide with one.
+ */
+function brandNodeId(name: string): string {
+  return `brand:${name}`;
 }
 
 function sourceFromNodeId(nodeId: string): GraphSource | null {

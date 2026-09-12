@@ -6,9 +6,9 @@
  * external Google id, so none can reach a component by accident.
  */
 
-export type GraphNodeType = 'source' | 'folder' | 'file' | 'chunk';
+export type GraphNodeType = 'source' | 'folder' | 'file' | 'chunk' | 'brand';
 export type GraphSource = 'cip_drive' | 'google_drive';
-export type GraphEdgeKind = 'contains' | 'related';
+export type GraphEdgeKind = 'contains' | 'related' | 'resembles';
 
 export type GraphNodeDTO = {
   id: string;
@@ -31,6 +31,14 @@ export type GraphEdgeDTO = {
   target: string;
   kind: GraphEdgeKind;
   score?: number;
+  /**
+   * Why two brands resemble each other, in their own words.
+   *
+   * Carried on the edge so that "why are these joined?" is answered with
+   * things both brands were described as, rather than a number nobody can
+   * check. Absent on every other kind of edge.
+   */
+  shared?: string[];
 };
 
 export type GraphStatsDTO = {
