@@ -23,7 +23,12 @@ export type Occasion = {
   brand: string | null;
   startsOn: string;
   endsOn: string;
-  kind: 'public_holiday' | 'observance' | 'season' | 'campaign';
+  /**
+   * restricted is a day to publish nothing for - alcohol sales banned, so a
+   * post showing a drink is not a campaign, it is a problem. Everything else
+   * is an occasion to make something for.
+   */
+  kind: 'public_holiday' | 'observance' | 'season' | 'campaign' | 'restricted';
   languages: string[];
   note: string | null;
   source: 'manual' | 'imported' | 'suggested';

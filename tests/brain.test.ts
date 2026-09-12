@@ -783,6 +783,78 @@ describe('context-aware learning', () => {
   });
 });
 
+describe('reading the design, not just the picture', () => {
+  it('records where the logo sits, not only that there is one', async () => {
+    await uploadImage(mm, 'packshot.png');
+    await extractAll();
+    await understanding.enqueueUnderstanding(mm);
+    await understandAll();
+
+    const rows = await adminSql<{ attribute: string; value: string }[]>`
+      select attribute, value from brand_dna_facts
+       where company_id = ${mm.companyId}
+         and attribute in ('logo placement', 'logo scale', 'headline placement',
+                           'headline case', 'product placement', 'font', 'palette')
+    `;
+    const held = new Set(rows.map((r) => r.attribute));
+
+    // "logoPresent: true" said a logo exists and nothing about where a
+    // designer put it, how big it ran, or what the headline was set in -
+    // which is most of what a brand's rules are actually about.
+    assert.ok(held.has('logo placement'), 'CIP still only knows that a logo exists');
+    assert.ok(held.has('logo scale'));
+    assert.ok(held.has('font'));
+    assert.ok(held.has('palette'));
+  });
+
+  it('uses the same attribute name every time, so evidence accumulates', async () => {
+    // The point of fixed names. Every other fact is phrased freshly by the
+    // model, so the same observation arrived three different ways and nothing
+    // could be counted - on the real roster that left 1231 facts of which not
+    // one was held by two brands.
+    await uploadImage(mm, 'first.png', 1);
+    await uploadImage(mm, 'second.png', 2);
+    await extractAll();
+    await understanding.enqueueUnderstanding(mm);
+    await understandAll();
+
+    const rows = await adminSql<{ n: number }[]>`
+      select count(distinct attribute)::int as n from brand_dna_facts
+       where company_id = ${mm.companyId} and attribute ilike '%logo%placement%'
+    `;
+    assert.equal(rows[0]!.n, 1, 'the same observation was filed under more than one name');
+  });
+
+  it('keeps a stated nothing out of the evidence', async () => {
+    const { designFacts } = await import('../src/server/brain/understanding');
+    const facts = designFacts(
+      {
+        design: {
+          logoPlacement: 'top-left',
+          // The model saying null in prose. Storing these would build evidence
+          // for a brand whose logo is placed "unknown".
+          logoScale: 'unknown',
+          productPlacement: 'not visible',
+          headlinePlacement: null,
+          headlineCase: '',
+          fonts: ['geometric sans'],
+          paletteHex: ['#0b5240'],
+          safeArea: null,
+        },
+      },
+      'Rampur',
+    );
+
+    const attributes = facts.map((f) => f.attribute);
+    assert.ok(attributes.includes('logo placement'));
+    assert.ok(attributes.includes('font'));
+    assert.ok(!attributes.includes('logo scale'), '"unknown" was stored as a fact');
+    assert.ok(!attributes.includes('product placement'), '"not visible" was stored as a fact');
+    assert.ok(!attributes.includes('headline placement'));
+    assert.ok(facts.every((f) => f.brand === 'Rampur'), 'design facts lost their brand');
+  });
+});
+
 describe('the calendar', () => {
   /** A date a given number of days from today, as the calendar stores them. */
   function inDays(days: number): string {

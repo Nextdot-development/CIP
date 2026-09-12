@@ -69,6 +69,18 @@ export class FakeBrainProvider implements BrainProvider {
         logoPresent: digest.charCodeAt(0) % 2 === 0,
         colours: [colour],
         typography: [],
+        // Derived from the bytes like everything else here, so the same image
+        // always lays out the same way and a test can assert on it.
+        design: {
+          logoPlacement: pick(digest, 12, ['top-left', 'top-right', 'bottom-centre', 'centred']),
+          logoScale: pick(digest, 14, ['small', 'about a quarter', 'dominant']),
+          productPlacement: pick(digest, 16, ['centred', 'right third', 'left third']),
+          headlinePlacement: pick(digest, 18, ['upper third', 'lower third', 'centred']),
+          headlineCase: pick(digest, 20, ['all caps', 'title case', 'sentence case']),
+          fonts: [pick(digest, 22, ['geometric sans', 'high-contrast serif', 'script'])],
+          paletteHex: [colour],
+          safeArea: null,
+        },
         composition,
         background: pick(digest, 12, ['plain', 'textured', 'gradient']),
         lighting,

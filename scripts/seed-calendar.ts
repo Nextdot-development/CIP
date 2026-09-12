@@ -112,6 +112,71 @@ const SUGGESTED: NewOccasion[] = [
   },
 ];
 
+/**
+ * India.
+ *
+ * Three of these are the most important dates on an Indian alcobev calendar
+ * and none of them is an occasion: Republic Day, Independence Day and Gandhi
+ * Jayanti are dry days in every state and union territory, when alcohol sales
+ * are banned outright. Filing them as holidays and letting CIP offer to make a
+ * post would be worse than not having the dates at all, because it would look
+ * like advice.
+ *
+ * Individual states add their own - Maharashtra and Delhi run to nearly thirty
+ * - and five states are dry every day of the year. Those are not here, because
+ * a national list cannot be state-accurate and a half-right compliance list is
+ * more dangerous than none.
+ */
+const INDIA: NewOccasion[] = [
+  { occasion: 'Republic Day', market: 'India', startsOn: '2026-01-26', kind: 'restricted', languages: EN,
+    note: 'National dry day. Alcohol sales banned across every state and union territory.' },
+  { occasion: 'Holi', market: 'India', startsOn: '2026-03-04', kind: 'public_holiday', languages: EN },
+  { occasion: 'Independence Day', market: 'India', startsOn: '2026-08-15', kind: 'restricted', languages: EN,
+    note: 'National dry day. Alcohol sales banned across every state and union territory.' },
+  { occasion: 'Gandhi Jayanti', market: 'India', startsOn: '2026-10-02', kind: 'restricted', languages: EN,
+    note: 'National dry day. Alcohol sales banned across every state and union territory.' },
+  { occasion: 'Dussehra', market: 'India', startsOn: '2026-10-20', kind: 'public_holiday', languages: EN },
+  { occasion: 'Diwali', market: 'India', startsOn: '2026-11-08', kind: 'public_holiday', languages: EN,
+    note: 'The gifting peak of the Indian year. Packs and gift cartons are decided months before this date.' },
+  { occasion: 'Diwali gifting season', market: 'India', startsOn: '2026-09-15', endsOn: '2026-11-08',
+    kind: 'season', languages: EN,
+    note: 'Not a day. The run-up is when gifting packs ship, and it starts about eight weeks out.' },
+  { occasion: 'Christmas Day', market: 'India', startsOn: '2026-12-25', kind: 'public_holiday', languages: EN },
+  { occasion: "New Year's Eve", market: 'India', startsOn: '2026-12-31', kind: 'observance', languages: EN },
+];
+
+/**
+ * Europe.
+ *
+ * Europe is not a country and this is the weakest list here. Every date below
+ * holds across most of western Europe; anything national - Bastille Day, the
+ * German unity day, the Spanish fiestas - cannot go on a list headed "Europe"
+ * without being wrong somewhere. Splitting this market into the countries
+ * Radico actually sells into is what would make it useful.
+ */
+const EUROPE: NewOccasion[] = [
+  { occasion: 'Easter Sunday', market: 'Europe', startsOn: '2026-04-05', kind: 'observance', languages: EN },
+  { occasion: 'Easter Monday', market: 'Europe', startsOn: '2026-04-06', kind: 'public_holiday', languages: EN },
+  { occasion: 'May Day', market: 'Europe', startsOn: '2026-05-01', kind: 'public_holiday', languages: EN },
+  { occasion: 'Black Friday', market: 'Europe', startsOn: '2026-11-27', kind: 'observance', languages: EN },
+  { occasion: 'Christmas gifting season', market: 'Europe', startsOn: '2026-11-01', endsOn: '2026-12-24',
+    kind: 'season', languages: EN,
+    note: 'Duty free and travel retail decide their Christmas ranges far earlier than this.' },
+  { occasion: 'Christmas Eve', market: 'Europe', startsOn: '2026-12-24', kind: 'observance', languages: EN },
+  { occasion: 'Christmas Day', market: 'Europe', startsOn: '2026-12-25', kind: 'public_holiday', languages: EN },
+  { occasion: "New Year's Eve", market: 'Europe', startsOn: '2026-12-31', kind: 'observance', languages: EN },
+];
+
+/** Nigeria, beyond the three already suggested alongside the West Africa sheet. */
+const NIGERIA: NewOccasion[] = [
+  { occasion: "New Year's Day", market: 'Nigeria', startsOn: '2026-01-01', kind: 'public_holiday', languages: EN },
+  { occasion: 'Good Friday', market: 'Nigeria', startsOn: '2026-04-03', kind: 'public_holiday', languages: EN },
+  { occasion: 'Easter Monday', market: 'Nigeria', startsOn: '2026-04-06', kind: 'public_holiday', languages: EN },
+  { occasion: "Workers' Day", market: 'Nigeria', startsOn: '2026-05-01', kind: 'public_holiday', languages: EN },
+  { occasion: 'Christmas Day', market: 'Nigeria', startsOn: '2026-12-25', kind: 'public_holiday', languages: EN },
+  { occasion: 'Boxing Day', market: 'Nigeria', startsOn: '2026-12-26', kind: 'public_holiday', languages: EN },
+];
+
 async function main(): Promise<void> {
   const slug = process.argv[2];
   if (!slug || slug.startsWith('--')) {
@@ -135,15 +200,22 @@ async function main(): Promise<void> {
   const all = [
     ...FROM_SHEET.map((o) => ({ ...o, source: 'imported' as const })),
     ...SUGGESTED.map((o) => ({ ...o, source: 'suggested' as const })),
+    ...INDIA.map((o) => ({ ...o, source: 'suggested' as const })),
+    ...EUROPE.map((o) => ({ ...o, source: 'suggested' as const })),
+    ...NIGERIA.map((o) => ({ ...o, source: 'suggested' as const })),
   ];
 
-  console.log(`\n${row.name} — ${FROM_SHEET.length} from the sheet, ${SUGGESTED.length} suggested\n`);
+  const suggested = all.length - FROM_SHEET.length;
+  console.log(`\n${row.name} — ${FROM_SHEET.length} from the sheet, ${suggested} found and suggested\n`);
   for (const occasion of all) {
     const span = occasion.endsOn && occasion.endsOn !== occasion.startsOn
       ? `${occasion.startsOn} to ${occasion.endsOn}`
       : occasion.startsOn;
-    const mark = occasion.source === 'suggested' ? '+' : ' ';
-    console.log(`  ${mark} ${span.padEnd(24)} ${(occasion.market ?? 'everywhere').padEnd(13)} ${occasion.occasion}`);
+    const mark = occasion.kind === 'restricted' ? '!' : occasion.source === 'suggested' ? '+' : ' ';
+    console.log(
+      `  ${mark} ${span.padEnd(24)} ${(occasion.market ?? 'everywhere').padEnd(13)} ${occasion.occasion}` +
+        (occasion.kind === 'restricted' ? '   [make nothing]' : ''),
+    );
   }
 
   if (!APPLY) {

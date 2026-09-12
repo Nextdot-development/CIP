@@ -154,7 +154,7 @@ const ASSET_SCHEMA = {
       required: [
         'objects', 'products', 'brandElements', 'logoPresent', 'colours',
         'typography', 'composition', 'background', 'lighting', 'style',
-        'mood', 'contentType',
+        'mood', 'contentType', 'design',
       ],
       properties: {
         objects: { type: 'array', items: { type: 'string' } },
@@ -169,6 +169,39 @@ const ASSET_SCHEMA = {
         style: { type: 'string' },
         mood: { type: 'string' },
         contentType: { type: 'string' },
+        /**
+         * Where things sit, and in what.
+         *
+         * The rest of this schema says what is in a picture; this says how it
+         * was laid out. "logoPresent: true" told CIP a logo exists and nothing
+         * about where a designer put it, how big it ran, or what typeface the
+         * headline was set in - which is most of what a brand's rules are
+         * actually about.
+         *
+         * Fixed field names, unlike the free-form facts below. The Brain
+         * invents a fresh attribute name for every observation, so the same
+         * thing came back as "logo or emblem visible", "logo placement" and
+         * "brand mark position" and nothing could ever be compared across two
+         * assets. These names never change, so they can be.
+         */
+        design: {
+          type: 'object',
+          additionalProperties: false,
+          required: [
+            'logoPlacement', 'logoScale', 'productPlacement', 'headlinePlacement',
+            'headlineCase', 'fonts', 'paletteHex', 'safeArea',
+          ],
+          properties: {
+            logoPlacement: { type: ['string', 'null'] },
+            logoScale: { type: ['string', 'null'] },
+            productPlacement: { type: ['string', 'null'] },
+            headlinePlacement: { type: ['string', 'null'] },
+            headlineCase: { type: ['string', 'null'] },
+            fonts: { type: 'array', items: { type: 'string' } },
+            paletteHex: { type: 'array', items: { type: 'string' } },
+            safeArea: { type: ['string', 'null'] },
+          },
+        },
       },
     },
     facts: FACT_SCHEMA,
@@ -371,6 +404,15 @@ export class OpenAIBrainProvider implements BrainProvider {
       {
         type: 'text',
         text:
+          'Fill in `design` from the layout itself, not from what would be usual. ' +
+          'Placements are stated as a position on the canvas - "top-left", "lower third ' +
+          'centred", "bottom-right corner" - and a scale is how much of the width it ' +
+          'takes: "small", "about a quarter", "dominant". paletteHex holds actual hex ' +
+          'values read off the picture, most prominent first, and is empty if you cannot ' +
+          'read them rather than approximated. fonts describes what the type actually is ' +
+          '- "serif, high contrast, all caps", "geometric sans" - naming a typeface only ' +
+          'if you genuinely recognise it. Any field you cannot see is null, and null is a ' +
+          'better answer than a plausible one.\n\n' +
           `Analyse this brand asset named "${input.filename}". Describe only what is ` +
           'actually visible. Do not guess at a brand, product or campaign that is not ' +
           'shown. Leave a field empty rather than inventing a value. Extract any text ' +

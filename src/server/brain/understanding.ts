@@ -14,7 +14,7 @@ import {
   BRAIN_LIMITS,
   BrainFailed,
 } from './providers/types';
-import type { AssetAnalysis, BrandRoster } from './providers/types';
+import type { AssetAnalysis, AssetFact, BrandRoster } from './providers/types';
 import { needsVisualPass, understandPdfVisually } from './pdfVisual';
 import { profilePdf } from '../drive/extraction/pdfRender';
 import {
@@ -193,6 +193,61 @@ function errorKind(error: unknown): string {
       ? (error.name || error.constructor?.name || 'Error')
       : typeof error;
   return raw.replace(/[^A-Za-z0-9_]/g, '').slice(0, 40) || 'unknown';
+}
+
+/**
+ * The design block, turned into facts CIP can compare across assets.
+ *
+ * These carry fixed attribute names, and that is the entire point. Every other
+ * fact is phrased freshly by the model, so the same observation arrived as
+ * "logo or emblem visible", "logo placement" and "brand mark position" and
+ * nothing could be compared between two assets - on a real roster that meant
+ * 1231 facts of which not one was held by two brands.
+ *
+ * A name here never changes, so forty packshots that all put the logo top-left
+ * accumulate as forty pieces of evidence for one fact rather than forty facts.
+ * Which is what turns "somebody once saw a logo" into "this brand puts its
+ * logo top-left", and it is what a brief needs to say.
+ */
+export function designFacts(structured: Record<string, unknown>, brand: string | null): AssetFact[] {
+  const design = structured.design;
+  if (!design || typeof design !== 'object') return [];
+
+  const block = design as Record<string, unknown>;
+  const facts: AssetFact[] = [];
+
+  /** One stated value, if it was stated. Null is a real answer and is kept out. */
+  const single = (key: string, attribute: string): void => {
+    const raw = block[key];
+    if (typeof raw !== 'string') return;
+    const value = raw.trim();
+    // "unknown" and "not visible" are the model saying null in prose. Storing
+    // them would build evidence for a brand whose logo is placed "unknown".
+    if (value.length < 2 || /^(unknown|none|n\/a|not visible|not applicable)$/i.test(value)) return;
+    facts.push({ section: 'visual', attribute, value: value.slice(0, 160), brand });
+  };
+
+  const many = (key: string, attribute: string, limit: number): void => {
+    const raw = block[key];
+    if (!Array.isArray(raw)) return;
+    for (const item of raw.slice(0, limit)) {
+      if (typeof item !== 'string') continue;
+      const value = item.trim();
+      if (value.length < 2) continue;
+      facts.push({ section: 'visual', attribute, value: value.slice(0, 160), brand });
+    }
+  };
+
+  single('logoPlacement', 'logo placement');
+  single('logoScale', 'logo scale');
+  single('productPlacement', 'product placement');
+  single('headlinePlacement', 'headline placement');
+  single('headlineCase', 'headline case');
+  single('safeArea', 'safe area');
+  many('fonts', 'font', 3);
+  many('paletteHex', 'palette', 6);
+
+  return facts;
 }
 
 /**
@@ -639,7 +694,14 @@ async function store(
 
     // Each claim becomes evidence towards Brand DNA. Counted, never asserted:
     // a fact only becomes something the Brain states once enough assets agree.
-    for (const fact of analysis.facts) {
+    // What the model observed freely, plus the layout read into fixed names.
+    // The second is what makes a rule out of a repeated observation.
+    const everyFact = [
+      ...analysis.facts,
+      ...designFacts(analysis.structured, analysis.facts[0]?.brand ?? null),
+    ];
+
+    for (const fact of everyFact) {
       const factRows = await tx<{ id: string }[]>`
         insert into brand_dna_facts
           (company_id, section, attribute, value, brand, kind, confidence, evidence_count)
