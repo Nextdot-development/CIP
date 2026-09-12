@@ -3,6 +3,7 @@ import { withCompanyScope } from '../db';
 import type { CompanyScope } from '../db';
 import { adminSql } from '../db-admin';
 import { BRAIN_LIMITS } from './providers/types';
+import { recomputeRelations } from './relations';
 
 /**
  * What a company's assets add up to.
@@ -376,6 +377,15 @@ export async function recomputeEverywhere(): Promise<number> {
     };
     const result = await recomputeBrandDna(scope);
     if (result.facts > 0) touched += 1;
+
+    // How the brands relate to each other is drawn from the facts that were
+    // just recomputed, so it is rebuilt here rather than on a timer of its
+    // own. A map that lags the knowledge it describes is worse than none.
+    //
+    // Never allowed to fail the recompute: relations are an extra way of
+    // looking at what CIP knows, and losing Brand DNA because a derived view
+    // of it went wrong would be the wrong trade.
+    await recomputeRelations(scope).catch(() => {});
   }
   return touched;
 }
