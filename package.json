@@ -40,7 +40,8 @@
     "merge": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/merge-company.ts",
     "attribute": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/attribute-facts.ts",
     "calendar": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/seed-calendar.ts",
-    "websites": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/ingest-websites.ts"
+    "websites": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/ingest-websites.ts",
+    "page": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/ingest-page.ts"
   },
   "dependencies": {
     "@google/genai": "^2.21.0",

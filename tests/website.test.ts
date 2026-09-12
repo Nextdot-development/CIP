@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { pageDocument, readableText } from '../src/server/brain/website';
+import { pageDocument, readSavedPage, readableText } from '../src/server/brain/website';
 
 /**
  * Reading a brand's own page.
@@ -66,5 +66,35 @@ describe('what gets stored for a page', () => {
     assert.match(document, /rampursinglemalt\.com\/asava/);
     assert.ok(document.startsWith('Asava - Rampur Distillery'));
     assert.match(document, /Cabernet Sauvignon/);
+  });
+});
+
+describe('a page somebody had to fetch for CIP', () => {
+  it('reads a saved file exactly as it would read one it fetched', async () => {
+    const html =
+      '<html><head><title>Jaisalmer Indian Craft Gin</title></head>' +
+      '<body><script>var w=1;</script><p>Eleven botanicals, four of them Indian.</p>' +
+      '<p>Distilled in Rajasthan and bottled at 43% ABV for the Indian market.</p></body></html>';
+
+    const page = readSavedPage(html, 'https://jaisalmergin.com/');
+
+    assert.equal(page.title, 'Jaisalmer Indian Craft Gin');
+    assert.equal(page.url, 'https://jaisalmergin.com/');
+    assert.match(page.text, /Eleven botanicals/);
+    assert.ok(!page.text.includes('var w'), 'script survived into a supplied page');
+
+    // The address is recorded the same way whether CIP fetched the page or
+    // somebody handed it over. Who did the fetching is the only difference,
+    // and it is written down rather than hidden.
+    assert.match(pageDocument(page), /jaisalmergin\.com/);
+  });
+
+  it('refuses a file with nothing readable in it', async () => {
+    // Almost always a page saved before it had finished drawing itself. A
+    // file with no text in it would look like knowledge CIP has and has not.
+    await assert.rejects(
+      async () => readSavedPage('<html><body><div id="root"></div></body></html>', 'https://x.test/'),
+      /readable text/i,
+    );
   });
 });

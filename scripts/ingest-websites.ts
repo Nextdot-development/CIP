@@ -95,6 +95,12 @@ async function main(): Promise<void> {
       failed += 1;
       const reason = error instanceof PageUnavailable ? error.reason : 'failed';
       console.log(`  ! ${page.url.slice(0, 58).padEnd(60)} ${reason}`);
+      // A site that refuses every request, robots.txt included, is not going
+      // to be talked round by a different header. Save it from a browser and
+      // hand it over instead.
+      if (reason === 'http_403' || reason === 'http_401') {
+        console.log(`      save it from a browser, then: npm run page -- <company> <file> --url ${page.url}`);
+      }
       continue;
     }
 

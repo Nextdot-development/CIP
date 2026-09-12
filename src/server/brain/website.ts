@@ -165,6 +165,34 @@ export async function fetchPage(url: string): Promise<FetchedPage> {
 }
 
 /**
+ * Reads a page somebody supplied, rather than one CIP fetched.
+ *
+ * Some sites refuse anything that is not a browser. Jaisalmer's sits behind
+ * Cloudflare, which answers 403 to every request including the one for
+ * robots.txt — a blanket rule, not a header CIP could satisfy. Dressing a
+ * request up as Chrome would defeat a control the site owner deliberately
+ * switched on, which is not a thing to do to get a marketing page.
+ *
+ * So the page is supplied instead: opened in a browser by somebody who is
+ * allowed to, saved, and handed over. The same reduction, the same storage,
+ * the same provenance — the only difference is who did the fetching, and that
+ * difference is recorded rather than hidden.
+ *
+ * This is also the answer for anything behind a login, which no fetch was ever
+ * going to reach.
+ */
+export function readSavedPage(html: string, url: string): FetchedPage {
+  const text = readableText(html).slice(0, LIMITS.maxChars);
+  if (text.length < 120) {
+    throw new PageUnavailable(
+      'That file has almost no readable text in it.',
+      'no_text',
+    );
+  }
+  return { url, title: titleOf(html, url), text };
+}
+
+/**
  * What gets stored for the page.
  *
  * The address is kept at the top of the text rather than only in the filename,
