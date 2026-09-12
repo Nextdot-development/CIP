@@ -279,6 +279,13 @@ export type UploadInput = {
   filename: string;
   mimeType: string | null;
   body: Buffer;
+  /**
+   * Where this came from. Defaults to the CIP Drive, which is what an upload
+   * through the browser is; a page fetched from the brand's own site says so,
+   * because a brief drawn from a product page and one drawn from a packshot
+   * are different claims and somebody reading it needs to tell them apart.
+   */
+  sourceType?: 'cip_drive' | 'website';
 };
 
 export async function uploadFile(scope: CompanyScope, input: UploadInput): Promise<D.DriveFileDTO> {
@@ -311,10 +318,11 @@ export async function uploadFile(scope: CompanyScope, input: UploadInput): Promi
       const rows = await tx<FileRow[]>`
         insert into drive_files (
           id, company_id, folder_id, name, original_filename, file_type, mime_type,
-          file_size, checksum_sha256, storage_path, uploaded_by
+          file_size, checksum_sha256, storage_path, uploaded_by, source_type
         ) values (
           ${fileId}, ${scope.companyId}, ${input.folderId}, ${name}, ${input.filename},
-          ${spec.extension}, ${mimeType}, ${input.body.length}, ${checksum}, ${storagePath}, ${scope.userId}
+          ${spec.extension}, ${mimeType}, ${input.body.length}, ${checksum}, ${storagePath},
+          ${scope.userId}, ${input.sourceType ?? 'cip_drive'}
         )
         returning id, name, original_filename, file_type, mime_type, file_size,
                   created_at, updated_at, processing_status, source_type, market,
