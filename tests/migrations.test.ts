@@ -52,15 +52,33 @@ const applyChain = () => migrate(() => {}, { skip: db.skipMigrations });
  * drive_file_chunks and drive_file_embeddings, so that assumption stopped
  * holding the moment Phase 4 landed. The whole schema cannot go stale that way.
  */
-const schemaFingerprint = async () =>
-  (
-    await sql<{ entry: string }[]>`
-      select table_name || '.' || column_name || ':' || data_type as entry
-        from information_schema.columns
-       where table_schema = 'public'
-       order by entry
-    `
-  ).map((r) => r.entry);
+/**
+ * Everything a migration can change and a down migration has to put back.
+ *
+ * Columns are not enough. A migration that only widens a check constraint, or
+ * only adds an index, changes no column at all - so a fingerprint of columns
+ * alone reports "this down migration did nothing" for a correct one, and, far
+ * worse, reports a clean round trip for a down migration that dropped a unique
+ * index and never restored it.
+ */
+const schemaFingerprint = async () => {
+  const columns = await sql<{ entry: string }[]>`
+    select 'col ' || table_name || '.' || column_name || ':' || data_type as entry
+      from information_schema.columns
+     where table_schema = 'public'
+  `;
+  const constraints = await sql<{ entry: string }[]>`
+    select 'chk ' || rel.relname || ' ' || pg_get_constraintdef(con.oid) as entry
+      from pg_constraint con
+      join pg_class rel on rel.oid = con.conrelid
+      join pg_namespace nsp on nsp.oid = rel.relnamespace
+     where nsp.nspname = 'public'
+  `;
+  const indexes = await sql<{ entry: string }[]>`
+    select 'idx ' || indexdef as entry from pg_indexes where schemaname = 'public'
+  `;
+  return [...columns, ...constraints, ...indexes].map((r) => r.entry).sort();
+};
 
 const tableNames = async () =>
   (

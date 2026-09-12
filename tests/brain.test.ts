@@ -781,6 +781,161 @@ describe('context-aware learning', () => {
   });
 });
 
+describe('the Brain disagreeing with itself', () => {
+  /** A fact with a chosen weight of evidence behind it. */
+  async function claim(
+    brand: string,
+    attribute: string,
+    value: string,
+    evidence: number,
+  ): Promise<void> {
+    await adminSql`
+      insert into brand_dna_facts
+        (company_id, section, attribute, value, brand, kind, confidence, evidence_count)
+      values (${mm.companyId}, 'visual', ${attribute}, ${value}, ${brand},
+              'observed', 0.5, ${evidence})
+      on conflict do nothing
+    `;
+  }
+
+  async function statusOf(brand: string, value: string): Promise<string> {
+    const rows = await adminSql<{ status: string }[]>`
+      select status from brand_dna_facts
+       where company_id = ${mm.companyId} and brand = ${brand} and value = ${value}
+    `;
+    return rows[0]?.status ?? 'missing';
+  }
+
+  /**
+   * Enough brands using an attribute one way for its shape to be readable.
+   * A question only one brand has ever answered says nothing about whether it
+   * takes one answer or several.
+   */
+  async function capColourAcrossBrands(): Promise<void> {
+    await claim('B', 'cap colour', 'gold', 2);
+    await claim('C', 'cap colour', 'silver', 1);
+    await claim('D', 'cap colour', 'black', 1);
+  }
+
+  it('retires the weaker of two claims that cannot both be true', async () => {
+    const { resolveContradictions } = await import('../src/server/brain/contradictions');
+    await capColourAcrossBrands();
+    // One bottle, one cap. Four assets against one is a resolved question.
+    await claim('A', 'cap colour', 'gold', 4);
+    await claim('A', 'cap colour', 'black', 1);
+
+    const outcome = await resolveContradictions(mm);
+    assert.ok(outcome.superseded >= 1, 'a claim beaten four to one was left standing');
+
+    assert.equal(await statusOf('A', 'gold'), 'active');
+    assert.equal(await statusOf('A', 'black'), 'superseded');
+  });
+
+  it('sets both aside when the evidence does not settle it', async () => {
+    const { resolveContradictions } = await import('../src/server/brain/contradictions');
+    await claim('B', 'crest', 'lions', 1);
+    await claim('C', 'crest', 'stag', 1);
+    // Three against two is not evidence, it is a thing CIP does not know.
+    // Declaring the leader the winner is how a confident wrong answer is made.
+    await claim('A', 'crest', 'lions rampant', 3);
+    await claim('A', 'crest', 'eagles displayed', 2);
+
+    await resolveContradictions(mm);
+
+    assert.equal(await statusOf('A', 'lions rampant'), 'contested');
+    assert.equal(await statusOf('A', 'eagles displayed'), 'contested');
+  });
+
+  it('keeps a contested claim out of the brief entirely', async () => {
+    const { resolveContradictions } = await import('../src/server/brain/contradictions');
+    await claim('B', 'crest', 'lions', 1);
+    await claim('C', 'crest', 'stag', 1);
+    await claim('A', 'crest', 'lions rampant', 3);
+    await claim('A', 'crest', 'eagles displayed', 2);
+    await resolveContradictions(mm);
+
+    const facts = await brandDna.readBrandDna(mm, { minEvidence: 1, limit: 50, brand: 'A' });
+    const values = facts.map((f) => f.value);
+    assert.ok(
+      !values.includes('lions rampant') && !values.includes('eagles displayed'),
+      'a question the assets answer two ways reached the generator anyway',
+    );
+  });
+
+  it('leaves an attribute that is meant to hold several values alone', async () => {
+    const { resolveContradictions } = await import('../src/server/brain/contradictions');
+    // A palette is a list. Every brand holds several, so nothing here is a
+    // disagreement - and retiring half of it would be the worst kind of bug,
+    // because the brief would still look complete.
+    for (const [brand, first, second] of [
+      ['A', 'deep navy', 'warm gold'],
+      ['B', 'oxblood', 'cream'],
+      ['C', 'forest green', 'white'],
+    ] as const) {
+      await claim(brand, 'colour palette', first, 3);
+      await claim(brand, 'colour palette', second, 2);
+    }
+
+    await resolveContradictions(mm);
+
+    assert.equal(await statusOf('A', 'deep navy'), 'active');
+    assert.equal(await statusOf('A', 'warm gold'), 'active');
+  });
+
+  it('brings a claim back when whatever beat it loses its evidence', async () => {
+    const { resolveContradictions } = await import('../src/server/brain/contradictions');
+    await capColourAcrossBrands();
+    await claim('A', 'cap colour', 'gold', 4);
+    await claim('A', 'cap colour', 'black', 1);
+    await resolveContradictions(mm);
+    assert.equal(await statusOf('A', 'black'), 'superseded');
+
+    // The assets behind the winner go away, so the recompute drops its
+    // evidence. Knowledge that only ever moves one way is not learning.
+    await adminSql`
+      update brand_dna_facts set evidence_count = 1
+       where company_id = ${mm.companyId} and brand = 'A' and value = 'gold'
+    `;
+    await resolveContradictions(mm);
+
+    assert.notEqual(await statusOf('A', 'black'), 'superseded');
+  });
+
+  it('never touches a fact a person rejected', async () => {
+    const { resolveContradictions } = await import('../src/server/brain/contradictions');
+    await capColourAcrossBrands();
+    await claim('A', 'cap colour', 'gold', 4);
+    await claim('A', 'cap colour', 'black', 1);
+    await adminSql`
+      update brand_dna_facts set status = 'rejected'
+       where company_id = ${mm.companyId} and brand = 'A' and value = 'black'
+    `;
+
+    await resolveContradictions(mm);
+
+    // A rejection is a decision, not an inference, and nothing automatic gets
+    // to overturn it - in either direction.
+    assert.equal(await statusOf('A', 'black'), 'rejected');
+  });
+
+  it('says what it cannot decide, so somebody can settle it', async () => {
+    const { resolveContradictions, disagreements } = await import(
+      '../src/server/brain/contradictions'
+    );
+    await claim('B', 'crest', 'lions', 1);
+    await claim('C', 'crest', 'stag', 1);
+    await claim('A', 'crest', 'lions rampant', 3);
+    await claim('A', 'crest', 'eagles displayed', 2);
+    await resolveContradictions(mm);
+
+    const open = await disagreements(mm);
+    const crest = open.find((d) => d.brand === 'A');
+    assert.ok(crest, 'CIP set two claims aside and could not say which');
+    assert.equal(crest.values.length, 2);
+    assert.equal(crest.values[0]!.value, 'lions rampant', 'best supported first');
+  });
+});
+
 describe('THE BOUNDARY: asked for one brand, only that brand is read', () => {
   /** A file belonging to a brand, understood and embedded like any other. */
   async function brandFile(brand: string | null, name: string, summary: string): Promise<string> {

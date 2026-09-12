@@ -4,6 +4,7 @@ import type { CompanyScope } from '../db';
 import { adminSql } from '../db-admin';
 import { BRAIN_LIMITS } from './providers/types';
 import { recomputeRelations } from './relations';
+import { resolveContradictions } from './contradictions';
 
 /**
  * What a company's assets add up to.
@@ -377,6 +378,11 @@ export async function recomputeEverywhere(): Promise<number> {
     };
     const result = await recomputeBrandDna(scope);
     if (result.facts > 0) touched += 1;
+
+    // Now that the evidence counts are current, the facts are judged against
+    // each other. Before this, CIP could hold a cap that is gold and a cap
+    // that is black and put both in one brief.
+    await resolveContradictions(scope).catch(() => {});
 
     // How the brands relate to each other is drawn from the facts that were
     // just recomputed, so it is rebuilt here rather than on a timer of its
