@@ -179,6 +179,8 @@ beforeEach(async () => {
   // The roster too: a case that adds brands would otherwise leave the next one
   // being asked which brand, about brands it never created.
   await adminSql`delete from company_brands`;
+  // The calendar too, or one case's dates become another's "coming up".
+  await adminSql`delete from content_calendar`;
 });
 
 after(async () => {
@@ -778,6 +780,120 @@ describe('context-aware learning', () => {
       planner.promptFromBrief(second.brief).includes('Keep the text light.'),
       'the lesson did not reach the prompt',
     );
+  });
+});
+
+describe('the calendar', () => {
+  /** A date a given number of days from today, as the calendar stores them. */
+  function inDays(days: number): string {
+    const when = new Date();
+    when.setDate(when.getDate() + days);
+    return when.toISOString().slice(0, 10);
+  }
+
+  it('shows what is coming and leaves behind what is gone', async () => {
+    const calendar = await import('../src/server/brain/calendar');
+
+    await calendar.addOccasion(mm, {
+      occasion: 'Independence Day', market: 'Nigeria',
+      startsOn: inDays(19), kind: 'public_holiday', languages: ['English'],
+    });
+    await calendar.addOccasion(mm, {
+      occasion: 'Republic Day', market: 'Ghana', startsOn: inDays(-40), kind: 'public_holiday',
+    });
+
+    const soon = await calendar.upcoming(mm, { withinDays: 90 });
+    const names = soon.map((o) => o.occasion);
+
+    assert.ok(names.includes('Independence Day'));
+    assert.ok(!names.includes('Republic Day'), 'a date that has passed is not something to plan for');
+    assert.equal(soon.find((o) => o.occasion === 'Independence Day')!.daysAway, 19);
+  });
+
+  it('keeps a season that has already started', async () => {
+    const calendar = await import('../src/server/brain/calendar');
+    // Somebody halfway through December is exactly who is making December work.
+    await calendar.addOccasion(mm, {
+      occasion: 'Detty December', market: 'West Africa',
+      startsOn: inDays(-8), endsOn: inDays(22), kind: 'season',
+    });
+
+    const soon = await calendar.upcoming(mm, { withinDays: 90 });
+    assert.ok(
+      soon.some((o) => o.occasion === 'Detty December'),
+      'a season already running dropped off the list on the day it began',
+    );
+  });
+
+  it('shows a market its own dates and the ones that belong to everyone', async () => {
+    const calendar = await import('../src/server/brain/calendar');
+    await calendar.addOccasion(mm, { occasion: 'Founders Day', market: 'Ghana', startsOn: inDays(9) });
+    await calendar.addOccasion(mm, { occasion: 'Nigeria Independence', market: 'Nigeria', startsOn: inDays(19) });
+    await calendar.addOccasion(mm, { occasion: 'New Year', market: null, startsOn: inDays(30) });
+
+    const nigeria = (await calendar.upcoming(mm, { withinDays: 90, market: 'Nigeria' }))
+      .map((o) => o.occasion);
+
+    assert.ok(nigeria.includes('Nigeria Independence'));
+    // A date with no market belongs everywhere, exactly as a fact with no brand
+    // belongs to every brand.
+    assert.ok(nigeria.includes('New Year'));
+    assert.ok(!nigeria.includes('Founders Day'), "another country's holiday is not this market's");
+  });
+
+  it('does not put the same holiday on twice', async () => {
+    const calendar = await import('../src/server/brain/calendar');
+    const entry = { occasion: 'Christmas Day', market: 'West Africa', startsOn: inDays(40) };
+
+    await calendar.addOccasion(mm, { ...entry, languages: ['English'] });
+    await calendar.addOccasion(mm, { ...entry, languages: ['English', 'French'] });
+
+    const rows = await adminSql`
+      select id, languages from content_calendar
+       where company_id = ${mm.companyId} and occasion = 'Christmas Day'
+    `;
+    assert.equal(rows.length, 1, 'importing a year twice left two of each');
+    assert.deepEqual(rows[0]!.languages, ['English', 'French'], 'the second import should correct the first');
+  });
+
+  it('lets an import fill an empty note but never overwrite a typed one', async () => {
+    const calendar = await import('../src/server/brain/calendar');
+    const entry = { occasion: 'Black Friday', market: 'West Africa', startsOn: inDays(60) };
+
+    await calendar.addOccasion(mm, { ...entry, note: 'Run the gifting pack.', source: 'manual' });
+    await calendar.addOccasion(mm, { ...entry, note: 'Imported from the 2026 sheet.', source: 'imported' });
+
+    const rows = await adminSql`
+      select note from content_calendar
+       where company_id = ${mm.companyId} and occasion = 'Black Friday'
+    `;
+    assert.equal(rows[0]!.note, 'Run the gifting pack.', 'a person wrote that, and an import overwrote it');
+  });
+
+  it('turns an occasion into a request the planner can read', async () => {
+    const calendar = await import('../src/server/brain/calendar');
+    await calendar.addOccasion(mm, {
+      occasion: 'Independence Day', market: 'Nigeria', brand: '8PM',
+      startsOn: inDays(19), languages: ['English'],
+    });
+
+    const [occasion] = await calendar.upcoming(mm, { withinDays: 30, market: 'Nigeria' });
+    assert.ok(occasion, 'the occasion just added was not on the calendar');
+    const request = calendar.requestFor(occasion);
+
+    // The market and the brand have to survive into the request, because they
+    // are what make the planner read the right knowledge and no other.
+    assert.match(request, /Independence Day/);
+    assert.match(request, /Nigeria/);
+    assert.match(request, /8PM/);
+  });
+
+  it('one company cannot see another company calendar', async () => {
+    const calendar = await import('../src/server/brain/calendar');
+    await calendar.addOccasion(mm, { occasion: 'Diwali', market: 'India', startsOn: inDays(25) });
+
+    const theirs = await calendar.upcoming(nh, { withinDays: 90 });
+    assert.equal(theirs.length, 0);
   });
 });
 

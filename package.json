@@ -38,7 +38,8 @@
     "ingest": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/ingest-folder.ts",
     "unlearn": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/move-files.ts",
     "merge": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/merge-company.ts",
-    "attribute": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/attribute-facts.ts"
+    "attribute": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/attribute-facts.ts",
+    "calendar": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/seed-calendar.ts"
   },
   "dependencies": {
     "@google/genai": "^2.21.0",

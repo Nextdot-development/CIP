@@ -38,10 +38,7 @@ alter table brand_dna_facts
   add constraint brand_dna_facts_status_check
   check (status in ('active', 'superseded', 'contested', 'rejected'));
 
-comment on column brand_dna_facts.status is
-  'active = CIP will say it. superseded = a better-evidenced claim replaced it. '
-  'contested = two claims that cannot both be true, evenly supported. '
-  'rejected = a person said no; nothing automatic ever changes this.';
+comment on column brand_dna_facts.status is 'active = CIP will say it. superseded = a better-evidenced claim replaced it. contested = two claims that cannot both be true, evenly supported. rejected = a person said no, and nothing automatic ever changes it.';
 
 -- Finding the facts that disagree, per brand and attribute, is what the
 -- resolver does on every pass and what the Trust page reads back.
