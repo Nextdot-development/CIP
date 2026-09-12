@@ -5,9 +5,12 @@ import type { MediaGenerationDTO } from '../media/types';
 import { ANALYSABLE_IMAGE_TYPES, BRAIN_LIMITS } from './providers/types';
 import { linkBriefToGeneration, planGeneration, promptFromBrief } from './planner';
 import type { PlannedGeneration } from './planner';
-import { FORMAT_LABELS, closestAspectRatio } from './providers/types';
+import { FORMAT_ASPECT, FORMAT_LABELS, closestAspectRatio } from './providers/types';
 import type { CreativeFormat } from './providers/types';
 import { imageGenerationProvider, videoGenerationProvider } from '../media/providers';
+import { MEDIA_LIMITS } from '../media/providers/types';
+import { requestedShape, sameShape } from '../media/reframe';
+import type { TargetShape } from '../media/reframe';
 
 /**
  * Generating with the Brain in front.
@@ -51,6 +54,13 @@ export type BrainPlanSummary = {
   aspectRatio: string | null;
   /** False when the generator has nothing the right shape for this format. */
   exactShape: boolean;
+  /**
+   * The shape handed back, when it is not the one the generator makes.
+   *
+   * Set whenever the picture is cut to size after being generated, so the UI
+   * can say what was delivered rather than what was asked of the vendor.
+   */
+  deliveredShape: string | null;
   platform: string | null;
   campaign: string | null;
   product: string | null;
@@ -98,7 +108,7 @@ export async function generateWithBrain(
     market: input.market ?? null,
   });
 
-  const summary = summarise(plan, shapeFor(input, plan.brief.format));
+  const summary = summarise(plan, shapeFor(input, plan.brief.format, input.requestText));
   input.onPlanned?.(summary, plan.briefId);
 
   if (plan.clarificationQuestion) {
@@ -116,14 +126,19 @@ export async function generateWithBrain(
   // accept. A PDF that informed the brief is not something to attach to it.
   const referenceFileIds = plan.references
     .filter((reference) => isUsableReference(reference.fileType))
-    .slice(0, BRAIN_LIMITS.maxReferences)
+    // Never more than the generator will take. These were two independent
+    // numbers — the Brain attached four, the media layer accepted three — and
+    // the mismatch threw before a record was written, so a request produced a
+    // brief, no picture, and nothing that said why. What a generator accepts
+    // is a fact about the generator, so that is the one that wins.
+    .slice(0, Math.min(BRAIN_LIMITS.maxReferences, MEDIA_LIMITS.maxReferenceImages))
     .map((reference) => reference.fileId);
 
   // The shape the brief asked for, mapped onto what the chosen generator can
   // actually produce. A caller that named a ratio keeps it — this only fills in
   // the gap where nobody said, which used to mean a square whatever was asked
   // for: "banner" and "story" both came back 1024x1024.
-  const shape = shapeFor(input, plan.brief.format);
+  const shape = shapeFor(input, plan.brief.format, input.requestText);
 
   const generation =
     input.mediaType === 'image'
@@ -136,6 +151,9 @@ export async function generateWithBrain(
           aspectRatio: input.aspectRatio ?? shape.aspectRatio,
           imageSize: input.imageSize,
           idempotencyKey: input.idempotencyKey,
+          // The generator makes the nearest shape it has; this is the one the
+          // person asked for, and the one that comes back.
+          deliverShape: shape.deliver,
         })
       : await generateVideo(scope, {
           prompt,
@@ -152,18 +170,37 @@ export async function generateWithBrain(
   return { status: 'generated', generation, briefId: plan.briefId, plan: summary };
 }
 
-type ChosenShape = { aspectRatio: string | null; exact: boolean };
+type ChosenShape = {
+  /** The shape the generator is asked for, from its own list. */
+  aspectRatio: string | null;
+  /** Whether that is the shape that was actually wanted. */
+  exact: boolean;
+  /** The shape to deliver, when it differs from what the generator makes. */
+  deliver: TargetShape | null;
+};
 
 /**
- * The shape to ask the generator for.
+ * The shape to ask the generator for, and the shape to hand back.
  *
- * Only consulted when the caller named no ratio of its own. Videos and images
- * have different lists of what they will accept, so the format is matched
- * against whichever one is about to be used rather than against a fixed table.
+ * Two different things, and conflating them was the bug. A generator makes a
+ * handful of shapes; a person asks for whatever their placement needs. Asked
+ * for "ar 4:5", CIP ignored the words entirely, made a 3:2 from the format,
+ * and printed "crop it to size afterwards" — handing its own job back.
+ *
+ * Now the request is read for a shape, the nearest available one is generated,
+ * and the result is cut to what was asked for. A shape named in the request
+ * beats the one implied by the format, because it is the more specific thing
+ * somebody said.
  */
-function shapeFor(input: BrainGenerateInput, format: CreativeFormat): ChosenShape {
+function shapeFor(
+  input: BrainGenerateInput,
+  format: CreativeFormat,
+  requestText: string,
+): ChosenShape {
+  // A caller that named a ratio through the API has already decided; nothing
+  // here second-guesses it.
   if (typeof input.aspectRatio === 'string' || typeof input.resolution === 'string') {
-    return { aspectRatio: null, exact: true };
+    return { aspectRatio: null, exact: true, deliver: null };
   }
 
   const supported =
@@ -171,7 +208,55 @@ function shapeFor(input: BrainGenerateInput, format: CreativeFormat): ChosenShap
       ? imageGenerationProvider(input.provider as never).aspectRatios
       : videoGenerationProvider().resolutions;
 
-  return closestAspectRatio(format, supported);
+  const asked = requestedShape(requestText);
+
+  if (asked) {
+    const nearest = nearestSupported(asked.ratio, supported);
+    return {
+      aspectRatio: nearest,
+      // Exact either way now: what comes back is the shape that was asked for,
+      // whether the generator could make it directly or it had to be cut.
+      // Video cannot be cut here, so it is only exact when it truly matches.
+      exact: input.mediaType === 'image' || nearest === null || sameShape(ratioOf(nearest) ?? asked.ratio, asked.ratio),
+      // Only images are re-cut. Re-encoding a video to crop it is a different
+      // job with its own costs, and claiming it here would be a lie.
+      deliver: input.mediaType === 'image' ? asked : null,
+    };
+  }
+
+  const fromFormat = closestAspectRatio(format, supported);
+  if (input.mediaType !== 'image' || fromFormat.exact || !fromFormat.aspectRatio) {
+    return { ...fromFormat, deliver: null };
+  }
+
+  // The format wants proportions the generator has not got — a 3:1 banner
+  // against a generator whose widest is 3:2. Cut it to the format's own shape
+  // rather than returning something a third as wide and saying so.
+  const want = FORMAT_ASPECT[format].ratio;
+  return {
+    aspectRatio: fromFormat.aspectRatio,
+    exact: true,
+    deliver: { ratio: want, label: FORMAT_ASPECT[format].canvas, pixels: null },
+  };
+}
+
+/** The ratio a "w:h" string names, or null if it does not name one. */
+function ratioOf(value: string): number | null {
+  const [w, h] = value.split(':').map(Number);
+  return w && h ? w / h : null;
+}
+
+/** Whichever of the generator's shapes is closest, so the crop takes least. */
+function nearestSupported(want: number, supported: readonly string[]): string | null {
+  let best: { value: string; ratio: number } | null = null;
+  for (const option of supported) {
+    const ratio = ratioOf(option);
+    if (ratio === null) continue;
+    if (best === null || Math.abs(Math.log(ratio / want)) < Math.abs(Math.log(best.ratio / want))) {
+      best = { value: option, ratio };
+    }
+  }
+  return best?.value ?? null;
 }
 
 function summarise(plan: PlannedGeneration, shape?: ChosenShape): BrainPlanSummary {
@@ -184,6 +269,7 @@ function summarise(plan: PlannedGeneration, shape?: ChosenShape): BrainPlanSumma
     // against a generator whose widest is 3:2. Said out loud rather than
     // returning something a third as wide as was asked for.
     exactShape: shape?.exact ?? true,
+    deliveredShape: shape?.deliver?.label ?? null,
     platform: plan.brief.platform,
     campaign: plan.brief.campaign,
     product: plan.brief.product,

@@ -173,6 +173,14 @@ export const MEDIA_LIMITS = {
   maxPromptChars: 4_000,
   maxReferenceImages: 3,
   maxReferenceBytes: 8 * 1024 * 1024,
+  /**
+   * The longest edge a reference image is sent at.
+   *
+   * An oversized reference is scaled to fit rather than refused. A brand's own
+   * library is print resolution, and a generator shown a 9 MB packshot works
+   * from the same picture a 2000-pixel one shows it.
+   */
+  referenceEdgePixels: 2000,
   maxAssetBytes: 200 * 1024 * 1024,
   requestTimeoutMs: 120_000,
   /** Attempts before a generation is left failed. */

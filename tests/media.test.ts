@@ -514,6 +514,87 @@ describe('one company cannot reach another', () => {
     assert.equal(rows[0]!.n, 0);
   });
 
+  it('still makes the picture when a reference image cannot be read', async () => {
+    // A file read without being kept has no bytes here by design: it was too
+    // large for the object store, so CIP looked at it and stored what it
+    // learnt instead. That used to abort the whole generation before a record
+    // existed, so nothing was made and nothing explained why.
+    const good = await drive.uploadFile(mm, {
+      folderId: null,
+      filename: 'kept.png',
+      mimeType: 'image/png',
+      body: (await fakeImage.generate({ prompt: 'kept', references: [] })).assets[0]!.bytes,
+    });
+    const unkept = await drive.uploadFile(mm, {
+      folderId: null,
+      filename: 'not-kept.png',
+      mimeType: 'image/png',
+      body: (await fakeImage.generate({ prompt: 'unkept', references: [] })).assets[0]!.bytes,
+    });
+    await adminSql`
+      update drive_files set storage_path = null, bytes_retained = false
+       where id = ${unkept.id} and company_id = ${mm.companyId}
+    `;
+
+    const generation = await media.generateImage(mm, {
+      prompt: 'a poster using what we have',
+      referenceFileIds: [good.id, unkept.id],
+    });
+
+    assert.equal(generation.status, 'completed', 'one unreadable aid stopped the whole request');
+
+    // A picture made with one reference instead of two looks different, so it
+    // is recorded rather than silently dropped.
+    const rows = await adminSql<{ input_metadata: Record<string, unknown> }[]>`
+      select input_metadata from media_generations where id = ${generation.id}
+    `;
+    assert.equal(rows[0]!.input_metadata.referenceCount, 1);
+    assert.equal(rows[0]!.input_metadata.referencesSkipped, 1);
+  });
+
+  it('scales an oversized reference down rather than refusing it', async () => {
+    // A brand's own library is print resolution. Refusing a 9 MB packshot is
+    // the same mistake as refusing to look at a 90 MB bottle shot.
+    const { createCanvas } = await import('@napi-rs/canvas');
+    const canvas = createCanvas(3000, 3000);
+    const ctx = canvas.getContext('2d');
+    const noise = ctx.createImageData(3000, 3000);
+
+    // Genuinely incompressible, and the same every run. A periodic pattern
+    // looks like noise and is not: PNG found the period and the first attempt
+    // at this fixture came out at 160 KB instead of the megabytes it needed.
+    let seed = 0x2545f491;
+    for (let i = 0; i < noise.data.length; i += 4) {
+      seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5; seed |= 0;
+      noise.data[i] = seed & 0xff;
+      noise.data[i + 1] = (seed >>> 8) & 0xff;
+      noise.data[i + 2] = (seed >>> 16) & 0xff;
+      noise.data[i + 3] = 255;
+    }
+    ctx.putImageData(noise, 0, 0);
+    const big = canvas.toBuffer('image/png');
+    assert.ok(big.byteLength > 8 * 1024 * 1024, `the fixture is only ${big.byteLength} bytes`);
+
+    const file = await drive.uploadFile(mm, {
+      folderId: null,
+      filename: 'print-resolution-packshot.png',
+      mimeType: 'image/png',
+      body: big,
+    });
+
+    const generation = await media.generateImage(mm, {
+      prompt: 'a poster built around the packshot',
+      referenceFileIds: [file.id],
+    });
+
+    assert.equal(generation.status, 'completed');
+    const rows = await adminSql<{ input_metadata: Record<string, unknown> }[]>`
+      select input_metadata from media_generations where id = ${generation.id}
+    `;
+    assert.equal(rows[0]!.input_metadata.referenceCount, 1, 'the packshot was dropped, not scaled');
+    assert.equal(rows[0]!.input_metadata.referencesSkipped, 0);
+  });
+
   it('a company can use its own reference image', async () => {
     const ourFile = await drive.uploadFile(mm, {
       folderId: null,

@@ -781,6 +781,98 @@ describe('context-aware learning', () => {
   });
 });
 
+describe('what the Brain hands the generator', () => {
+  it('delivers the shape the request asked for, not the nearest one on sale', async () => {
+    await uploadText(mm, 'voice.txt', 'Warm, celebratory, never about the alcohol itself.');
+    await extractAll();
+    await understandAll();
+
+    const { generateWithBrain } = await import('../src/server/brain/generate');
+    const out = await generateWithBrain(mm, {
+      // The exact phrasing that was ignored: a ratio written in prose, which
+      // nothing parsed, so the format decided and the person was told to crop
+      // the result themselves.
+      requestText: 'Generate a banner of honey whisky with wildlife behind it. ar 4:5',
+      mediaType: 'image',
+    });
+
+    assert.equal(out.status, 'generated', 'nothing was made');
+    assert.equal(out.plan.deliveredShape, '4:5', 'the shape in the request was ignored');
+
+    const assets = await adminSql<{ width: number; height: number }[]>`
+      select width, height from media_generation_assets
+       where generation_id = ${(out as { generation: { id: string } }).generation.id}
+    `;
+    assert.ok(assets.length > 0, 'the generation produced no asset');
+    for (const asset of assets) {
+      const ratio = asset.width / asset.height;
+      assert.ok(
+        Math.abs(Math.log(ratio / (4 / 5))) < 0.02,
+        `asked for 4:5 and got ${asset.width}x${asset.height}`,
+      );
+    }
+  });
+
+  it('never attaches more reference images than a generator will take', async () => {
+    const { BRAIN_LIMITS } = await import('../src/server/brain/providers/types');
+    const { MEDIA_LIMITS } = await import('../src/server/media/providers/types');
+
+    // These were two independent numbers. The Brain attached four references,
+    // the media layer accepted three, and the mismatch threw before a record
+    // was written — so a request produced a brief, no picture, and nothing
+    // anywhere that said why.
+    assert.ok(
+      Math.min(BRAIN_LIMITS.maxReferences, MEDIA_LIMITS.maxReferenceImages) <=
+        MEDIA_LIMITS.maxReferenceImages,
+      'the Brain would attach more references than the generator accepts',
+    );
+  });
+
+  it('makes the picture even when its chosen references cannot all be used', async () => {
+    // The shape that broke it in production: CIP picks the best references it
+    // has, and some of them are print-resolution files it deliberately never
+    // stored. A reference is an aid; losing one must not lose the request.
+    await uploadText(mm, 'voice.txt', 'Warm, celebratory, never about the alcohol itself.');
+    await extractAll();
+    await understandAll();
+
+    /** A real PNG, so the reference path decodes something genuine. */
+    const png = async (): Promise<Buffer> => {
+      const { createCanvas } = await import('@napi-rs/canvas');
+      const canvas = createCanvas(64, 64);
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#c8a24b';
+      ctx.fillRect(0, 0, 64, 64);
+      return canvas.toBuffer('image/png');
+    };
+
+    const usable = await drive.uploadFile(mm, {
+      folderId: null,
+      filename: 'packshot.png',
+      mimeType: 'image/png',
+      body: await png(),
+    });
+    const unreadable = await drive.uploadFile(mm, {
+      folderId: null,
+      filename: 'print-master.png',
+      mimeType: 'image/png',
+      body: await png(),
+    });
+    await adminSql`
+      update drive_files set storage_path = null, bytes_retained = false
+       where id = ${unreadable.id} and company_id = ${mm.companyId}
+    `;
+
+    const { generateImage } = await import('../src/server/media/generation');
+    const generation = await generateImage(mm, {
+      prompt: 'a warm celebratory banner',
+      referenceFileIds: [usable.id, unreadable.id],
+    });
+
+    assert.equal(generation.status, 'completed', 'one unusable reference stopped the whole request');
+  });
+});
+
 describe('generation integration', () => {
   it('the existing image provider receives the Brain prompt, not the raw request', async () => {
     await uploadText(mm, 'voice.txt', 'Warm and cinematic.');

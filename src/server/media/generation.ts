@@ -21,6 +21,9 @@ import {
   validateReferenceIds,
 } from './types';
 import type { MediaAssetDTO, MediaGenerationDTO, MediaStatus, MediaType } from './types';
+import { fitForVision } from '../brain/fitImage';
+import { reframe } from './reframe';
+import type { TargetShape } from './reframe';
 
 /**
  * Creating, reading and finishing generations.
@@ -97,6 +100,14 @@ export type ImageGenerationInput = {
   aspectRatio?: unknown;
   imageSize?: unknown;
   idempotencyKey?: unknown;
+  /**
+   * The shape to deliver, which need not be one the generator offers.
+   *
+   * A generator makes a handful of shapes. Asked for 4:5, CIP produced the
+   * nearest and told the person to crop it themselves — handing its own job
+   * back. The nearest is still what gets generated; this is what comes out.
+   */
+  deliverShape?: TargetShape | null;
 };
 
 export type VideoGenerationInput = {
@@ -140,7 +151,7 @@ export async function generateImage(
 
   // Resolved under this company's scope. A Drive file id belonging to another
   // company is simply not found, so it cannot become a reference image.
-  const references = await resolveReferences(scope, referenceIds);
+  const { references, skipped: skippedReferences } = await resolveReferences(scope, referenceIds);
 
   const id = await insertGeneration(scope, {
     type: 'image',
@@ -152,6 +163,13 @@ export async function generateImage(
       aspectRatio,
       imageSize,
       referenceCount: references.length,
+      // Recorded rather than silently dropped: a picture made with one
+      // reference instead of four looks different, and this is the only place
+      // that says why.
+      referencesSkipped: skippedReferences,
+      // What was asked for, next to what the generator could make. The two
+      // differ whenever a shape is not on the generator's own list.
+      deliveredShape: input.deliverShape?.label ?? null,
       // Kept so a retry goes back to the provider that was chosen, rather than
       // to whatever the default happens to be by then.
       providerChoice: validateProviderChoice(input.provider),
@@ -161,7 +179,25 @@ export async function generateImage(
 
   try {
     const result = await provider.generate({ prompt, references, aspectRatio, imageSize });
-    await completeGeneration(scope, id, result.assets, result.usage, result.model);
+
+    // Cut to the shape that was asked for, before anything is stored. Storing
+    // the generator's shape and cropping on the way out would mean the file
+    // somebody downloads and the file CIP kept are different pictures.
+    const assets = input.deliverShape
+      ? await Promise.all(
+          result.assets.map(async (asset) => {
+            const framed = await reframe(asset.bytes, asset.mimeType, input.deliverShape!);
+            // A picture that cannot be re-cut is delivered as it came. This
+            // step makes a result better and must never remove one.
+            return framed
+              ? { ...asset, bytes: framed.bytes, mimeType: framed.mimeType,
+                  width: framed.width, height: framed.height }
+              : asset;
+          }),
+        )
+      : result.assets;
+
+    await completeGeneration(scope, id, assets, result.usage, result.model);
   } catch (error) {
     await failGeneration(scope, id, error);
     // Re-thrown so the caller learns immediately rather than polling a record
@@ -201,7 +237,7 @@ export async function generateVideo(
 
   // Resolved now rather than in the worker so a bad reference is a 404 the
   // caller sees, not a job that fails a minute later for no visible reason.
-  const references = await resolveReferences(scope, referenceIds);
+  const { references, skipped: skippedReferences } = await resolveReferences(scope, referenceIds);
 
   const id = await insertGeneration(scope, {
     type: 'video',
@@ -214,6 +250,7 @@ export async function generateVideo(
       resolution,
       durationSeconds,
       referenceFileId: references.length > 0 ? referenceIds[0] : null,
+      referencesSkipped: skippedReferences,
     },
     idempotencyKey,
   });
@@ -476,12 +513,12 @@ async function insertGeneration(
 async function resolveReferences(
   scope: CompanyScope,
   fileIds: string[],
-): Promise<ReferenceImage[]> {
-  if (fileIds.length === 0) return [];
+): Promise<{ references: ReferenceImage[]; skipped: number }> {
+  if (fileIds.length === 0) return { references: [], skipped: 0 };
   if (fileIds.some((id) => !isUuid(id))) throw new MediaNotFound('That reference image');
 
   const rows = await withCompanyScope(scope, async (tx) =>
-    tx<{ id: string; storage_path: string; file_type: string }[]>`
+    tx<{ id: string; storage_path: string | null; file_type: string }[]>`
       select id, storage_path, file_type
         from drive_files
        where id = any(${fileIds}::uuid[])
@@ -493,24 +530,56 @@ async function resolveReferences(
 
   const store = driveStorage();
   const references: ReferenceImage[] = [];
+  let skipped = 0;
 
   for (const row of rows) {
+    // A type the generator cannot take is the caller's mistake, and stays
+    // fatal. Everything below this line is a property of the stored file
+    // rather than of the request, and a reference image is an aid and not a
+    // requirement: the brief already carries what CIP knows about the brand.
+    // Failing the whole generation because one of four aids is unreadable is
+    // the wrong trade, and it is what happened — three of four references on
+    // a real request were each independently fatal, so nothing was made at
+    // all and no record existed to explain why.
     const mimeType = imageMimeFor(row.file_type);
     if (!mimeType) throw new MediaRejected('Reference images must be PNG, JPEG or WebP.');
+
+    // A file read without being kept has no bytes here by design: it was too
+    // large for the object store, and CIP looked at it instead of storing it.
+    if (!row.storage_path) {
+      skipped += 1;
+      continue;
+    }
 
     let bytes: Buffer;
     try {
       bytes = await store.get(row.storage_path);
     } catch {
-      throw new MediaRejected('A reference image could not be read.', 'STORAGE_ERROR');
+      skipped += 1;
+      continue;
     }
+
     if (bytes.byteLength > MEDIA_LIMITS.maxReferenceBytes) {
-      throw new MediaRejected('That reference image is too large.');
+      // Scaled to fit rather than refused, for the same reason an oversized
+      // image is scaled before the Brain looks at it: a 9 MB packshot is a
+      // perfectly good reference, and print resolution is what a brand's own
+      // library is full of.
+      const fitted = await fitForVision(bytes, mimeType, {
+        maxBytes: MEDIA_LIMITS.maxReferenceBytes,
+        maxEdge: MEDIA_LIMITS.referenceEdgePixels,
+      });
+      if (fitted.bytes.byteLength > MEDIA_LIMITS.maxReferenceBytes) {
+        skipped += 1;
+        continue;
+      }
+      references.push({ bytes: fitted.bytes, mimeType: fitted.mimeType });
+      continue;
     }
+
     references.push({ bytes, mimeType });
   }
 
-  return references;
+  return { references, skipped };
 }
 
 function imageMimeFor(fileType: string): string | null {

@@ -49,6 +49,7 @@ type PlanSummary = {
   formatLabel: string;
   aspectRatio: string | null;
   exactShape: boolean;
+  deliveredShape: string | null;
   platform: string | null;
   campaign: string | null;
   product: string | null;
@@ -94,6 +95,8 @@ export function AskSection({
   // Held separately from `result` so the brief can be shown while the picture
   // is still being made.
   const [planned, setPlanned] = useState<PlanSummary | null>(null);
+  /** Why the last request produced nothing, kept where the answer would be. */
+  const [failure, setFailure] = useState<string | null>(null);
   const [startedAt, setStartedAt] = useState(0);
   const [answer, setAnswer] = useState('');
   const [showAll, setShowAll] = useState(false);
@@ -129,6 +132,7 @@ export function AskSection({
 
     setResult(null);
     setPlanned(null);
+    setFailure(null);
     setPhase('planning');
     setStartedAt(Date.now());
 
@@ -188,6 +192,11 @@ export function AskSection({
             }
           } else if (event.stage === 'failed') {
             settled = true;
+            // Kept on the page as well as announced. A toast disappears, and
+            // a request that produced a brief and no picture then looks like
+            // nothing happened at all — which is exactly how this was
+            // reported: "it is not creating images".
+            setFailure(event.message);
             note(event.message);
             setPhase('idle');
           }
@@ -319,6 +328,20 @@ export function AskSection({
           the reasoning is what makes a bad result correctable — and shown as
           soon as it exists, which is well before the picture. */}
       {(result?.plan ?? planned) && <Plan plan={(result?.plan ?? planned)!} />}
+
+      {failure && (
+        <Card className="pad">
+          <p className="strong" style={{ marginBottom: 4 }}>
+            <Icon name="alert" size={15} /> That did not get made
+          </p>
+          <p className="small">{failure}</p>
+          <div className="row" style={{ justifyContent: 'flex-end', marginTop: 12 }}>
+            <button type="button" className="btn btn-sm" onClick={() => void send()} disabled={busy}>
+              Try again
+            </button>
+          </div>
+        </Card>
+      )}
 
       {result?.status === 'needs_clarification' && (
         <Card className="pad">
@@ -486,16 +509,26 @@ function Plan({ plan }: { plan: PlanSummary }) {
 
       <p className="small muted" style={{ marginBottom: 10 }}>
         {[plan.formatLabel, ...context].join(' · ')}
-        {plan.aspectRatio ? ` · ${plan.aspectRatio}` : ''}
+        {/* The shape delivered, which is the one that was asked for. The
+            generator's own shape is an implementation detail of getting
+            there. */}
+        {plan.deliveredShape ? ` · ${plan.deliveredShape}` : plan.aspectRatio ? ` · ${plan.aspectRatio}` : ''}
       </p>
 
-      {/* Said plainly when the generator has nothing the right shape, rather
-          than handing back something a third as wide as was asked for. */}
-      {!plan.exactShape && (
+      {plan.deliveredShape && plan.aspectRatio && (
+        <p className="small muted" style={{ marginBottom: 10 }}>
+          Your generator makes {plan.aspectRatio}, so CIP makes that and cuts it to
+          {' '}{plan.deliveredShape} for you.
+        </p>
+      )}
+
+      {/* Only when nothing can be done about it — a video, which is not
+          re-cut here. An image is always delivered in the shape asked for. */}
+      {!plan.exactShape && !plan.deliveredShape && (
         <p className="small" style={{ marginBottom: 10, color: 'var(--warn-700)' }}>
           <Icon name="alert" size={14} /> Your generator cannot make a
           {' '}{plan.formatLabel.toLowerCase()} exactly. This is the closest shape it offers
-          {plan.aspectRatio ? ` (${plan.aspectRatio})` : ''} — crop it to size afterwards.
+          {plan.aspectRatio ? ` (${plan.aspectRatio})` : ''}.
         </p>
       )}
 
