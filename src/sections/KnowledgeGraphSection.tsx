@@ -84,6 +84,9 @@ const TYPE_COLOR: Record<GraphNodeType, string> = {
   // A brand is the only kind of node that is not a place a file lives, so it
   // is the only warm one. Everything structural stays on the cool side.
   brand: '#f9a8d4',
+  // A hub is what brands have in common rather than a brand itself, so it is
+  // the same warm family and a shade apart from it.
+  trait: '#fdba74',
   source: '#c4b5fd',
   folder: '#7dd3fc',
   file: '#86efac',
@@ -92,6 +95,7 @@ const TYPE_COLOR: Record<GraphNodeType, string> = {
 
 const TYPE_ICON: Record<GraphNodeType, IconName> = {
   brand: 'sparkle',
+  trait: 'link',
   source: 'box',
   folder: 'folder',
   file: 'doc',
@@ -116,7 +120,8 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
   const [query, setQuery] = useState('');
   const [sourceFilter, setSourceFilter] = useState<GraphSource | 'all'>('all');
   const [typeFilter, setTypeFilter] = useState<GraphNodeType | 'all'>('all');
-  const [edgeFilter, setEdgeFilter] = useState<'all' | 'contains' | 'related' | 'resembles'>('all');
+  const [edgeFilter, setEdgeFilter] =
+    useState<'all' | 'contains' | 'related' | 'resembles' | 'shares'>('all');
   const [busy, setBusy] = useState(false);
   const [size, setSize] = useState({ width: 800, height: 600 });
 
@@ -338,6 +343,23 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
       .slice(0, 5);
   }, [edges, selected]);
 
+  /**
+   * The brands hanging off the selected hub.
+   *
+   * Read from the edges rather than fetched, for the same reason the
+   * resemblances are: they are already on the page.
+   */
+  const onThisHub = useMemo(() => {
+    if (!selected || selected.type !== 'trait') return [];
+    const endId = (end: string | { id: string }): string =>
+      typeof end === 'string' ? end : end.id;
+
+    return edges
+      .filter((e) => e.kind === 'shares' && endId(e.target) === selected.id)
+      .map((e) => endId(e.source).replace(/^brand:/, ''))
+      .sort();
+  }, [edges, selected]);
+
   const visibleEdges = useMemo(
     () => (edgeFilter === 'all' ? edges : edges.filter((e) => e.kind === edgeFilter)),
     [edgeFilter, edges],
@@ -404,6 +426,7 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
         }}>
           <option value="all">All types</option>
           <option value="brand">Brands</option>
+          <option value="trait">What they share</option>
           <option value="folder">Folders</option>
           <option value="file">Files</option>
           <option value="chunk">Passages</option>
@@ -413,6 +436,7 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
           <option value="all">All links</option>
           <option value="contains">Contains</option>
           <option value="related">Related passages</option>
+          <option value="shares">Grouped by what they are</option>
           <option value="resembles">Brands alike</option>
         </select>
 
@@ -451,6 +475,9 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
             }}
             linkColor={(edge) => {
               const dim = selected !== null && !touches(edge, neighbours);
+              if (edge.kind === 'shares') {
+                return dim ? 'rgba(253,186,116,0.06)' : 'rgba(253,186,116,0.38)';
+              }
               if (edge.kind === 'resembles') {
                 // Stronger resemblance draws stronger, so the shape of the
                 // portfolio is readable without clicking anything.
@@ -510,7 +537,7 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
             <div className="row-between">
               <span className="insp-kind">
                 <Icon name={TYPE_ICON[selected.type]} size={14} />
-                {selected.type === 'chunk' ? 'Passage' : selected.type}
+                {selected.type === 'chunk' ? 'Passage' : selected.type === 'trait' ? (selected.dimension ?? 'Shared') : selected.type}
               </span>
               <button type="button" className="insp-close" onClick={() => setSelected(null)}>
                 <Icon name="close" size={14} />
@@ -550,6 +577,21 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
                 two brands is a claim, and a claim nobody can check is worse
                 than no claim — so the words both were described with are
                 listed rather than the number behind them. */}
+            {selected.type === 'trait' && onThisHub.length > 0 && (
+              <div className="insp-resemblance">
+                <p className="insp-label">
+                  {selected.dimension
+                    ? `${selected.dimension} · ${onThisHub.length} brands`
+                    : `${onThisHub.length} brands share this`}
+                </p>
+                <div className="insp-hub-brands">
+                  {onThisHub.map((name) => (
+                    <span key={name} className="insp-chip">{name}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {selected.type === 'brand' && resemblances.length > 0 && (
               <div className="insp-resemblance">
                 <p className="insp-label">Most like</p>

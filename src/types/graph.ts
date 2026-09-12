@@ -6,9 +6,12 @@
  * external Google id, so none can reach a component by accident.
  */
 
-export type GraphNodeType = 'source' | 'folder' | 'file' | 'chunk' | 'brand';
+export type GraphNodeType = 'source' | 'folder' | 'file' | 'chunk' | 'brand' | 'trait';
 export type GraphSource = 'cip_drive' | 'google_drive';
-export type GraphEdgeKind = 'contains' | 'related' | 'resembles';
+export type GraphEdgeKind = 'contains' | 'related' | 'resembles' | 'shares';
+
+/** Which heading a trait hub belongs under, when it belongs under one. */
+export type GraphTraitDimension = 'country' | 'category' | 'tier' | 'flavour' | null;
 
 export type GraphNodeDTO = {
   id: string;
@@ -23,6 +26,10 @@ export type GraphNodeDTO = {
   ordinal?: number;
   snippet?: string;
   fileId?: string;
+  /** Trait-only: the heading this hub sits under, if it has one. */
+  dimension?: GraphTraitDimension;
+  /** Trait-only: how many brands hang off it. */
+  brandCount?: number;
   expandable: boolean;
 };
 
@@ -40,6 +47,7 @@ export type GraphEdgeDTO = {
    */
   shared?: string[];
 };
+
 
 export type GraphStatsDTO = {
   nodes: number;

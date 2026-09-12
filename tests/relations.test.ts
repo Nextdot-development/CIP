@@ -221,6 +221,87 @@ describe('brands that share something are related', () => {
   });
 });
 
+describe('brands grouped by what they are', () => {
+  it('gathers every brand that shares a word onto one hub', async () => {
+    await roster(mm, '8PM', 'Rampur', 'Sangam', 'Magic Moments');
+
+    // The same word arrives under a different attribute name every time,
+    // because the Brain phrases each observation freshly. Grouping on the
+    // pair split ten whiskies into a dozen hubs of one.
+    await fact(mm, '8PM', 'label text', 'indian whisky');
+    await fact(mm, 'Rampur', 'productType', 'single malt whisky');
+    await fact(mm, 'Sangam', 'category text', 'world malt whisky');
+    await fact(mm, 'Magic Moments', 'label text', 'premium vodka');
+
+    await relations.recomputeRelations(mm);
+    const hubs = await relations.sharedTraits(mm, 40);
+
+    const whisky = hubs.find((h) => h.value === 'whisky');
+    assert.ok(whisky, 'the word three brands share made no hub');
+    assert.deepEqual([...whisky!.brands].sort(), ['8PM', 'Rampur', 'Sangam']);
+    assert.equal(whisky!.dimension, 'category');
+  });
+
+  it('files a hub under the heading it belongs to', async () => {
+    await roster(mm, 'A', 'B', 'C', 'D');
+    await fact(mm, 'A', 'flavour note', 'honey and citrus');
+    await fact(mm, 'B', 'label text', 'honey whisky');
+    await fact(mm, 'C', 'positioning', 'premium and restrained');
+    await fact(mm, 'D', 'positioning', 'premium and playful');
+
+    await relations.recomputeRelations(mm);
+    const hubs = await relations.sharedTraits(mm, 40);
+
+    assert.equal(hubs.find((h) => h.value === 'honey')?.dimension, 'flavour');
+    assert.equal(hubs.find((h) => h.value === 'premium')?.dimension, 'tier');
+  });
+
+  it('does not read a colour as a flavour', async () => {
+    await roster(mm, 'A', 'B', 'C');
+    // "amber/orange" describes the liquid, not what it tastes of. Reading it
+    // as a flavour put four brands under a fruit none of them contains.
+    await fact(mm, 'A', 'liquid colour', 'amber/orange');
+    await fact(mm, 'B', 'liquid colour', 'deep orange');
+    await fact(mm, 'C', 'flavour note', 'chocolate');
+
+    await relations.recomputeRelations(mm);
+    const hubs = await relations.sharedTraits(mm, 40);
+    assert.notEqual(hubs.find((h) => h.value === 'orange')?.dimension, 'flavour');
+  });
+
+  it('leaves out a word one brand has, and one they all have', async () => {
+    await roster(mm, 'A', 'B', 'C');
+    for (const brand of ['A', 'B', 'C']) await fact(mm, brand, 'label text', 'product of india');
+    await fact(mm, 'A', 'flavour note', 'jamun');
+
+    await relations.recomputeRelations(mm);
+    const hubs = await relations.sharedTraits(mm, 40);
+
+    assert.ok(!hubs.some((h) => h.value === 'india'), 'a word every brand has grouped them all');
+    assert.ok(!hubs.some((h) => h.value === 'jamun'), 'a word one brand has made a hub of one');
+  });
+
+  it('keeps every named heading, and only a bounded tail of the rest', async () => {
+    await roster(mm, 'A', 'B');
+    await fact(mm, 'A', 'label text', 'premium honey whisky');
+    await fact(mm, 'B', 'label text', 'premium honey whisky');
+    for (let i = 0; i < 30; i += 1) {
+      await fact(mm, 'A', `note ${i}`, `incidental word${i}`);
+      await fact(mm, 'B', `note ${i}`, `incidental word${i}`);
+    }
+
+    await relations.recomputeRelations(mm);
+    const hubs = await relations.sharedTraits(mm, 5);
+    const named = hubs.filter((h) => h.dimension !== null).map((h) => h.value).sort();
+    const unnamed = hubs.filter((h) => h.dimension === null);
+
+    // The named groupings are what somebody came to see, so all of them stay
+    // however long the tail behind them is.
+    assert.deepEqual(named, ['honey', 'premium', 'whisky']);
+    assert.ok(unnamed.length <= 5, `the tail was ${unnamed.length} long against a limit of 5`);
+  });
+});
+
 describe('one company cannot see another company relations', () => {
   it('keeps each roster and its map to itself', async () => {
     await roster(mm, 'Whytehall Honey', 'Magic Moments Remix');

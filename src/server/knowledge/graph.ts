@@ -2,6 +2,8 @@ import 'server-only';
 import { withCompanyScope } from '../db';
 import type { CompanyScope } from '../db';
 import { embedder } from '../drive/embedding';
+import { sharedTraits } from '../brain/relations';
+import type { TraitDimension } from '../brain/relations';
 
 /**
  * The knowledge graph.
@@ -26,7 +28,7 @@ import { embedder } from '../drive/embedding';
  * is the filter even where a WHERE clause also names the company.
  */
 
-export type GraphNodeType = 'source' | 'folder' | 'file' | 'chunk' | 'brand';
+export type GraphNodeType = 'source' | 'folder' | 'file' | 'chunk' | 'brand' | 'trait';
 
 export type GraphSource = 'cip_drive' | 'google_drive';
 
@@ -55,6 +57,10 @@ export type GraphNode = {
   snippet?: string;
   /** Chunk-only: which file it came from, so the inspector can link back. */
   fileId?: string;
+  /** Trait-only: the heading this hub sits under, if it has one. */
+  dimension?: TraitDimension;
+  /** Trait-only: how many brands hang off it. */
+  brandCount?: number;
   /** Whether this node has neighbours that are not loaded yet. */
   expandable: boolean;
 };
@@ -63,8 +69,9 @@ export type GraphNode = {
  * 'contains' is structure - a folder holds a file, a brand owns one.
  * 'related' is two passages about the same thing.
  * 'resembles' is two brands that share what they are described as.
+ * 'shares' joins a brand to one thing it is - a flavour, a country, a spirit.
  */
-export type GraphEdgeKind = 'contains' | 'related' | 'resembles';
+export type GraphEdgeKind = 'contains' | 'related' | 'resembles' | 'shares';
 
 export type GraphEdge = {
   source: string;
@@ -219,6 +226,8 @@ async function overview(
        order by b.position, b.name
     `;
 
+    // Hubs: the things two or more brands both are. Read through the same
+    // scope as everything else on this page.
     const relationRows = await tx<
       { brand_a: string; brand_b: string; score: string; shared: { value: string }[] }[]
     >`
@@ -239,6 +248,10 @@ async function overview(
 
     return { folders: folderRows, files: fileRows, brands: brandRows, relations: relationRows, totals: counts[0]! };
   });
+
+  // Fetched outside the block above because it scopes itself, and a company
+  // with no roster simply gets none.
+  const hubs = brands.length >= 2 ? await sharedTraits(scope, 60) : [];
 
   const nodes: GraphNode[] = [];
   const edges: GraphEdge[] = [];
@@ -330,8 +343,34 @@ async function overview(
     edges.push({ source: owner, target: file.id, kind: 'contains' });
   }
 
-  // And how the brands relate to each other, with the reason attached.
+  // Hubs: one node per thing that two or more brands both are, with every
+  // brand that is it hanging off it. The pairwise lines below say the same
+  // thing and are harder to look at; both are drawn because they answer
+  // different questions — "what is this brand like?" and "which of our brands
+  // are whiskies?".
   const onRoster = new Set(brands.map((b) => b.name));
+  for (const trait of hubs) {
+    const members = trait.brands.filter((b) => onRoster.has(b));
+    if (members.length < 2) continue;
+
+    const id = traitNodeId(trait.value);
+    nodes.push({
+      id,
+      type: 'trait',
+      label: trait.value,
+      source: null,
+      weight: 3 + Math.min(members.length * 2, 14),
+      dimension: trait.dimension,
+      brandCount: members.length,
+      expandable: false,
+    });
+
+    for (const member of members) {
+      edges.push({ source: brandNodeId(member), target: id, kind: 'shares' });
+    }
+  }
+
+  // And how the brands relate to each other, with the reason attached.
   for (const relation of relations) {
     if (!onRoster.has(relation.brand_a) || !onRoster.has(relation.brand_b)) continue;
     edges.push({
@@ -723,6 +762,16 @@ function sourceNodeId(source: GraphSource): string {
  */
 function brandNodeId(name: string): string {
   return `brand:${name}`;
+}
+
+/**
+ * A node id for a trait hub.
+ *
+ * Prefixed, because ids on this graph share a namespace with row uuids and a
+ * hub called "file" must not be able to collide with one.
+ */
+function traitNodeId(value: string): string {
+  return `trait:${value}`;
 }
 
 function sourceFromNodeId(nodeId: string): GraphSource | null {

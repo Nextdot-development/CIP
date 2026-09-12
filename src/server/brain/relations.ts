@@ -334,6 +334,147 @@ export async function recomputeRelations(scope: CompanyScope): Promise<{
   });
 }
 
+/**
+ * The dimension a shared term belongs to, for grouping it on a page.
+ *
+ * These lists label; they never decide. Every hub on the graph is there
+ * because two or more brands were genuinely described with that word — the
+ * words below only say which heading to file it under, so "whisky" and
+ * "honey" do not sit in one undifferentiated row.
+ *
+ * A word not on any list still becomes a hub, under no heading. That is the
+ * common case and it is the point: the interesting groupings are the ones
+ * nobody thought to write down.
+ */
+const CATEGORY_WORDS = new Set([
+  'whisky', 'whiskey', 'vodka', 'gin', 'rum', 'brandy', 'liqueur', 'wine',
+  'beer', 'tequila', 'malt', 'single malt', 'world malt', 'dark rum',
+  'craft gin', 'single malt whisky', 'indian single malt whisky',
+]);
+
+const TIER_WORDS = new Set([
+  'premium', 'luxury', 'deluxe', 'prestige', 'mass premium', 'semi-premium',
+  'super premium', 'value', 'economy', 'reserve',
+]);
+
+// Deliberately without 'orange': in a library of amber spirits it is a colour
+// far more often than a fruit, and it arrived as a flavour on four brands
+// straight out of "amber/orange".
+const FLAVOUR_WORDS = new Set([
+  'honey', 'chocolate', 'jamun', 'lemon', 'apple', 'green apple',
+  'raspberry', 'lemongrass', 'ginger', 'peanut butter', 'vanilla', 'spiced',
+  'plain', 'cranberry', 'mango', 'guava', 'pineapple', 'coffee', 'mint',
+  'cinnamon', 'caramel', 'butterscotch', 'blueberry', 'strawberry', 'spicy',
+]);
+
+export type TraitDimension = 'country' | 'category' | 'tier' | 'flavour' | null;
+
+/** The order the headings read in: where it sells, what it is, then how it is sold. */
+const DIMENSION_ORDER: TraitDimension[] = ['country', 'category', 'flavour', 'tier'];
+
+/** Which heading a shared term belongs under, if any. */
+export function dimensionOf(kind: string, value: string): TraitDimension {
+  if (kind === 'market') return 'country';
+  if (CATEGORY_WORDS.has(value)) return 'category';
+  if (TIER_WORDS.has(value)) return 'tier';
+  if (FLAVOUR_WORDS.has(value)) return 'flavour';
+  return null;
+}
+
+/** A term two or more brands were described with, and which brands those are. */
+export type SharedTrait = {
+  value: string;
+  dimension: TraitDimension;
+  brands: string[];
+  /** How much this term distinguishes, 0 to 1. Rare is informative. */
+  weight: number;
+};
+
+/**
+ * The terms that actually join brands together.
+ *
+ * Held by at least two brands and not by all of them — one brand's word
+ * cannot join anything, and a word everybody uses joins everybody, which is
+ * the same as joining nobody.
+ *
+ * This is the shape a person reads the portfolio in: every brand that is a
+ * whisky hanging off "whisky", every brand sold into Nigeria hanging off
+ * "Nigeria". The pairwise scores say the same thing and are harder to look at.
+ */
+export async function sharedTraits(
+  scope: CompanyScope,
+  limit = 60,
+): Promise<SharedTrait[]> {
+  return withCompanyScope(scope, async (tx) => {
+    const brandCount = await tx<{ n: number }[]>`
+      select count(distinct brand)::int as n from brand_traits
+       where company_id = ${scope.companyId}
+    `;
+    const total = brandCount[0]?.n ?? 0;
+    if (total < 2) return [];
+
+    // Grouped by the word alone, not by the attribute it arrived under. The
+    // Brain names an attribute freshly each time, so "whisky" came in under a
+    // dozen different ones and grouping on the pair split ten brands into a
+    // dozen hubs of one. The word is the thing brands have in common; which
+    // sentence it appeared in is not.
+    const rows = await tx<{ value: string; kinds: string[]; brands: string[] }[]>`
+      select value,
+             array_agg(distinct kind) as kinds,
+             array_agg(distinct brand order by brand) as brands
+        from brand_traits
+       where company_id = ${scope.companyId}
+       group by value
+      having count(distinct brand) >= 2
+         -- A word every brand has groups them all, which is the same as
+         -- grouping none of them. Only true once there are more than two: at
+         -- two, a shared word is the only grouping there can be, and this
+         -- rule would rule out every hub there is.
+         and (${total} <= 2 or count(distinct brand) < ${total})
+    `;
+
+    return rows
+      .map((row) => ({
+        value: row.value,
+        // A country is stated rather than described, and it is the one
+        // dimension CIP knows for certain, so it is read off the attribute.
+        dimension: row.kinds.includes('market')
+          ? ('country' as TraitDimension)
+          : dimensionOf('', row.value),
+        brands: row.brands,
+        // The same rarity measure the pairwise scores use, put on a 0 to 1
+        // scale so a renderer can size a hub by how much it distinguishes.
+        // At two brands the measure has nothing to measure against, so a
+        // shared word simply counts fully.
+        weight:
+          total <= 2
+            ? 1
+            : Math.min(1, Math.log(total / row.brands.length) / Math.log(total)),
+      }))
+      // Grouped by heading, so every spirit sits with the spirits and every
+      // flavour with the flavours. Within a heading the rarest first: a word
+      // two brands share says more about them than one nine of them do.
+      .sort((a, b) => {
+        const rank = (d: TraitDimension): number =>
+          d === null ? DIMENSION_ORDER.length : DIMENSION_ORDER.indexOf(d);
+        return (
+          rank(a.dimension) - rank(b.dimension) ||
+          b.weight - a.weight ||
+          a.value.localeCompare(b.value)
+        );
+      })
+      // Everything CIP could name is kept, however much of it there is: those
+      // are the groupings somebody came here to see. The unnamed ones are the
+      // long tail — every word two brands happened to share — and past a
+      // couple of dozen they stop being a portfolio and become a haystack.
+      .filter((trait, index, all) => {
+        if (trait.dimension !== null) return true;
+        const namedCount = all.filter((t) => t.dimension !== null).length;
+        return index - namedCount < Math.min(Math.max(limit, 1), 300);
+      });
+  });
+}
+
 /** What a brand is, as CIP worked it out. Strongest evidence first. */
 export async function traitsOf(
   scope: CompanyScope,

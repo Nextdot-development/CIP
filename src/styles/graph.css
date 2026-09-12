@@ -130,6 +130,17 @@
 .insp-resembles .strong { color: #f9a8d4; font-weight: 600; }
 .insp-resembles .muted { color: #94a3b8; }
 
+/* The brands hanging off one hub. Chips rather than a list, because the
+   useful question is "who is on this?" and a dozen names read faster side
+   by side than stacked. */
+.insp-hub-brands { display: flex; flex-wrap: wrap; gap: 6px; }
+.insp-chip {
+  font-size: 12px; color: #fdba74;
+  background: rgba(253, 186, 116, 0.1);
+  border: 1px solid rgba(253, 186, 116, 0.3);
+  border-radius: 999px; padding: 3px 9px;
+}
+
 .insp-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .insp-actions .btn {
   background: #0d1017; color: #e2e8f0; border: 1px solid rgba(148, 163, 184, 0.25);
