@@ -7,6 +7,7 @@ import {
   understandClaimedAsset,
 } from '../brain/understanding';
 import { recomputeEverywhere } from '../brain/brandDna';
+import { suggestBrandsEverywhere } from '../brain/brands';
 import { claimConnectionForSync, runClaimedSync } from '../integrations/googleDrive/jobs';
 
 /**
@@ -160,6 +161,13 @@ async function runPass(): Promise<PumpTally> {
       // Teach. Nothing to do here but carry on with the next one.
       if (outcome.status === 'synced') tally.synced += outcome.outcome.added;
     }
+  });
+
+  // 0.5 Which brand each new file is about. Deterministic, free, and it has
+  //     to happen before anything retrieves a reference image — an unlabelled
+  //     file reaches every brand's brief, including the ones it is not about.
+  await stage(async () => {
+    await suggestBrandsEverywhere();
   });
 
   // 1. Text out of anything new.

@@ -60,6 +60,20 @@ export async function similarAssets(
   scope: CompanyScope,
   requestText: string,
   limit = BRAIN_LIMITS.maxReferences,
+  /**
+   * The brand this is for, when one was named.
+   *
+   * Similarity does not respect a roster: a request mentioning honey pulled
+   * four Whytehall Honey files into an 8PM brief and handed them to the
+   * generator as what 8PM looks like. A sibling's packshot is the single most
+   * misleading thing a generator can be shown, because it does not argue —
+   * it copies.
+   *
+   * Files belonging to no brand still come through. A company photograph or
+   * an unnamed background is the house's, and withholding it would leave a
+   * brand with less than it has.
+   */
+  brand: string | null = null,
 ): Promise<RetrievedAsset[]> {
   // Similarity needs the vector column, which only exists where pgvector does.
   // Without it the Brain still plans — just without visual references.
@@ -95,6 +109,8 @@ export async function similarAssets(
          and u.embedding is not null
          and u.embed_model = ${active.model}
          and f.archived_at is null
+         -- This brand's own material, plus anything belonging to no brand.
+         and (${brand}::text is null or f.brand is null or f.brand = ${brand})
          and (u.embedding <=> ${literal}::vector) <= ${maxDistance}
        order by u.embedding <=> ${literal}::vector
        limit ${Math.min(Math.max(limit, 1), 20)}
@@ -140,6 +156,8 @@ export async function similarPosts(
   scope: CompanyScope,
   requestText: string,
   limit = BRAIN_LIMITS.maxReferences,
+  /** The brand this is for. A sibling's post is not this brand's example. */
+  brand: string | null = null,
 ): Promise<RetrievedPost[]> {
   if (!(await similaritySupported(scope))) return [];
 
@@ -174,6 +192,7 @@ export async function similarPosts(
          where p.embedding is not null
            and p.embed_model = ${active.model}
            and f.archived_at is null
+           and (${brand}::text is null or f.brand is null or f.brand = ${brand})
            and (p.embedding <=> ${literal}::vector) <= ${maxDistance}
          order by p.embedding <=> ${literal}::vector
          limit ${Math.min(Math.max(limit, 1), 20)}
@@ -203,9 +222,10 @@ export async function similarPosts(
  */
 export async function ratedExamples(
   scope: CompanyScope,
-  options: { mediaType: 'image' | 'video'; limit?: number },
+  options: { mediaType: 'image' | 'video'; limit?: number; brand?: string | null },
 ): Promise<{ positive: RetrievedExample[]; negative: RetrievedExample[] }> {
   const limit = Math.min(Math.max(options.limit ?? 3, 1), 10);
+  const brand = options.brand ?? null;
 
   const rows = await withCompanyScope(scope, async (tx) =>
     tx<
@@ -219,6 +239,14 @@ export async function ratedExamples(
         left join generation_briefs b on b.generation_id = fb.generation_id
        where g.type = ${options.mediaType}
          and (fb.score >= 8 or fb.score <= 4)
+         -- Work rated for another brand is not an example for this one. The
+         -- brief that produced it recorded which brand it was for; work from
+         -- before that was recorded has no brand and still counts.
+         and (
+           ${brand}::text is null
+           or b.brief->>'brand' is null
+           or b.brief->>'brand' = ${brand}
+         )
        order by fb.created_at desc
        limit ${limit * 4}
     `,
@@ -254,6 +282,14 @@ export async function applicableLessons(
     platform?: string | null;
     campaign?: string | null;
     product?: string | null;
+    /**
+     * The brand this is for.
+     *
+     * A lesson had a task type, a platform, a campaign and a product, and no
+     * brand — so "keep the Magic Moments product prominent", learned from
+     * Magic Moments feedback, arrived in an 8PM brief and told it what to do.
+     */
+    brand?: string | null;
   },
   limit = BRAIN_LIMITS.maxLessons,
 ): Promise<RetrievedLesson[]> {
@@ -272,6 +308,7 @@ export async function applicableLessons(
          and (platform  is null or platform  = ${context.platform ?? null})
          and (campaign  is null or campaign  = ${context.campaign ?? null})
          and (product   is null or product   = ${context.product ?? null})
+         and (brand     is null or brand     = ${context.brand ?? null})
        order by (status = 'confirmed') desc, confidence desc, evidence_count desc
        limit ${Math.min(Math.max(limit, 1), 30)}
     `,

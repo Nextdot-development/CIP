@@ -5,6 +5,7 @@ import {
   understandingQueueDepth,
 } from '../src/server/brain/understanding';
 import { recomputeEverywhere } from '../src/server/brain/brandDna';
+import { suggestBrandsEverywhere } from '../src/server/brain/brands';
 import { analyseNextFeedback } from '../src/server/brain/learning';
 import { brainStatus } from '../src/server/brain/providers';
 import { ffmpegAvailable } from '../src/server/brain/media';
@@ -49,6 +50,12 @@ type Tally = { understood: number; unsupported: number; failed: number; lessons:
 
 async function pass(): Promise<Tally> {
   const tally: Tally = { understood: 0, unsupported: 0, failed: 0, lessons: 0 };
+
+  // Which brand each new file is about. Deterministic and free, and it
+  // has to happen before anything retrieves a reference image: an
+  // unlabelled file reaches every brand's brief, including the ones it
+  // is not about.
+  await suggestBrandsEverywhere().catch(() => {});
 
   const queued = await enqueueEverywhere();
   if (queued > 0) console.log(`  queued ${queued} asset(s) for understanding`);

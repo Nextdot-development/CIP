@@ -157,6 +157,11 @@ export async function analyseNextFeedback(): Promise<LearningOutcome | null> {
       // this generation actually was. A lesson can never be recorded against a
       // campaign the generation did not belong to.
       const scoped = {
+        // A lesson the provider judged to be about the company applies to
+        // every brand; anything narrower belongs to the brand it was learned
+        // from. "Keep the product prominent" is a different instruction for a
+        // playful vodka than for a restrained single malt.
+        brand: lesson.appliesTo === 'company' ? null : claim.brand,
         taskType: lesson.appliesTo === 'company' ? null : claim.taskType,
         platform: lesson.appliesTo === 'platform' ? claim.platform : null,
         campaign: lesson.appliesTo === 'campaign' ? claim.campaign : null,
@@ -193,6 +198,8 @@ type ClaimedFeedback = {
   platform: string | null;
   campaign: string | null;
   product: string | null;
+  /** The brand the rated work was for, from the brief that produced it. */
+  brand: string | null;
 };
 
 /**
@@ -209,6 +216,7 @@ async function claimFeedback(): Promise<ClaimedFeedback | null> {
       {
         id: string; company_id: string; score: number; comment: string | null;
         request_text: string | null; task_type: string | null; platform: string | null;
+        brand: string | null;
         campaign: string | null; product: string | null; prompt: string;
       }[]
     >`
@@ -230,6 +238,11 @@ async function claimFeedback(): Promise<ClaimedFeedback | null> {
                   where b.generation_id = fb.generation_id limit 1) as platform,
                 (select b.campaign from generation_briefs b
                   where b.generation_id = fb.generation_id limit 1) as campaign,
+                -- The brand the brief was built for, so a lesson learned
+                -- from this piece of work belongs to that brand and not to
+                -- every brand the company owns.
+                (select b.brief->>'brand' from generation_briefs b
+                  where b.generation_id = fb.generation_id limit 1) as brand,
                 (select b.product from generation_briefs b
                   where b.generation_id = fb.generation_id limit 1) as product,
                 (select g.prompt from media_generations g where g.id = fb.generation_id) as prompt
@@ -246,6 +259,10 @@ async function claimFeedback(): Promise<ClaimedFeedback | null> {
       // A generation made without the Brain has no brief; its own prompt is
       // the best record of what was asked for.
       requestText: row.request_text ?? row.prompt,
+      // Null for a generation made before the brief recorded a brand, and for
+      // one made without the Brain at all. Null means "every brand", which is
+      // what it always meant before there was a brand to record.
+      brand: row.brand,
       taskType: row.task_type ?? 'unknown',
       platform: row.platform,
       campaign: row.campaign,
@@ -287,6 +304,15 @@ async function upsertLesson(
     platform: string | null;
     campaign: string | null;
     product: string | null;
+    /**
+     * The brand the rated work was for.
+     *
+     * Without it, "keep the product prominent" — learned from Magic Moments
+     * feedback — arrived in an 8PM brief and told it what to do. Feedback is
+     * about a particular piece of work, and the brief that produced that work
+     * knows which brand it was for.
+     */
+    brand: string | null;
     feedbackId: string;
   },
 ): Promise<boolean> {
@@ -306,15 +332,17 @@ async function upsertLesson(
   return withCompanyScope(scope, async (tx) => {
     const rows = await tx<{ id: string }[]>`
       insert into brain_lessons
-        (company_id, polarity, statement, task_type, platform, campaign, product,
+        (company_id, polarity, statement, task_type, platform, campaign, product, brand,
          status, evidence_count, confidence, embed_model)
       values
         (${scope.companyId}, ${input.polarity}, ${input.statement},
          ${input.taskType}, ${input.platform}, ${input.campaign}, ${input.product},
+         ${input.brand},
          'candidate', 0, 0, ${literal ? active.model : null})
       on conflict (company_id, polarity, statement,
                    coalesce(task_type, ''), coalesce(platform, ''),
-                   coalesce(campaign, ''), coalesce(product, ''))
+                   coalesce(campaign, ''), coalesce(product, ''),
+                   coalesce(brand, ''))
         do update set updated_at = now()
       returning id
     `;

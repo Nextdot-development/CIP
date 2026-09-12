@@ -1,6 +1,7 @@
 import 'server-only';
 import { withCompanyScope } from '../db';
 import type { CompanyScope } from '../db';
+import { adminSql } from '../db-admin';
 
 /**
  * Which brand a piece of knowledge is about.
@@ -141,6 +142,96 @@ export function normaliseBrand(value: unknown, brands: readonly string[]): strin
 
   const match = brands.find((brand) => brand.toLowerCase() === candidate.toLowerCase());
   return match ?? null;
+}
+
+/**
+ * Labels files with the brand their name says they are about.
+ *
+ * A reference image has to be filterable before it is handed to a generator,
+ * and the facts derived from a file are not enough — the file itself is what
+ * gets attached. So the brand is stored on the file, derived from its name
+ * against this company's roster and the other names those brands go by.
+ *
+ * Deterministic and free: no model is asked anything. A name that names two
+ * brands, or none, is left null and reaches every brand, which is the same
+ * rule the facts follow.
+ *
+ * Runs on every worker pass, so a file that arrives after a brand is added to
+ * the roster is labelled the next time round rather than staying anonymous
+ * for ever.
+ */
+export async function suggestBrands(scope: CompanyScope): Promise<number> {
+  const roster = await companyBrands(scope);
+  if (roster.length === 0) return 0;
+
+  return withCompanyScope(scope, async (tx) => {
+    const unlabelled = await tx<{ id: string; name: string }[]>`
+      select id, name from drive_files
+       where company_id = ${scope.companyId}
+         and archived_at is null
+         and brand is null
+       limit 2000
+    `;
+
+    let labelled = 0;
+    for (const file of unlabelled) {
+      const brand = brandForText(file.name, roster);
+      if (!brand) continue;
+
+      await tx`
+        update drive_files set brand = ${brand}, updated_at = now()
+         where id = ${file.id} and company_id = ${scope.companyId}
+      `;
+      labelled += 1;
+    }
+    return labelled;
+  });
+}
+
+/** Sets, or clears, which brand a file is about. */
+export async function setFileBrand(
+  scope: CompanyScope,
+  fileId: string,
+  brand: string | null,
+): Promise<boolean> {
+  const roster = await brandNames(scope);
+  const resolved = brand === null ? null : normaliseBrand(brand, roster);
+  if (brand !== null && resolved === null) return false;
+
+  return withCompanyScope(scope, async (tx) => {
+    const rows = await tx<{ id: string }[]>`
+      update drive_files set brand = ${resolved}, updated_at = now()
+       where id = ${fileId} and company_id = ${scope.companyId}
+      returning id
+    `;
+    return rows.length > 0;
+  });
+}
+
+/**
+ * Labels files across every company.
+ *
+ * The worker has no session to derive a scope from, exactly as with
+ * understanding, so it walks the companies and scopes each one properly.
+ */
+export async function suggestBrandsEverywhere(): Promise<number> {
+  const sql = adminSql();
+  let companies: { id: string }[];
+  try {
+    companies = await sql<{ id: string }[]>`select id from companies`;
+  } finally {
+    await sql.end();
+  }
+
+  let labelled = 0;
+  for (const company of companies) {
+    labelled += await suggestBrands({
+      companyId: company.id,
+      userId: '00000000-0000-0000-0000-000000000000',
+      role: 'owner',
+    });
+  }
+  return labelled;
 }
 
 /** Adds a brand to the roster. Idempotent: the same name twice is once. */

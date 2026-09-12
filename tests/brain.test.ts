@@ -781,6 +781,129 @@ describe('context-aware learning', () => {
   });
 });
 
+describe('THE BOUNDARY: asked for one brand, only that brand is read', () => {
+  /** A file belonging to a brand, understood and embedded like any other. */
+  async function brandFile(brand: string | null, name: string, summary: string): Promise<string> {
+    const file = await uploadText(mm, name, summary);
+    await extractAll();
+    await understandAll();
+    await adminSql`
+      update drive_files set brand = ${brand}
+       where id = ${file.id} and company_id = ${mm.companyId}
+    `;
+    return file.id;
+  }
+
+  it('does not show one brand a sibling brand file', async (t) => {
+    // Retrieval by meaning needs pgvector. Skipped rather than passed when it
+    // is absent: this test asserts an absence, and without vectors it would
+    // report success over a function that returned nothing at all.
+    if (!db.hasVector) return t.skip('needs pgvector');
+
+    const brands = await import('../src/server/brain/brands');
+    await brands.addBrand(mm, { name: '8PM' });
+    await brands.addBrand(mm, { name: 'Whytehall Honey' });
+
+    await brandFile('8PM', '8pm-packshot.txt', 'Eight PM whisky bottle on black with gold type.');
+    await brandFile('Whytehall Honey', 'whytehall-honey.txt', 'Honey whisky bottle, warm amber, honeycomb motif.');
+
+    const { similarAssets } = await import('../src/server/brain/retrieval');
+    const found = await similarAssets(mm, 'a honey whisky banner', 10, '8PM');
+
+    // The request says honey. Similarity does not respect a roster, and the
+    // sibling's packshot is the single most misleading thing a generator can
+    // be shown — it does not argue with the brief, it copies.
+    assert.ok(
+      !found.some((a) => a.fileName === 'whytehall-honey.txt'),
+      "a Whytehall Honey file was offered as what 8PM looks like",
+    );
+  });
+
+  it('lets what belongs to no brand reach every brand', async (t) => {
+    if (!db.hasVector) return t.skip('needs pgvector');
+
+    const brands = await import('../src/server/brain/brands');
+    await brands.addBrand(mm, { name: '8PM' });
+    await brandFile(null, 'house-style.txt', 'Every Radico piece keeps the statutory warning legible.');
+
+    const { similarAssets } = await import('../src/server/brain/retrieval');
+    const found = await similarAssets(mm, 'statutory warning legibility', 10, '8PM');
+    assert.ok(
+      found.some((a) => a.fileName === 'house-style.txt'),
+      'a house-wide file was withheld from a brand it applies to',
+    );
+  });
+
+  it("does not teach one brand from another brand's feedback", async () => {
+    const brands = await import('../src/server/brain/brands');
+    await brands.addBrand(mm, { name: '8PM' });
+    await brands.addBrand(mm, { name: 'Magic Moments' });
+
+    await adminSql`
+      insert into brain_lessons
+        (company_id, polarity, statement, brand, status, evidence_count, confidence)
+      values
+        (${mm.companyId}, 'prefer', 'Keep the Magic Moments product prominent and central.',
+         'Magic Moments', 'confirmed', 3, 0.9),
+        (${mm.companyId}, 'avoid', 'Never imply drinking improves performance.',
+         null, 'confirmed', 3, 0.9)
+    `;
+
+    const { applicableLessons } = await import('../src/server/brain/retrieval');
+    const lessons = await applicableLessons(mm, { brand: '8PM' });
+    const statements = lessons.map((l) => l.statement);
+
+    // Exactly what was seen on a real 8PM brief: eight of its "learned from
+    // your feedback" lines named Magic Moments.
+    assert.ok(
+      !statements.some((s) => s.includes('Magic Moments')),
+      `a Magic Moments lesson reached an 8PM brief: ${statements.join(' | ')}`,
+    );
+    assert.ok(
+      statements.some((s) => s.includes('drinking improves performance')),
+      'a house-wide rule was withheld from a brand it applies to',
+    );
+  });
+
+  it('the same lesson about two brands stays two lessons', async () => {
+    // Otherwise one brand's feedback confirms the other's rule, and the
+    // evidence count — which is what promotes a candidate — counts twice.
+    for (const brand of ['8PM', 'Whytehall']) {
+      await adminSql`
+        insert into brain_lessons (company_id, polarity, statement, brand, status)
+        values (${mm.companyId}, 'prefer', 'Keep the product prominent.', ${brand}, 'candidate')
+        on conflict do nothing
+      `;
+    }
+    const rows = await adminSql<{ n: number }[]>`
+      select count(*)::int as n from brain_lessons
+       where company_id = ${mm.companyId} and statement = 'Keep the product prominent.'
+    `;
+    assert.equal(rows[0]!.n, 2);
+  });
+
+  it('works out which brand a file is about from its name', async () => {
+    const brands = await import('../src/server/brain/brands');
+    await brands.addBrand(mm, { name: 'Rampur', aliases: ['asava', 'jugalbandi'] });
+    await brands.addBrand(mm, { name: 'Magic Moments' });
+
+    await uploadText(mm, 'Asava_Bottle.txt', 'A bottle.');
+    await uploadText(mm, 'house-rules.txt', 'Something about everything.');
+
+    const labelled = await brands.suggestBrands(mm);
+    assert.ok(labelled >= 1, 'nothing was labelled');
+
+    const rows = await adminSql<{ name: string; brand: string | null }[]>`
+      select name, brand from drive_files
+       where company_id = ${mm.companyId} and name in ('Asava_Bottle.txt', 'house-rules.txt')
+       order by name
+    `;
+    const byName = new Map(rows.map((r) => [r.name, r.brand]));
+    assert.equal(byName.get('Asava_Bottle.txt'), 'Rampur', 'an alias in a filename was not read');
+    assert.equal(byName.get('house-rules.txt'), null, 'a name naming no brand was given one anyway');
+  });
+});
+
 describe('what the Brain hands the generator', () => {
   it('delivers the shape the request asked for, not the nearest one on sale', async () => {
     await uploadText(mm, 'voice.txt', 'Warm, celebratory, never about the alcohol itself.');

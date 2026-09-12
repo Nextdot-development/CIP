@@ -199,19 +199,23 @@ export async function planGeneration(
       // crops a poster; both still reach the model, in the order that matters.
       prefer: input.mediaType === 'video' ? 'video' : 'visual',
     }),
-    similarAssets(scope, requestText),
+    // The brand is carried into retrieval, not only into the facts. A
+    // sibling's packshot shown to a generator does not argue with the brief —
+    // it copies, and what comes back is the other brand.
+    similarAssets(scope, requestText, BRAIN_LIMITS.maxReferences, brand),
     // Individual posts read off this company's PDFs. A whole deck retrieved as
     // one asset says "there is a deck"; the four posts inside it that match
     // the request are the part worth putting in front of the model.
-    similarPosts(scope, requestText),
+    similarPosts(scope, requestText, BRAIN_LIMITS.maxReferences, brand),
     knownSubjects(scope),
   ]);
 
-  const examples = await ratedExamples(scope, { mediaType: input.mediaType });
+  const examples = await ratedExamples(scope, { mediaType: input.mediaType, brand });
 
   // Lessons are fetched for the context the caller already knows. The brief may
   // identify a narrower one; that is applied on the second pass below.
   const lessons = await applicableLessons(scope, {
+    brand,
     taskType: null,
     platform: input.platform ?? null,
     campaign: input.campaign ?? null,
@@ -271,6 +275,7 @@ export async function planGeneration(
   // learning context-aware: a lesson scoped to one campaign only reaches a
   // brief for that campaign.
   const scopedLessons = await applicableLessons(scope, {
+    brand,
     taskType: brief.taskType,
     platform: brief.platform,
     campaign: brief.campaign,
