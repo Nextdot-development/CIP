@@ -93,6 +93,28 @@ const TYPE_COLOR: Record<GraphNodeType, string> = {
   chunk: '#fcd34d',
 };
 
+/**
+ * A hub's colour is the kind of thing it is.
+ *
+ * This is what makes the portfolio readable at a glance rather than after
+ * clicking twelve nodes: every spirit is one colour, every flavour another.
+ * The tail - words two brands happened to share that CIP cannot name a kind
+ * for - is deliberately grey, so the taxonomy reads first and the incidental
+ * stuff recedes instead of competing with it.
+ */
+const DIMENSION_COLOR: Record<string, string> = {
+  country:  '#7dd3fc',
+  category: '#fdba74',
+  flavour:  '#86efac',
+  tier:     '#c4b5fd',
+};
+const UNNAMED_HUB = '#8a94a6';
+
+function colorFor(node: SimNode): string {
+  if (node.type !== 'trait') return TYPE_COLOR[node.type];
+  return DIMENSION_COLOR[node.dimension ?? ''] ?? UNNAMED_HUB;
+}
+
 const TYPE_ICON: Record<GraphNodeType, IconName> = {
   brand: 'sparkle',
   trait: 'link',
@@ -120,8 +142,26 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
   const [query, setQuery] = useState('');
   const [sourceFilter, setSourceFilter] = useState<GraphSource | 'all'>('all');
   const [typeFilter, setTypeFilter] = useState<GraphNodeType | 'all'>('all');
+  /**
+   * Which links are drawn.
+   *
+   * Starts on the hubs rather than on everything. The hubs and the
+   * brand-to-brand lines say the same thing twice - one as groups, one as
+   * pairs - and showing both at once doubles the edges for no extra meaning.
+   * Either is a click away.
+   */
   const [edgeFilter, setEdgeFilter] =
-    useState<'all' | 'contains' | 'related' | 'resembles' | 'shares'>('all');
+    useState<'all' | 'contains' | 'related' | 'resembles' | 'shares'>('shares');
+  /**
+   * Which of the two graphs is on screen.
+   *
+   * There are two, and drawing them at once was the problem. "Where does this
+   * file live" is a tree of sources, folders and documents; "what does CIP
+   * know about" is brands and what they have in common. Together they came to
+   * nearly two hundred nodes and three hundred and fifty edges, which is not
+   * a graph anybody can read.
+   */
+  const [view, setView] = useState<'brands' | 'files' | 'all'>('brands');
   const [busy, setBusy] = useState(false);
   const [size, setSize] = useState({ width: 800, height: 600 });
 
@@ -137,10 +177,16 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
   useEffect(() => {
     const handle = graphRef.current;
     if (!handle?.d3Force) return;
-    handle.d3Force('charge')?.strength?.(-420);
-    handle.d3Force('link')?.distance?.(90);
+
+    // The portfolio is a few dozen nodes and every one of them carries a
+    // label, so it needs far more room than a cloud of unlabelled dots. The
+    // file tree is hundreds of nodes and the same spacing would fling them
+    // off the canvas.
+    const roomy = view === 'brands';
+    handle.d3Force('charge')?.strength?.(roomy ? -900 : -420);
+    handle.d3Force('link')?.distance?.(roomy ? 150 : 90);
     handle.d3ReheatSimulation();
-  }, [nodes.length]);
+  }, [nodes.length, view]);
 
   // The canvas is sized from its container rather than the viewport, so the
   // sidebar and any future chrome are accounted for automatically.
@@ -198,6 +244,7 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
       setBusy(true);
       try {
         const graph = await fetchGraph({
+          view,
           ...(sourceFilter !== 'all' ? { source: sourceFilter } : {}),
           ...(typeFilter !== 'all' ? { type: typeFilter } : {}),
           ...overrides,
@@ -214,7 +261,7 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
         setBusy(false);
       }
     },
-    [fetchGraph, sourceFilter, typeFilter],
+    [fetchGraph, sourceFilter, typeFilter, view],
   );
 
   const expand = useCallback(
@@ -409,35 +456,72 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
           {matches.size > 0 && <span className="graph-hits">{matches.size}</span>}
         </div>
 
-        <select value={sourceFilter} onChange={(e) => {
-          const value = e.target.value as GraphSource | 'all';
-          setSourceFilter(value);
-          void reload({ ...(value !== 'all' ? { source: value } : {}) });
-        }}>
-          <option value="all">All sources</option>
-          <option value="cip_drive">CIP Drive</option>
-          <option value="google_drive">Google Drive</option>
-        </select>
+        {/* Which graph. First control on the bar, because it decides what
+            every other control here even applies to. */}
+        <div className="graph-views" role="group" aria-label="What to show">
+          {([
+            ['brands', 'Brands'],
+            ['files', 'Files'],
+            ['all', 'Everything'],
+          ] as const).map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              className={view === value ? 'is-on' : ''}
+              aria-pressed={view === value}
+              disabled={busy}
+              onClick={() => {
+                if (view === value) return;
+                setView(value);
+                // The filters below belong to the other graph and mean nothing
+                // here, so they go back to showing everything rather than
+                // silently hiding half of what was just asked for.
+                setSourceFilter('all');
+                setTypeFilter('all');
+                // Each view has a sensible thing to lead with: groups in the
+                // portfolio, structure in the files.
+                setEdgeFilter(value === 'files' ? 'contains' : 'shares');
+                void reload({ view: value });
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
 
-        <select value={typeFilter} onChange={(e) => {
-          const value = e.target.value as GraphNodeType | 'all';
-          setTypeFilter(value);
-          void reload({ ...(value !== 'all' ? { type: value } : {}) });
-        }}>
-          <option value="all">All types</option>
-          <option value="brand">Brands</option>
-          <option value="trait">What they share</option>
-          <option value="folder">Folders</option>
-          <option value="file">Files</option>
-          <option value="chunk">Passages</option>
-        </select>
+        {view !== 'brands' && (
+          <select value={sourceFilter} onChange={(e) => {
+            const value = e.target.value as GraphSource | 'all';
+            setSourceFilter(value);
+            void reload({ ...(value !== 'all' ? { source: value } : {}) });
+          }}>
+            <option value="all">All sources</option>
+            <option value="cip_drive">CIP Drive</option>
+            <option value="google_drive">Google Drive</option>
+          </select>
+        )}
+
+        {view !== 'brands' && (
+          <select value={typeFilter} onChange={(e) => {
+            const value = e.target.value as GraphNodeType | 'all';
+            setTypeFilter(value);
+            void reload({ ...(value !== 'all' ? { type: value } : {}) });
+          }}>
+            <option value="all">All types</option>
+            <option value="brand">Brands</option>
+            <option value="trait">What they share</option>
+            <option value="folder">Folders</option>
+            <option value="file">Files</option>
+            <option value="chunk">Passages</option>
+          </select>
+        )}
 
         <select value={edgeFilter} onChange={(e) => setEdgeFilter(e.target.value as typeof edgeFilter)}>
           <option value="all">All links</option>
-          <option value="contains">Contains</option>
-          <option value="related">Related passages</option>
-          <option value="shares">Grouped by what they are</option>
-          <option value="resembles">Brands alike</option>
+          {view !== 'files' && <option value="shares">Grouped by what they are</option>}
+          {view !== 'files' && <option value="resembles">Brand to brand</option>}
+          {view !== 'brands' && <option value="contains">Contains</option>}
+          {view !== 'brands' && <option value="related">Related passages</option>}
         </select>
 
         <div className="graph-zoom">
@@ -511,22 +595,52 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
             }}
           />
 
+          {/* What is on screen, counted in the words of whichever graph this
+              is. Folder and passage counts under the portfolio told somebody
+              about a picture they were not looking at. */}
           <div className="graph-stats">
-            <b>{liveStats.nodes}</b> Nodes
-            <b>{liveStats.edges}</b> Connections
-            <b>{liveStats.files}</b> Files
-            <b>{liveStats.folders}</b> Folders
-            <b>{liveStats.chunks}</b> Passages
-            <b>{liveStats.sources}</b> Sources
+            {view === 'brands' ? (
+              <>
+                <b>{nodes.filter((n) => n.type === 'brand').length}</b> Brands
+                <b>{nodes.filter((n) => n.type === 'trait').length}</b> Things in common
+                <b>{liveStats.edges}</b> Connections
+                <b>{liveStats.files}</b> Files read
+              </>
+            ) : (
+              <>
+                <b>{liveStats.nodes}</b> Nodes
+                <b>{liveStats.edges}</b> Connections
+                <b>{liveStats.files}</b> Files
+                <b>{liveStats.folders}</b> Folders
+                <b>{liveStats.chunks}</b> Passages
+              </>
+            )}
           </div>
 
+          {/* The legend names what is on screen, not the full vocabulary.
+              Listing folders and passages under the portfolio was a legend
+              for a different picture. */}
           <div className="graph-legend">
-            {(['source', 'folder', 'file', 'chunk'] as GraphNodeType[]).map((type) => (
-              <span key={type}>
-                <i style={{ background: TYPE_COLOR[type] }} />
-                {type === 'chunk' ? 'passage' : type}
-              </span>
-            ))}
+            {view === 'brands'
+              ? (
+                <>
+                  <span><i style={{ background: TYPE_COLOR.brand }} />brand</span>
+                  {(['category', 'flavour', 'tier', 'country'] as const)
+                    .filter((d) => nodes.some((n) => n.type === 'trait' && n.dimension === d))
+                    .map((d) => (
+                      <span key={d}><i style={{ background: DIMENSION_COLOR[d] }} />{d}</span>
+                    ))}
+                  {nodes.some((n) => n.type === 'trait' && !n.dimension) && (
+                    <span><i style={{ background: UNNAMED_HUB }} />also shared</span>
+                  )}
+                </>
+              )
+              : (['source', 'folder', 'file', 'chunk'] as GraphNodeType[]).map((type) => (
+                <span key={type}>
+                  <i style={{ background: TYPE_COLOR[type] }} />
+                  {type === 'chunk' ? 'passage' : type}
+                </span>
+              ))}
           </div>
 
           {busy && <div className="graph-busy">Working…</div>}
@@ -721,7 +835,7 @@ function drawNode(
 
   ctx.beginPath();
   ctx.arc(x, y, radius, 0, 2 * Math.PI);
-  ctx.fillStyle = TYPE_COLOR[node.type];
+  ctx.fillStyle = colorFor(node);
   ctx.fill();
 
   if (isSelected) {
@@ -742,20 +856,41 @@ function drawNode(
   // Labels only once there is room for them, and always for what is selected.
   // Labels are drawn when there is room for them. Passages are the numerous
   // kind, so they stay quiet until somebody zooms in or picks one.
+  // A brand and a hub are always named. There are a few dozen of them and
+  // reading your own brands the moment the page opens is the entire point -
+  // a constellation of unlabelled dots proves nothing about what CIP knows.
+  // Files and passages are the numerous kind and stay quiet until zoomed to.
   const showLabel =
     isSelected ||
+    node.type === 'brand' ||
+    node.type === 'trait' ||
     node.type === 'source' ||
     node.type === 'folder' ||
     (node.type === 'file' && scale > 0.9) ||
     scale > 2;
+
   if (showLabel && !dimmed) {
-    const size = Math.max(10 / scale, 2.2);
-    ctx.font = `${size}px Inter, system-ui, sans-serif`;
+    const emphasis = node.type === 'brand' || (node.type === 'trait' && node.dimension);
+    const size = Math.max((emphasis ? 11 : 10) / scale, 2.2);
+    ctx.font = `${emphasis ? 600 : 400} ${size}px Inter, system-ui, sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
-    ctx.fillStyle = isSelected ? '#ffffff' : 'rgba(226,232,240,0.85)';
+
     const label = node.label.length > 30 ? `${node.label.slice(0, 29)}…` : node.label;
-    ctx.fillText(label, x, y + radius + 2);
+
+    // A dark halo behind the text, so a label crossing an edge or another
+    // node stays readable instead of dissolving into it.
+    ctx.lineWidth = 3 / scale;
+    ctx.strokeStyle = 'rgba(8, 11, 16, 0.85)';
+    ctx.lineJoin = 'round';
+    ctx.strokeText(label, x, y + radius + 3);
+
+    ctx.fillStyle = isSelected
+      ? '#ffffff'
+      : emphasis
+        ? 'rgba(241,245,249,0.95)'
+        : 'rgba(203,213,225,0.72)';
+    ctx.fillText(label, x, y + radius + 3);
   }
 
   ctx.globalAlpha = 1;

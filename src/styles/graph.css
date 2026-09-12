@@ -35,6 +35,23 @@
   background: #facc15; border-radius: 999px; padding: 1px 7px;
 }
 
+/* Which of the two graphs is on screen. A segmented control rather than a
+   select, because it is the one choice on this bar that changes what every
+   other control means, and it should not look like a peer of them. */
+.graph-views { display: flex; gap: 0; border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: var(--r-sm); overflow: hidden; background: #0d1017; }
+.graph-views button {
+  appearance: none; border: 0; background: none; cursor: pointer;
+  font: inherit; font-size: 13px; color: #94a3b8;
+  padding: 7px 13px; white-space: nowrap;
+  border-right: 1px solid rgba(148, 163, 184, 0.16);
+}
+.graph-views button:last-child { border-right: 0; }
+.graph-views button:hover:not(.is-on) { background: #161b26; color: #cbd5e1; }
+.graph-views button.is-on { background: var(--brand); color: #fff; }
+.graph-views button:disabled { cursor: default; opacity: 0.6; }
+.graph-views button:focus-visible { outline: 2px solid #7dd3fc; outline-offset: -2px; }
+
 .graph-toolbar select {
   background: #0d1017; color: #e2e8f0; font: inherit; font-size: 13px;
   border: 1px solid rgba(148, 163, 184, 0.22); border-radius: var(--r-sm);

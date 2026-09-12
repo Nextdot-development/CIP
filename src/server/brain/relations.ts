@@ -116,6 +116,8 @@ const NOT_A_TERM = new Set([
   'colours', 'colors', 'tone', 'tones', 'look', 'feel', 'features',
   'featuring', 'used', 'uses', 'using', 'set', 'sets', 'type', 'types',
   'panel', 'panels', 'boxes', 'holding', 'placed-on', 'sits', 'sitting',
+  'composition', 'layout', 'arrangement', 'framing', 'crop', 'cropped',
+  'outline', 'highlight', 'highlights', 'shadow', 'shadows', 'reflection',
 ]);
 
 /**
@@ -140,6 +142,14 @@ function termsIn(rawValue: string): string[] {
   const terms = new Set<string>([value]);
   for (const word of value.split(' ')) {
     if (word.length < 3 || NOT_A_TERM.has(word)) continue;
+
+    // Adverbs describe how something was done, never what a brand is.
+    // "predominantly", "prominently", "clearly" all surfaced as things two
+    // brands supposedly had in common, which is true and says nothing. A
+    // suffix rule rather than a list, because there are hundreds of them and
+    // a vision model will reach for a different one tomorrow.
+    if (word.length > 5 && word.endsWith('ly')) continue;
+
     terms.add(word);
   }
   return [...terms];
@@ -457,9 +467,19 @@ export async function sharedTraits(
       .sort((a, b) => {
         const rank = (d: TraitDimension): number =>
           d === null ? DIMENSION_ORDER.length : DIMENSION_ORDER.indexOf(d);
+        if (rank(a.dimension) !== rank(b.dimension)) return rank(a.dimension) - rank(b.dimension);
+        if (b.weight !== a.weight) return b.weight - a.weight;
+
+        // Among equally rare words, the specific one first. Most of the tail
+        // is held by exactly two brands, so the weights tie and the tiebreak
+        // decides everything - and sorting those alphabetically put "750",
+        // "accent" and "alc" at the top while "non-chill filtered" and
+        // "bourbon" never appeared at all. A phrase two brands both used is
+        // worth more than a word they both happened to contain.
+        const phrase = (t: { value: string }): number => (t.value.includes(' ') ? 0 : 1);
         return (
-          rank(a.dimension) - rank(b.dimension) ||
-          b.weight - a.weight ||
+          phrase(a) - phrase(b) ||
+          b.value.length - a.value.length ||
           a.value.localeCompare(b.value)
         );
       })

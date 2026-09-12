@@ -85,6 +85,12 @@ beforeEach(async () => {
   // Each case builds the knowledge it needs, so nothing inherits another's.
   await adminSql`delete from drive_files`;
   await adminSql`delete from drive_folders`;
+  // The portfolio too, or one case's roster becomes another's graph.
+  await adminSql`delete from brand_relations`;
+  await adminSql`delete from brand_traits`;
+  await adminSql`delete from brand_dna_evidence`;
+  await adminSql`delete from brand_dna_facts`;
+  await adminSql`delete from company_brands`;
 });
 
 after(async () => {
@@ -100,7 +106,7 @@ after(async () => {
 
 describe('the graph is built from real rows', () => {
   it('a company with nothing gets an empty graph, not a demo one', async () => {
-    const result = await graph.knowledgeGraph(nh);
+    const result = await graph.knowledgeGraph(nh, { view: 'files' });
     assert.equal(result.empty, true);
     assert.equal(result.nodes.length, 0);
     assert.equal(result.edges.length, 0);
@@ -113,7 +119,7 @@ describe('the graph is built from real rows', () => {
     const folder = await drive.createFolder(mm, null, 'Campaigns');
     const file = await upload(mm, folder.id, 'diwali.txt', 'A brief about lanterns and warmth.');
 
-    const result = await graph.knowledgeGraph(mm);
+    const result = await graph.knowledgeGraph(mm, { view: 'files' });
     assert.equal(result.empty, false);
 
     const folderNode = result.nodes.find((n) => n.id === folder.id);
@@ -132,7 +138,7 @@ describe('the graph is built from real rows', () => {
   it('a CIP Drive source node appears, and Google Drive only once something is synced', async () => {
     await upload(mm, null, 'uploaded.txt', 'An ordinary upload.');
 
-    let result = await graph.knowledgeGraph(mm);
+    let result = await graph.knowledgeGraph(mm, { view: 'files' });
     assert.ok(result.nodes.some((n) => n.id === 'source:cip_drive'));
     assert.ok(
       !result.nodes.some((n) => n.id === 'source:google_drive'),
@@ -143,7 +149,7 @@ describe('the graph is built from real rows', () => {
     const synced = await upload(mm, null, 'from-google.txt', 'A synced document.');
     await adminSql`update drive_files set source_type = 'google_drive' where id = ${synced.id}`;
 
-    result = await graph.knowledgeGraph(mm);
+    result = await graph.knowledgeGraph(mm, { view: 'files' });
     const googleNode = result.nodes.find((n) => n.id === 'source:google_drive');
     assert.ok(googleNode, 'a synced file produced no Google Drive source node');
     assert.equal(result.nodes.find((n) => n.id === synced.id)?.source, 'google_drive');
@@ -159,7 +165,7 @@ describe('the graph is built from real rows', () => {
     await upload(mm, folder.id, 'two.txt', 'Second document about lanterns.');
     await extractAll();
 
-    const result = await graph.knowledgeGraph(mm);
+    const result = await graph.knowledgeGraph(mm, { view: 'files' });
     assert.equal(result.stats.files, 2);
     assert.equal(result.stats.folders, 1);
     assert.equal(result.stats.nodes, result.nodes.length);
@@ -173,7 +179,7 @@ describe('expansion is lazy', () => {
     const file = await upload(mm, null, 'long.txt', 'A passage about lanterns and warmth.');
     await extractAll();
 
-    const result = await graph.knowledgeGraph(mm);
+    const result = await graph.knowledgeGraph(mm, { view: 'files' });
     assert.ok(!result.nodes.some((n) => n.type === 'chunk'), 'chunks were sent before being asked for');
     // But the file knows there is more inside it.
     assert.equal(result.nodes.find((n) => n.id === file.id)?.expandable, true);
@@ -281,18 +287,18 @@ describe('search finds real knowledge', () => {
     const file = await upload(mm, null, 'brand-voice.txt', 'We talk about diabetes care with plain words.');
     await extractAll();
 
-    const byName = await graph.knowledgeGraph(mm, { search: 'brand-voice' });
+    const byName = await graph.knowledgeGraph(mm, { view: 'files', search: 'brand-voice' });
     assert.ok(byName.matches.includes(file.id), 'a file was not matched by its name');
 
     // The word appears only inside the document, never in its name.
-    const byText = await graph.knowledgeGraph(mm, { search: 'diabetes' });
+    const byText = await graph.knowledgeGraph(mm, { view: 'files', search: 'diabetes' });
     assert.ok(byText.matches.length > 0, 'nothing matched text inside a document');
     assert.ok(byText.matches.includes(file.id), 'the matching passage did not point at its file');
   });
 
   it('a search that matches nothing returns no matches rather than everything', async () => {
     await upload(mm, null, 'something.txt', 'Ordinary content.');
-    const result = await graph.knowledgeGraph(mm, { search: 'zzzznothingmatchesthis' });
+    const result = await graph.knowledgeGraph(mm, { view: 'files', search: 'zzzznothingmatchesthis' });
     assert.deepEqual(result.matches, []);
   });
 
@@ -300,12 +306,101 @@ describe('search finds real knowledge', () => {
     await upload(nh, null, 'consent-policy.txt', 'Patient consent must be signed before filming.');
     await extractAll();
 
-    const asMagicMoments = await graph.knowledgeGraph(mm, { search: 'consent' });
+    const asMagicMoments = await graph.knowledgeGraph(mm, { view: 'files', search: 'consent' });
     assert.deepEqual(asMagicMoments.matches, [], 'a search crossed the company boundary');
 
     // and the owning company does find it, so this proves isolation
-    const asNarayana = await graph.knowledgeGraph(nh, { search: 'consent' });
+    const asNarayana = await graph.knowledgeGraph(nh, { view: 'files', search: 'consent' });
     assert.ok(asNarayana.matches.length > 0);
+  });
+});
+
+describe('two graphs, drawn one at a time', () => {
+  /** A roster with something in common, so the portfolio has anything in it. */
+  async function portfolio(): Promise<void> {
+    // Four brands, three of them whisky. A word every brand has groups them
+    // all, which is the same as grouping none, so a fixture where everything
+    // is whisky produces no whisky hub - correctly.
+    for (const [position, name] of ['Rampur', 'Sangam', '8PM', 'Jaisalmer'].entries()) {
+      await adminSql`
+        insert into company_brands (company_id, name, position)
+        values (${mm.companyId}, ${name}, ${position})
+        on conflict do nothing
+      `;
+    }
+    for (const [brand, value] of [
+      ['Rampur', 'single malt whisky'],
+      ['Sangam', 'world malt whisky'],
+      ['8PM', 'indian whisky'],
+      ['Jaisalmer', 'indian craft gin'],
+    ] as const) {
+      await adminSql`
+        insert into brand_dna_facts
+          (company_id, section, attribute, value, brand, kind, confidence, evidence_count)
+        values (${mm.companyId}, 'visual', 'label text', ${value}, ${brand}, 'observed', 0.6, 1)
+        on conflict do nothing
+      `;
+    }
+    const { recomputeRelations } = await import('../src/server/brain/relations');
+    await recomputeRelations(mm);
+  }
+
+  it('opens on the portfolio, not on every file at once', async () => {
+    await portfolio();
+    const result = await graph.knowledgeGraph(mm);
+
+    // Drawing both graphs together came to nearly two hundred nodes and three
+    // hundred and fifty edges on a real company. Correct, and unreadable.
+    const types = new Set(result.nodes.map((n) => n.type));
+    assert.ok(types.has('brand'), 'the portfolio view has no brands in it');
+    assert.ok(!types.has('file'), 'the default view is drawing the file tree as well');
+    assert.ok(!types.has('folder'), 'the default view is drawing folders as well');
+  });
+
+  it('draws the file tree when that is what was asked for', async () => {
+    await upload(mm, null, 'brand-book.txt', 'How the house writes.');
+    const result = await graph.knowledgeGraph(mm, { view: 'files' });
+    const types = new Set(result.nodes.map((n) => n.type));
+
+    assert.ok(types.has('file'));
+    assert.ok(!types.has('brand'), 'the file tree is drawing the portfolio as well');
+    assert.ok(!types.has('trait'));
+  });
+
+  it('draws both when somebody genuinely wants both', async () => {
+    await portfolio();
+    await upload(mm, null, 'brand-book.txt', 'How the house writes.');
+    const result = await graph.knowledgeGraph(mm, { view: 'all' });
+    const types = new Set(result.nodes.map((n) => n.type));
+
+    assert.ok(types.has('file'));
+    assert.ok(types.has('brand'));
+  });
+
+  it('leaves no edge pointing at something it did not draw', async () => {
+    await portfolio();
+    await upload(mm, null, 'rampur-bottle.txt', 'A bottle.');
+    // A brand owns files, and in the portfolio those files are not on the
+    // canvas. An edge to a node that does not exist is how a force layout
+    // quietly throws everything into a corner.
+    for (const view of ['brands', 'files', 'all'] as const) {
+      const result = await graph.knowledgeGraph(mm, { view });
+      const drawn = new Set(result.nodes.map((n) => n.id));
+      for (const edge of result.edges) {
+        assert.ok(drawn.has(edge.source), `${view}: an edge starts at a node that is not drawn`);
+        assert.ok(drawn.has(edge.target), `${view}: an edge ends at a node that is not drawn`);
+      }
+    }
+  });
+
+  it('groups the brands under headings it can name', async () => {
+    await portfolio();
+    const result = await graph.knowledgeGraph(mm);
+
+    const whisky = result.nodes.find((n) => n.type === 'trait' && n.label === 'whisky');
+    assert.ok(whisky, 'three whiskies and no whisky to hang them from');
+    assert.equal(whisky.dimension, 'category');
+    assert.equal(whisky.brandCount, 3);
   });
 });
 
@@ -315,7 +410,7 @@ describe('filters', () => {
     const synced = await upload(mm, null, 'google.txt', 'From Google Drive.');
     await adminSql`update drive_files set source_type = 'google_drive' where id = ${synced.id}`;
 
-    const onlyGoogle = await graph.knowledgeGraph(mm, { source: 'google_drive' });
+    const onlyGoogle = await graph.knowledgeGraph(mm, { view: 'files', source: 'google_drive' });
     const fileIds = onlyGoogle.nodes.filter((n) => n.type === 'file').map((n) => n.id);
     assert.deepEqual(fileIds, [synced.id]);
     assert.ok(!fileIds.includes(uploaded.id));
@@ -325,7 +420,7 @@ describe('filters', () => {
     const folder = await drive.createFolder(mm, null, 'Filtered');
     await upload(mm, folder.id, 'file.txt', 'Content.');
 
-    const onlyFolders = await graph.knowledgeGraph(mm, { type: 'folder' });
+    const onlyFolders = await graph.knowledgeGraph(mm, { view: 'files', type: 'folder' });
     assert.ok(onlyFolders.nodes.every((n) => n.type === 'folder' || n.type === 'source'));
 
     const ids = new Set(onlyFolders.nodes.map((n) => n.id));
@@ -339,12 +434,12 @@ describe('bounds', () => {
   it('never returns more nodes than the cap allows', async () => {
     for (let i = 0; i < 12; i += 1) await upload(mm, null, `bulk-${i}.txt`, `Document ${i}.`);
 
-    const limited = await graph.knowledgeGraph(mm, { limit: 5 });
+    const limited = await graph.knowledgeGraph(mm, { view: 'files', limit: 5 });
     assert.ok(limited.nodes.filter((n) => n.type === 'file').length <= 5);
     assert.equal(limited.truncated, true, 'a truncated graph did not say so');
 
     // An absurd limit is clamped rather than honoured.
-    const huge = await graph.knowledgeGraph(mm, { limit: 100_000 });
+    const huge = await graph.knowledgeGraph(mm, { view: 'files', limit: 100_000 });
     assert.ok(huge.nodes.length <= graph.GRAPH_LIMITS.maxNodes);
   });
 });
@@ -357,7 +452,7 @@ describe('one company cannot reach another', () => {
     const ourFile = await upload(mm, ourFolder.id, 'diwali.txt', 'Diwali brief.');
     await extractAll();
 
-    const ours = await graph.knowledgeGraph(mm);
+    const ours = await graph.knowledgeGraph(mm, { view: 'files' });
     const ourIds = new Set(ours.nodes.map((n) => n.id));
     assert.ok(ourIds.has(ourFile.id) && ourIds.has(ourFolder.id));
     assert.ok(!ourIds.has(theirFile.id), 'another company file appeared in the graph');
@@ -372,7 +467,7 @@ describe('one company cannot reach another', () => {
     }
 
     // And the reverse holds, so this is isolation rather than an empty graph.
-    const theirs = await graph.knowledgeGraph(nh);
+    const theirs = await graph.knowledgeGraph(nh, { view: 'files' });
     const theirIds = new Set(theirs.nodes.map((n) => n.id));
     assert.ok(theirIds.has(theirFile.id));
     assert.ok(!theirIds.has(ourFile.id));
@@ -396,7 +491,7 @@ describe('one company cannot reach another', () => {
     await upload(nh, null, 'theirs-2.txt', 'Two.');
     await upload(mm, null, 'ours.txt', 'Ours.');
 
-    const ours = await graph.knowledgeGraph(mm);
+    const ours = await graph.knowledgeGraph(mm, { view: 'files' });
     assert.equal(ours.stats.files, 1, 'the count included another company files');
   });
 
@@ -413,7 +508,7 @@ describe('nothing sensitive reaches the browser', () => {
     const file = await upload(mm, folder.id, 'doc.txt', 'Some content about lanterns.');
     await extractAll();
 
-    const overview = await graph.knowledgeGraph(mm);
+    const overview = await graph.knowledgeGraph(mm, { view: 'files' });
     const expanded = await graph.knowledgeGraph(mm, { nodeId: file.id });
 
     for (const payload of [JSON.stringify(overview), JSON.stringify(expanded)]) {
@@ -435,7 +530,7 @@ describe('nothing sensitive reaches the browser', () => {
 
   it('a file node exposes its type and status but nothing about where it lives', async () => {
     const file = await upload(mm, null, 'shown.txt', 'Content.');
-    const result = await graph.knowledgeGraph(mm);
+    const result = await graph.knowledgeGraph(mm, { view: 'files' });
     const node = result.nodes.find((n) => n.id === file.id)!;
 
     assert.equal(node.fileType, 'txt');

@@ -30,6 +30,13 @@ import type { TraitDimension } from '../brain/relations';
 
 export type GraphNodeType = 'source' | 'folder' | 'file' | 'chunk' | 'brand' | 'trait';
 
+/**
+ * brands  the portfolio: who is like whom, and what they have in common.
+ * files   where knowledge is stored: sources, folders, documents.
+ * all     both at once, for anybody who wants it.
+ */
+export type GraphView = 'brands' | 'files' | 'all';
+
 export type GraphSource = 'cip_drive' | 'google_drive';
 
 /**
@@ -117,6 +124,16 @@ export type GraphOptions = {
   source?: GraphSource | 'all' | null;
   type?: GraphNodeType | 'all' | null;
   limit?: number;
+  /**
+   * Which of the two graphs to draw.
+   *
+   * There are two, and drawing them at once was the mistake. "Where does this
+   * file live" is a tree of sources, folders and files; "what does CIP know
+   * about" is brands and the things they have in common. Together they came to
+   * 194 nodes and 356 edges on a real company, which is not a graph anybody
+   * can read - it is a hairball that happens to be correct.
+   */
+  view?: GraphView;
 };
 
 /** Bounds, so a large company cannot produce a browser-melting payload. */
@@ -172,12 +189,15 @@ export async function knowledgeGraph(
   const sourceFilter = options.source && options.source !== 'all' ? options.source : null;
   const typeFilter = options.type && options.type !== 'all' ? options.type : null;
   const search = typeof options.search === 'string' ? options.search.trim() : '';
+  // The portfolio by default. It is the smaller of the two graphs and the one
+  // that answers a question somebody actually has.
+  const view: GraphView = options.view ?? 'brands';
 
   if (options.nodeId) {
     return expandNode(scope, options.nodeId, { limit, sourceFilter, typeFilter });
   }
 
-  return overview(scope, { limit, sourceFilter, typeFilter, search });
+  return overview(scope, { limit, sourceFilter, typeFilter, search, view });
 }
 
 // --- the default view -------------------------------------------------------
@@ -189,8 +209,11 @@ async function overview(
     sourceFilter: GraphSource | null;
     typeFilter: GraphNodeType | null;
     search: string;
+    view: GraphView;
   },
 ): Promise<KnowledgeGraphDTO> {
+  const showFiles = options.view !== 'brands';
+  const showBrands = options.view !== 'files';
   const { folders, files, brands, relations, totals } = await withCompanyScope(scope, async (tx) => {
     const folderRows = await tx<FolderRow[]>`
       select f.id, f.name, f.parent_id,
@@ -251,13 +274,17 @@ async function overview(
 
   // Fetched outside the block above because it scopes itself, and a company
   // with no roster simply gets none.
-  const hubs = brands.length >= 2 ? await sharedTraits(scope, 60) : [];
+  // A dozen of the unnamed ones, not sixty. Everything CIP can name - the
+  // spirits, the flavours, the tiers - is kept whatever happens; the tail is
+  // every word two brands happened to share, and on a canvas it stops being a
+  // portfolio and becomes a mesh at about twenty.
+  const hubs = brands.length >= 2 ? await sharedTraits(scope, 12) : [];
 
   const nodes: GraphNode[] = [];
   const edges: GraphEdge[] = [];
 
   // One node per source that actually has files. Never a source nobody uses.
-  const usedSources = [...new Set(files.map((f) => f.source_type))];
+  const usedSources = showFiles ? [...new Set(files.map((f) => f.source_type))] : [];
   for (const source of usedSources) {
     nodes.push({
       id: sourceNodeId(source),
@@ -269,9 +296,9 @@ async function overview(
     });
   }
 
-  const folderIds = new Set(folders.map((f) => f.id));
+  const folderIds = new Set(showFiles ? folders.map((f) => f.id) : []);
 
-  for (const folder of folders) {
+  for (const folder of showFiles ? folders : []) {
     nodes.push({
       id: folder.id,
       type: 'folder',
@@ -288,7 +315,7 @@ async function overview(
     }
   }
 
-  for (const file of files) {
+  for (const file of showFiles ? files : []) {
     nodes.push({
       id: file.id,
       type: 'file',
@@ -310,7 +337,7 @@ async function overview(
   // only if that source node exists — otherwise the edge would dangle.
   const hasCipSource = nodes.some((n) => n.id === sourceNodeId('cip_drive'));
   if (hasCipSource) {
-    for (const folder of folders) {
+    for (const folder of showFiles ? folders : []) {
       const parentInView = folder.parent_id && folderIds.has(folder.parent_id);
       if (!parentInView) {
         edges.push({ source: sourceNodeId('cip_drive'), target: folder.id, kind: 'contains' });
@@ -322,7 +349,7 @@ async function overview(
   // place a file lives, it is what a file is about, and the same folder can
   // hold several brands' work.
   const drawn = new Set(nodes.map((n) => n.id));
-  for (const brand of brands) {
+  for (const brand of showBrands ? brands : []) {
     nodes.push({
       id: brandNodeId(brand.name),
       type: 'brand',
@@ -348,8 +375,8 @@ async function overview(
   // thing and are harder to look at; both are drawn because they answer
   // different questions — "what is this brand like?" and "which of our brands
   // are whiskies?".
-  const onRoster = new Set(brands.map((b) => b.name));
-  for (const trait of hubs) {
+  const onRoster = new Set(showBrands ? brands.map((b) => b.name) : []);
+  for (const trait of showBrands ? hubs : []) {
     const members = trait.brands.filter((b) => onRoster.has(b));
     if (members.length < 2) continue;
 
@@ -371,7 +398,7 @@ async function overview(
   }
 
   // And how the brands relate to each other, with the reason attached.
-  for (const relation of relations) {
+  for (const relation of showBrands ? relations : []) {
     if (!onRoster.has(relation.brand_a) || !onRoster.has(relation.brand_b)) continue;
     edges.push({
       source: brandNodeId(relation.brand_a),

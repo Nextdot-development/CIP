@@ -1,7 +1,7 @@
 import { requireSessionOr401 } from '@/server/auth/guards';
 import { noStore } from '@/server/drive/http';
 import { knowledgeGraph } from '@/server/knowledge/graph';
-import type { GraphNodeType, GraphSource } from '@/server/knowledge/graph';
+import type { GraphNodeType, GraphSource, GraphView } from '@/server/knowledge/graph';
 
 /**
  * GET /api/knowledge-graph
@@ -15,7 +15,8 @@ import type { GraphNodeType, GraphSource } from '@/server/knowledge/graph';
  */
 export const dynamic = 'force-dynamic';
 
-const NODE_TYPES = ['source', 'folder', 'file', 'chunk'] as const;
+const NODE_TYPES = ['source', 'folder', 'file', 'chunk', 'brand', 'trait'] as const;
+const VIEWS = ['brands', 'files', 'all'] as const;
 const SOURCES = ['cip_drive', 'google_drive'] as const;
 
 export async function GET(request: Request) {
@@ -24,8 +25,9 @@ export async function GET(request: Request) {
 
   const params = new URL(request.url).searchParams;
 
-  // Only these six are read. Anything else in the query string is ignored.
+  // Only these seven are read. Anything else in the query string is ignored.
   const typeParam = params.get('type');
+  const viewParam = params.get('view');
   const sourceParam = params.get('source');
   const limitParam = Number(params.get('limit'));
   const depthParam = Number(params.get('depth'));
@@ -42,6 +44,9 @@ export async function GET(request: Request) {
         ? (typeParam as GraphNodeType)
         : 'all',
       limit: Number.isFinite(limitParam) && limitParam > 0 ? limitParam : undefined,
+      view: (VIEWS as readonly string[]).includes(viewParam ?? '')
+        ? (viewParam as GraphView)
+        : undefined,
     });
 
     return Response.json(graph, { headers: noStore });
