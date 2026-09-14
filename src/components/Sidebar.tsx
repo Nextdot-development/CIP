@@ -12,25 +12,26 @@ import { SideDrawers } from './SideDrawers';
 import type { Notice } from './SideDrawers';
 
 /**
- * Four places, and everything lives inside one of them.
+ * The modules of the Creative Intelligence System, in the guidebook's order.
  *
- * There were nine. Drive, Media, Knowledge, Knowledge Graph and Brain were
- * each a real thing, but as separate destinations they asked the reader to
- * know CIP's internals before they could find anything: to teach it you went
- * to two different pages, and to see what it had learned, three.
+ * The guidebook lays out seven: Chat with the Brain, Brand Brain, Creative
+ * Search, Consistency Check, Campaign Ideation, Market Intelligence and
+ * Social Calendar. Only the ones that actually work are listed. A module that
+ * is not built yet does not get a "coming soon" entry: a menu full of doors
+ * that open onto nothing is how a product stops being believed.
  *
- * The four that remain are the four things a person actually does.
+ * The addresses did not change when the names did - /trust is the Brand Brain
+ * and /ask is Campaign Ideation - so nothing anybody bookmarked broke.
  *
- *   Home   what CIP knows, at a glance
- *   Teach  give it more — a folder it syncs, or files you upload
- *   Ask    have it make something out of what it knows
- *   Trust  look at everything it has learned, and where each piece came from
+ * "Add data" stays in the menu on purpose. The guidebook asks for adding to
+ * the brain to be always within reach rather than buried inside one screen.
  */
 const NAV: { href: Route; label: string; sub: string; icon: IconName }[] = [
   { href: '/', label: 'Home', sub: 'Where things stand', icon: 'home' },
-  { href: '/teach', label: 'Teach', sub: 'Feed your brand in', icon: 'teach' },
-  { href: '/ask', label: 'Ask', sub: 'Make something', icon: 'ask' },
-  { href: '/trust', label: 'Trust', sub: 'What CIP knows', icon: 'trust' },
+  { href: '/trust', label: 'Brand Brain', sub: 'What CIP knows', icon: 'trust' },
+  { href: '/check', label: 'Consistency Check', sub: 'Score a creative', icon: 'shield' },
+  { href: '/ask', label: 'Campaign Ideation', sub: 'Make something', icon: 'ask' },
+  { href: '/teach', label: 'Add data', sub: 'Feed the brain', icon: 'upload' },
 ];
 
 export function Sidebar({ notices }: { notices: Notice[] }) {

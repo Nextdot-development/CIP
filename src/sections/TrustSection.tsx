@@ -41,7 +41,7 @@ export function TrustSection({
     return (
       <div className="rise">
         <header className="page-head">
-          <p className="eyebrow">Trust</p>
+          <p className="eyebrow">Brand Brain</p>
           <h1>What CIP knows</h1>
         </header>
         <EmptyState
@@ -61,7 +61,7 @@ export function TrustSection({
   return (
     <div className="rise">
       <header className="page-head">
-        <p className="eyebrow">Trust</p>
+        <p className="eyebrow">Brand Brain</p>
         <h1>What CIP knows</h1>
         <p className="lede">
           {overview.learned.facts} things learned from {overview.files.understood} files. Every one
