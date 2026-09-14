@@ -181,6 +181,11 @@ beforeEach(async () => {
   await adminSql`delete from company_brands`;
   // The calendar too, or one case's dates become another's "coming up".
   await adminSql`delete from content_calendar`;
+  // Checks before rules and facts: flags reference both, and a check left
+  // behind would be scored against knowledge the next case never built.
+  await adminSql`delete from check_flags`;
+  await adminSql`delete from creative_checks`;
+  await adminSql`delete from compliance_rules`;
 });
 
 after(async () => {
@@ -779,6 +784,230 @@ describe('context-aware learning', () => {
     assert.ok(
       planner.promptFromBrief(second.brief).includes('Keep the text light.'),
       'the lesson did not reach the prompt',
+    );
+  });
+});
+
+describe('THE CHECKER: a creative judged against the brand, and nothing else', () => {
+  /** An established pattern: enough evidence that a creative can be faulted for leaving it. */
+  async function pattern(brand: string | null, section: string, attribute: string, value: string): Promise<string> {
+    const rows = await adminSql<{ id: string }[]>`
+      insert into brand_dna_facts
+        (company_id, section, attribute, value, brand, kind, confidence, evidence_count)
+      values (${mm.companyId}, ${section}, ${attribute}, ${value}, ${brand}, 'derived', 0.8, 6)
+      returning id
+    `;
+    return rows[0]!.id;
+  }
+
+  async function rule(
+    requirement: 'required' | 'forbidden',
+    text: string,
+    source: 'regulation' | 'suggested' | 'manual' = 'regulation',
+    market: string | null = null,
+    category = 'disclaimer',
+  ): Promise<string> {
+    const rows = await adminSql<{ id: string }[]>`
+      insert into compliance_rules (company_id, market, category, requirement, rule, source)
+      values (${mm.companyId}, ${market}, ${category}, ${requirement}, ${text}, ${source})
+      returning id
+    `;
+    return rows[0]!.id;
+  }
+
+  async function checkedImage(name = 'banner.png') {
+    const { runCheck } = await import('../src/server/brain/checker');
+    const file = await uploadImage(mm, name);
+    return runCheck(mm, { fileId: file.id });
+  }
+
+  it('throws away a flag that cites a rule nobody sent', async () => {
+    await rule('required', 'Carry a responsible drinking message.');
+    // R1 exists. R9 does not: that is a rule the model made up, and a flag
+    // grounded in nothing is exactly the output this product exists to stop.
+    fake.checkFindings = [
+      { ref: 'R9', dimension: 'compliance', severity: 'critical', message: 'Invented rule broken.' },
+      { ref: 'R1', dimension: 'compliance', severity: 'critical', message: 'No responsible drinking message.' },
+    ];
+
+    const check = await checkedImage();
+
+    assert.equal(check.status, 'ready');
+    assert.equal(check.flags.length, 1, 'a flag citing an unsent rule reached the reviewer');
+    assert.equal(check.flags[0]!.message, 'No responsible drinking message.');
+    assert.ok(check.flags[0]!.citedRule, 'the surviving flag does not say which rule it came from');
+  });
+
+  it('fails a creative that breaks a compliance requirement, however on-brand it is', async () => {
+    await pattern(null, 'visual', 'logo placement', 'top-left');
+    await rule('required', 'Carry a responsible drinking message.');
+    fake.checkFindings = [
+      { ref: 'R1', dimension: 'compliance', severity: 'critical', message: 'The warning is missing.' },
+    ];
+
+    const check = await checkedImage();
+
+    // Visual is perfect and compliance is at 60. An average says 80. A banner
+    // missing its mandatory warning must not come back as a pass.
+    assert.equal(check.visualScore, 100);
+    assert.ok(check.score !== null && check.score <= 49, `scored ${check.score} while failing compliance`);
+  });
+
+  it('never lets a habit be a hard failure', async () => {
+    await pattern(null, 'visual', 'logo placement', 'top-left');
+    // What the brand has usually done is not what it must do.
+    fake.checkFindings = [
+      { ref: 'F1', dimension: 'visual', severity: 'critical', message: 'Logo is bottom-right.' },
+    ];
+
+    const check = await checkedImage();
+    assert.equal(check.flags[0]!.severity, 'warning');
+  });
+
+  it('files a flag under what its rule is, not what the model called it', async () => {
+    await rule('forbidden', 'Must not show anyone who looks under 18.', 'regulation', null, 'audience');
+    fake.checkFindings = [
+      { ref: 'R1', dimension: 'visual', severity: 'critical', message: 'A model looks underage.' },
+    ];
+
+    const check = await checkedImage();
+    assert.equal(check.flags[0]!.dimension, 'compliance');
+    assert.equal(check.complianceScore, 60);
+  });
+
+  it('does not score a dimension it had nothing to judge against', async () => {
+    fake.checkFindings = [];
+    const check = await checkedImage();
+
+    // Nothing to fail is not the same as passing. A hundred against nothing
+    // is the most misleading number a checker could show.
+    assert.equal(check.score, null);
+    assert.equal(check.factsConsidered, 0);
+    assert.equal(check.rulesConsidered, 0);
+    assert.match(check.summary ?? '', /nothing to check against/i);
+  });
+
+  it('never sends a rule about broadcast times, which a picture cannot show', async () => {
+    await rule('forbidden', 'Television adverts run only after 9pm.', 'regulation', null, 'medium');
+    await rule('required', 'Carry a responsible drinking message.');
+    fake.checkFindings = [];
+
+    const check = await checkedImage();
+    assert.equal(check.rulesConsidered, 1, 'a timing rule was sent to be judged from an image');
+  });
+
+  it('keeps another market out of the check', async () => {
+    await rule('required', 'Carry "Not recommended for pregnant women".', 'regulation', 'Ghana');
+    await rule('required', 'Carry a responsible drinking message.', 'regulation', 'Nigeria');
+    fake.checkFindings = [];
+
+    const { runCheck } = await import('../src/server/brain/checker');
+    const file = await uploadImage(mm, 'lagos-billboard.png');
+    const check = await runCheck(mm, { fileId: file.id, market: 'Nigeria' });
+
+    // Ghana's warning is Ghana's. Faulting a Nigerian billboard for missing
+    // it would be a false flag with a regulation's authority behind it.
+    assert.equal(check.rulesConsidered, 1);
+  });
+
+  describe('Disagree? Correct this.', () => {
+    it('an exception stops counting against the score and changes nothing CIP believes', async () => {
+      const factId = await pattern(null, 'visual', 'logo placement', 'top-left');
+      fake.checkFindings = [
+        { ref: 'F1', dimension: 'visual', severity: 'warning', message: 'Logo is bottom-right.' },
+      ];
+      const check = await checkedImage();
+      assert.equal(check.visualScore, 85);
+
+      const { correctFlag } = await import('../src/server/brain/checker');
+      const result = await correctFlag(mm, check.flags[0]!.id, {
+        decision: 'dispute', reason: 'exception', correction: 'Cinema cut-down; logo moves for the aspect ratio.',
+      });
+
+      assert.equal(result.check.visualScore, 100, 'a disputed flag still counted');
+      assert.equal(result.learned, null);
+      const rows = await adminSql<{ status: string }[]>`select status from brand_dna_facts where id = ${factId}`;
+      assert.equal(rows[0]!.status, 'active', 'an exception rewrote what CIP believes about the brand');
+    });
+
+    it('a wrong rule is unlearned, because a person said so', async () => {
+      const factId = await pattern(null, 'visual', 'logo placement', 'top-left');
+      fake.checkFindings = [
+        { ref: 'F1', dimension: 'visual', severity: 'warning', message: 'Logo is bottom-right.' },
+      ];
+      const check = await checkedImage();
+
+      const { correctFlag } = await import('../src/server/brain/checker');
+      const result = await correctFlag(mm, check.flags[0]!.id, { decision: 'dispute', reason: 'wrong_rule' });
+
+      assert.equal(result.learned, 'fact_rejected');
+      const rows = await adminSql<{ status: string }[]>`select status from brand_dna_facts where id = ${factId}`;
+      assert.equal(rows[0]!.status, 'rejected');
+    });
+
+    it("keeps a regulator's rule when one reviewer disagrees with it", async () => {
+      const ruleId = await rule('required', 'Carry "Drink Responsibly".', 'regulation');
+      fake.checkFindings = [
+        { ref: 'R1', dimension: 'compliance', severity: 'critical', message: 'Missing.' },
+      ];
+      const check = await checkedImage();
+
+      const { correctFlag } = await import('../src/server/brain/checker');
+      const result = await correctFlag(mm, check.flags[0]!.id, { decision: 'dispute', reason: 'wrong_rule' });
+
+      // Recorded, not obeyed: the statute did not change its mind.
+      assert.equal(result.learned, 'rule_kept');
+      const rows = await adminSql<{ active: boolean }[]>`select active from compliance_rules where id = ${ruleId}`;
+      assert.equal(rows[0]!.active, true);
+    });
+
+    it('retires a rule CIP only suggested', async () => {
+      const ruleId = await rule('required', 'Carry the statutory warning.', 'suggested');
+      fake.checkFindings = [
+        { ref: 'R1', dimension: 'compliance', severity: 'critical', message: 'Missing.' },
+      ];
+      const check = await checkedImage();
+
+      const { correctFlag } = await import('../src/server/brain/checker');
+      const result = await correctFlag(mm, check.flags[0]!.id, { decision: 'dispute', reason: 'wrong_rule' });
+
+      assert.equal(result.learned, 'rule_retired');
+      const rows = await adminSql<{ active: boolean }[]>`select active from compliance_rules where id = ${ruleId}`;
+      assert.equal(rows[0]!.active, false);
+    });
+  });
+
+  it('checks a creative CIP generated with the same checker as a human one', async () => {
+    await rule('required', 'Carry a responsible drinking message.');
+    fake.checkFindings = [];
+    await uploadText(mm, 'voice.txt', 'Warm, celebratory, never about the alcohol itself.');
+    await extractAll();
+    await understanding.enqueueUnderstanding(mm);
+    await understandAll();
+
+    const { generateWithBrain } = await import('../src/server/brain/generate');
+    const made = await generateWithBrain(mm, { requestText: 'A celebratory banner', mediaType: 'image' });
+    assert.equal(made.status, 'generated');
+
+    const { runCheck } = await import('../src/server/brain/checker');
+    const check = await runCheck(mm, { generationId: (made as { generation: { id: string } }).generation.id });
+
+    assert.equal(check.status, 'ready');
+    assert.equal(check.rulesConsidered, 1);
+  });
+
+  it('one company cannot read or correct another company check', async () => {
+    await rule('required', 'Carry a responsible drinking message.');
+    fake.checkFindings = [
+      { ref: 'R1', dimension: 'compliance', severity: 'critical', message: 'Missing.' },
+    ];
+    const check = await checkedImage();
+
+    const { getCheck, correctFlag } = await import('../src/server/brain/checker');
+    assert.equal(await getCheck(nh, check.id), null);
+    await assert.rejects(
+      () => correctFlag(nh, check.flags[0]!.id, { decision: 'accept' }),
+      /not in this workspace/i,
     );
   });
 });

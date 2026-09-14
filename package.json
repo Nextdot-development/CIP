@@ -41,7 +41,8 @@
     "attribute": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/attribute-facts.ts",
     "calendar": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/seed-calendar.ts",
     "websites": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/ingest-websites.ts",
-    "page": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/ingest-page.ts"
+    "page": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/ingest-page.ts",
+    "compliance": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/seed-compliance.ts"
   },
   "dependencies": {
     "@google/genai": "^2.21.0",

@@ -429,7 +429,67 @@ export interface BrainProvider {
 
   /** Turns a request plus retrieved memory into a generation brief. */
   buildGenerationBrief(input: BriefInput): Promise<GenerationBrief & { usage: BrainUsage }>;
+
+  /**
+   * Looks at a creative and says where it breaks the brand's rules.
+   *
+   * Implementations send the image, its display name, the brand and market,
+   * and the rules - nothing else. They report findings; they never report a
+   * score. The score is worked out from the findings by the caller, because a
+   * number a model chooses about its own judgement is not a measurement.
+   */
+  checkCreative(input: CheckInput): Promise<CheckAnalysis>;
 }
+
+/** The three things a creative is judged on. */
+export type CheckDimension = 'visual' | 'verbal' | 'compliance';
+
+/**
+ * One thing a creative is checked against, as a provider sees it.
+ *
+ * The ref is opaque and short - "F12", "R3" - rather than a database id. A
+ * finding has to cite one, and the caller discards any finding that cites a
+ * ref it did not send: that is a rule the model made up, and a flag grounded
+ * in nothing is exactly the ungrounded output this whole product exists to
+ * prevent.
+ */
+export type CheckRule = {
+  ref: string;
+  dimension: CheckDimension;
+  /**
+   * required / forbidden for a stated compliance rule; observed for a Brand
+   * DNA fact, which is what the brand has consistently done rather than what
+   * it must do.
+   */
+  requirement: 'required' | 'forbidden' | 'observed';
+  statement: string;
+};
+
+export type CheckInput = {
+  bytes: Buffer;
+  mimeType: string;
+  /** The display name only. Never a path, never an id. */
+  filename: string;
+  brand: string | null;
+  market: string | null;
+  rules: CheckRule[];
+};
+
+export type CheckFinding = {
+  /** Which rule this is about. Must be one of the refs that was sent. */
+  ref: string;
+  dimension: CheckDimension;
+  severity: 'critical' | 'warning' | 'note';
+  /** Plain language a reviewer can act on. */
+  message: string;
+};
+
+export type CheckAnalysis = {
+  /** One or two sentences on the creative as a whole. */
+  summary: string;
+  findings: CheckFinding[];
+  usage: BrainUsage;
+};
 
 /**
  * Bounds, so one enormous asset cannot cost a fortune or hang a worker.

@@ -2,10 +2,13 @@ import 'server-only';
 import { createHash } from 'node:crypto';
 import { BrainFailed } from './types';
 import type {
-  CreativeFormat,
   AssetAnalysis,
   BrainProvider,
   BriefInput,
+  CheckAnalysis,
+  CheckFinding,
+  CheckInput,
+  CreativeFormat,
   DocumentInput,
   FeedbackAnalysis,
   FeedbackInput,
@@ -38,11 +41,22 @@ export class FakeBrainProvider implements BrainProvider {
   /** Set by tests to exercise a failure path. */
   failWith: BrainFailed | null = null;
   /** Counts calls, so idempotency can be proved rather than assumed. */
-  calls = { image: 0, frames: 0, document: 0, pdfPage: 0, feedback: 0, brief: 0 };
+  calls = { image: 0, frames: 0, document: 0, pdfPage: 0, feedback: 0, brief: 0, check: 0 };
+
+  /**
+   * What the next checks report. Null means a clean pass.
+   *
+   * Set by tests, which is the point: the checker's own logic - discarding a
+   * finding that cites a rule nobody sent, working the score out from the
+   * findings, capping an observed rule at a warning - is what is under test,
+   * and it can only be tested against findings chosen on purpose.
+   */
+  checkFindings: CheckFinding[] | null = null;
 
   reset(): void {
     this.failWith = null;
-    this.calls = { image: 0, frames: 0, document: 0, pdfPage: 0, feedback: 0, brief: 0 };
+    this.checkFindings = null;
+    this.calls = { image: 0, frames: 0, document: 0, pdfPage: 0, feedback: 0, brief: 0, check: 0 };
   }
 
   private check(): void {
@@ -306,6 +320,17 @@ export class FakeBrainProvider implements BrainProvider {
       clarificationQuestion: needsClarification
         ? `Which campaign is this for: ${input.knownCampaigns.join(', ')}?`
         : null,
+      usage: { durationMs: 1 },
+    };
+  }
+
+  async checkCreative(input: CheckInput): Promise<CheckAnalysis> {
+    this.calls.check += 1;
+    this.check();
+
+    return {
+      summary: `Checked "${input.filename}" against ${input.rules.length} rule(s).`,
+      findings: this.checkFindings ? this.checkFindings.map((f) => ({ ...f })) : [],
       usage: { durationMs: 1 },
     };
   }

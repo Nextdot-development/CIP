@@ -9,10 +9,13 @@ import {
 } from './types';
 import type {
   AssetAnalysis,
-  BrandRoster,
   BrainProvider,
   BrainUsage,
+  BrandRoster,
   BriefInput,
+  CheckAnalysis,
+  CheckFinding,
+  CheckInput,
   DocumentInput,
   FeedbackAnalysis,
   FeedbackInput,
@@ -362,6 +365,36 @@ function brandInstruction(brands: BrandRoster | undefined): string {
     'honest answer, and a wrong attribution teaches one brand another one\'s look.'
   );
 }
+
+/**
+ * What a check returns: findings, never a score.
+ *
+ * Every finding names one ref from the rules it was given. The caller throws
+ * away any finding that names something else, so the schema cannot stop a
+ * model inventing a rule - but inventing one gets it nothing.
+ */
+const CHECK_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['summary', 'findings'],
+  properties: {
+    summary: { type: 'string' },
+    findings: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['ref', 'dimension', 'severity', 'message'],
+        properties: {
+          ref: { type: 'string' },
+          dimension: { type: 'string', enum: ['visual', 'verbal', 'compliance'] },
+          severity: { type: 'string', enum: ['critical', 'warning', 'note'] },
+          message: { type: 'string' },
+        },
+      },
+    },
+  },
+} as const;
 
 type Content =
   | { type: 'text'; text: string }
@@ -723,6 +756,56 @@ export class OpenAIBrainProvider implements BrainProvider {
       facts: (parsed.facts ?? []).filter(
         (fact) => fact.attribute?.trim() && fact.value?.trim() && !recordsAnAbsence(fact.value),
       ),
+      usage,
+    };
+  }
+
+  async checkCreative(input: CheckInput): Promise<CheckAnalysis> {
+    const rules = input.rules
+      .map((rule) => `${rule.ref} [${rule.dimension} - ${rule.requirement}] ${rule.statement}`)
+      .join('\n');
+
+    const content: Content[] = [
+      {
+        type: 'text',
+        text:
+          `You are reviewing one creative named "${input.filename}" before it is published` +
+          (input.brand ? ` for the brand ${input.brand}` : '') +
+          (input.market ? ` in ${input.market}` : '') +
+          '.\n\n' +
+          'Judge it only against the rules listed below. Each has a ref. Report a finding ' +
+          'only where the creative visibly breaks a rule or visibly lacks something a rule ' +
+          'requires, and cite exactly one ref per finding. Never report a rule that is not ' +
+          'listed, and never report something you cannot see in the image itself - a rule ' +
+          'about when an advert may be broadcast cannot be judged from a picture, so leave ' +
+          'it out rather than guess.\n\n' +
+          'Severity: critical is a required compliance element that is missing, or a ' +
+          'forbidden one that is present. warning is a clear departure from how the brand ' +
+          'consistently does something. note is minor. A rule marked "observed" is what the ' +
+          'brand has usually done, not what it must do, so departing from one is never ' +
+          'critical.\n\n' +
+          'Each message says what is wrong in plain language a reviewer can act on. If ' +
+          'nothing is wrong, return no findings - an empty list is a real answer.\n\n' +
+          `Rules:\n${rules || '(none)'}`,
+      },
+      {
+        type: 'image_url',
+        // High detail, because the things compliance turns on - a statutory
+        // warning, an age line - are exactly the smallest text on the page.
+        image_url: { url: dataUri(input.mimeType, input.bytes), detail: 'high' },
+      },
+    ];
+
+    const { parsed, usage } = await this.call<{ summary: string; findings: CheckFinding[] }>(
+      content,
+      CHECK_SCHEMA,
+      'creative_check',
+      3_000,
+    );
+
+    return {
+      summary: typeof parsed.summary === 'string' ? parsed.summary.trim() : '',
+      findings: Array.isArray(parsed.findings) ? parsed.findings : [],
       usage,
     };
   }

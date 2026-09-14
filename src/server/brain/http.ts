@@ -4,6 +4,7 @@ import { noStore } from '../drive/http';
 import type { CompanyScope } from '../db';
 import { BrainFailed } from './providers/types';
 import { FeedbackRejected } from './learning';
+import { CheckRejected } from './checker';
 import { MediaNotFound, MediaProviderUnavailable, MediaRejected } from '../media/types';
 
 /**
@@ -28,7 +29,7 @@ export async function withBrainScope(
 }
 
 export function brainErrorResponse(error: unknown): Response {
-  if (error instanceof FeedbackRejected || error instanceof MediaRejected) {
+  if (error instanceof FeedbackRejected || error instanceof MediaRejected || error instanceof CheckRejected) {
     return Response.json(
       { error: 'rejected', message: error.message },
       { status: 422, headers: noStore },
