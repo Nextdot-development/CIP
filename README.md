@@ -38,12 +38,18 @@ DATABASE_ADMIN_URL=postgres://cip_admin:cip_admin@localhost:55432/cip
 DATABASE_URL=postgres://cip_app:local-dev-password@localhost:55432/cip
 CIP_APP_DB_PASSWORD=local-dev-password
 SESSION_SECRET=<paste the generated value>
+CIP_SEED_PASSWORD=<what the seeded users will sign in with>
 ```
 
 ### Test credentials
 
 `npm run db:seed` creates two companies with two users each. Every seeded user
-has the password **`cip-demo-password`**.
+gets the password you put in `CIP_SEED_PASSWORD`, and the seed refuses to run
+without one.
+
+There used to be a default here, printed in this file. It was still the
+password on every seeded account months later, including a client's, so it is
+gone: a password written down in a public repository is not a password.
 
 | Email | Company | Role |
 | --- | --- | --- |
@@ -96,7 +102,7 @@ the running app cannot bypass RLS, and returns 503 with a warning when it can.
 | `DATABASE_ADMIN_URL` | migrations only | Elevated connection for `db:migrate` / `db:seed`. Never used to serve a request. |
 | `CIP_APP_DB_PASSWORD` | migrations only | Password set on the `cip_app` role, so no secret sits in a committed `.sql` file. |
 | `SESSION_SECRET` | yes | 32+ characters. Keys the HMAC over session tokens. |
-| `CIP_SEED_PASSWORD` | no | Overrides the seeded test password. |
+| `CIP_SEED_PASSWORD` | seeding only | The password every seeded user gets, at least 8 characters. There is no default: the seed refuses without it. |
 | `CIP_ALLOW_PROD_SEED` | no | The seed refuses to run with `NODE_ENV=production` unless this is `true`. |
 | `CIP_STORAGE_DIR` | no | Where Drive file bytes are written. Defaults to `./.storage`. |
 

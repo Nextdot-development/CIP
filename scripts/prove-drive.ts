@@ -11,7 +11,11 @@ import postgres from 'postgres';
  *   npm run prove:drive        (needs the dev server up)
  */
 const BASE = process.env.CIP_BASE_URL ?? 'http://localhost:3000';
-const PASSWORD = process.env.CIP_SEED_PASSWORD ?? 'cip-demo-password';
+const PASSWORD = process.env.CIP_SEED_PASSWORD ?? '';
+if (!PASSWORD) {
+  // The seed no longer has a default password, so neither does the proof of it.
+  throw new Error('Set CIP_SEED_PASSWORD to whatever the database was seeded with.');
+}
 
 let failures = 0;
 function check(label: string, pass: boolean, detail = '') {

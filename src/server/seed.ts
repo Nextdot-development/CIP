@@ -12,7 +12,27 @@ import type { SeedCompany } from './seed-data';
  * the seed is safe to repeat while developing.
  */
 
-const DEFAULT_PASSWORD = 'cip-demo-password';
+/**
+ * The password every seeded user gets, and there is no default.
+ *
+ * There was one, it was printed in the README, and every seeded account on
+ * every database still had it months later — including the one a client signs
+ * in with. A password committed to a public repository is not a password, and
+ * a default is how it gets committed.
+ *
+ * Whoever seeds chooses it. The tests set it themselves, so nothing here is
+ * made harder by asking.
+ */
+function seedPassword(): string {
+  const chosen = process.env.CIP_SEED_PASSWORD;
+  if (!chosen || chosen.trim().length < 8) {
+    throw new Error(
+      'Set CIP_SEED_PASSWORD to at least 8 characters before seeding. The seed ' +
+        'creates users who can sign in, and it will not choose their password for you.',
+    );
+  }
+  return chosen;
+}
 
 function daysFromNow(days: number): Date {
   return new Date(Date.now() + days * 24 * 60 * 60 * 1000);
@@ -31,7 +51,7 @@ export async function seed(log: (m: string) => void = console.log): Promise<void
     );
   }
 
-  const password = process.env.CIP_SEED_PASSWORD ?? DEFAULT_PASSWORD;
+  const password = seedPassword();
   const sql = adminSql();
 
   try {

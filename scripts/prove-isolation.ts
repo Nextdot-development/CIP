@@ -9,7 +9,11 @@ import postgres from 'postgres';
  * Run with the dev server up:  npm run prove
  */
 const BASE = process.env.CIP_BASE_URL ?? 'http://localhost:3000';
-const PASSWORD = process.env.CIP_SEED_PASSWORD ?? 'cip-demo-password';
+const PASSWORD = process.env.CIP_SEED_PASSWORD ?? '';
+if (!PASSWORD) {
+  // The seed no longer has a default password, so neither does the proof of it.
+  throw new Error('Set CIP_SEED_PASSWORD to whatever the database was seeded with.');
+}
 
 function tokenHash(token: string): string {
   return createHmac('sha256', Buffer.from(process.env.SESSION_SECRET!, 'utf8')).update(token).digest('base64');
