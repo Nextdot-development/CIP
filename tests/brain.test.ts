@@ -1671,7 +1671,7 @@ describe('what the Brain hands the generator', () => {
     }
   });
 
-  it('uses the generator that makes the shape, when the one named does not', async () => {
+  it('uses the generator that makes the shape, when the deployment allows both', async () => {
     /** Two doubles with different shapes on offer, so which one ran is observable. */
     class Double {
       readonly configured = true;
@@ -1700,6 +1700,8 @@ describe('what the Brain hands the generator', () => {
       gemini: gemini as unknown as AnyImageProvider,
     });
 
+    const before = process.env.CIP_IMAGE_PROVIDERS;
+    process.env.CIP_IMAGE_PROVIDERS = 'openai,gemini';
     try {
       const out = await brainGenerate.generateWithBrain(mm, {
         requestText: 'A Diwali post for honey whisky',
@@ -1715,6 +1717,58 @@ describe('what the Brain hands the generator', () => {
       assert.equal(gemini.calls, 1, 'the generator that makes 4:5 was not used');
       assert.equal(openai.calls, 0, 'a shape was cut down while another generator made it exactly');
       assert.equal(out.plan.switchedProvider?.to, 'gemini', 'the swap was not reported in the plan');
+    } finally {
+      if (before === undefined) delete process.env.CIP_IMAGE_PROVIDERS;
+      else process.env.CIP_IMAGE_PROVIDERS = before;
+      mediaProviders.__setProviders(null, null);
+    }
+  });
+
+  // The switch is only ever to a generator the deployment allows. Gemini's
+  // account permits zero image generations, so handing 4:5 to it produced a
+  // rate limit and no picture; cutting a 2:3 down produces a picture.
+  it('does not hand a shape to a generator this deployment has switched off', async () => {
+    class Double {
+      readonly configured = true;
+      readonly imageSizes = ['auto'];
+      calls = 0;
+      constructor(
+        readonly name: 'openai' | 'google',
+        readonly model: string,
+        readonly aspectRatios: string[],
+      ) {}
+      async generate() {
+        this.calls += 1;
+        return {
+          assets: [{ bytes: Buffer.from('an image'), mimeType: 'image/png', width: 1024, height: 1536 }],
+          model: this.model,
+          usage: {},
+        };
+      }
+    }
+    type AnyImageProvider = import('../src/server/media/providers').ImageGenerationProvider;
+
+    const openai = new Double('openai', 'gpt-image-2', ['1:1', '3:2', '2:3']);
+    const gemini = new Double('google', 'gemini-3.1-flash-image', ['1:1', '4:5', '9:16']);
+    mediaProviders.__setProviders(null, null, {
+      openai: openai as unknown as AnyImageProvider,
+      gemini: gemini as unknown as AnyImageProvider,
+    });
+
+    try {
+      const out = await brainGenerate.generateWithBrain(mm, {
+        requestText: 'A Diwali post for honey whisky',
+        mediaType: 'image',
+        provider: 'openai',
+        aspectRatio: '4:5',
+      });
+
+      assert.equal(out.status, 'generated');
+      if (out.status !== 'generated') return;
+      assert.equal(gemini.calls, 0, 'a request went to a generator that is switched off');
+      assert.equal(openai.calls, 1, 'the only allowed generator did not run');
+      assert.equal(out.plan.switchedProvider, null, 'a swap was reported that did not happen');
+      assert.equal(out.plan.cropped, true, 'the nearest shape was not cut to the one asked for');
     } finally {
       mediaProviders.__setProviders(null, null);
     }

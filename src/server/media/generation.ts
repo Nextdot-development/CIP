@@ -2,8 +2,7 @@ import 'server-only';
 import { withCompanyScope } from '../db';
 import type { CompanyScope } from '../db';
 import { driveStorage } from '../drive/storage';
-import { imageGenerationProvider, videoGenerationProvider } from './providers';
-import { IMAGE_PROVIDER_CHOICES } from './providers/types';
+import { allowedImageChoices, imageGenerationProvider, videoGenerationProvider } from './providers';
 import type { ImageProviderChoice } from './providers/types';
 import { MEDIA_LIMITS, ProviderFailed } from './providers/types';
 import type { GeneratedAsset, ProviderUsage, ReferenceImage } from './providers/types';
@@ -809,14 +808,16 @@ function asPublicError(error: unknown): Error {
 /**
  * Validates a provider name from a request.
  *
- * Only the two published names are accepted. An unknown one is refused rather
- * than quietly falling back to the default, because a caller that asked for a
- * particular provider and silently got the other has been misled.
+ * Only a generator this deployment allows is accepted. An unknown one — or one
+ * that has been turned off — is refused rather than quietly falling back to
+ * the default, because a caller that asked for a particular provider and
+ * silently got another has been misled.
  */
 export function validateProviderChoice(value: unknown): ImageProviderChoice | null {
   if (value === undefined || value === null || value === '') return null;
-  if (typeof value !== 'string' || !(IMAGE_PROVIDER_CHOICES as readonly string[]).includes(value)) {
-    throw new MediaRejected(`Provider must be one of: ${IMAGE_PROVIDER_CHOICES.join(', ')}.`);
+  const allowed = allowedImageChoices();
+  if (typeof value !== 'string' || !allowed.includes(value as ImageProviderChoice)) {
+    throw new MediaRejected(`Provider must be one of: ${allowed.join(', ')}.`);
   }
   return value as ImageProviderChoice;
 }

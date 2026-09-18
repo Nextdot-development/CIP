@@ -56,14 +56,40 @@ const HISTORY_PREVIEW = 3;
  * "Auto" is a real choice and the default: CIP reads the size out of the
  * request, and decides from the format when the request does not say.
  */
-const SHAPES: { value: string | null; label: string }[] = [
-  { value: null, label: 'Auto' },
-  { value: '1:1', label: 'Square 1:1' },
-  { value: '4:5', label: 'Portrait 4:5' },
-  { value: '9:16', label: 'Story 9:16' },
-  { value: '16:9', label: 'Wide 16:9' },
-  { value: '3:1', label: 'Banner 3:1' },
-];
+/** What a shape is called where people work. */
+const SHAPE_LABELS: Record<string, string> = {
+  '1:1': 'Square 1:1',
+  '3:2': 'Landscape 3:2',
+  '2:3': 'Portrait 2:3',
+  '3:4': 'Portrait 3:4',
+  '4:3': 'Landscape 4:3',
+  '4:5': 'Portrait 4:5',
+  '5:4': 'Landscape 5:4',
+  '9:16': 'Story 9:16',
+  '16:9': 'Wide 16:9',
+  '21:9': 'Ultrawide 21:9',
+};
+
+/**
+ * The sizes to offer, which is whatever the generator that will run makes.
+ *
+ * This list used to be written down here, and it offered 4:5, 9:16 and 16:9 —
+ * none of which OpenAI makes. Each of those was quietly handed to Gemini, whose
+ * account has no image quota at all, so pressing them produced "the image
+ * provider is rate limiting us" and nothing else, forever. A picker should only
+ * offer work that can be done.
+ */
+function shapesFor(
+  chosen: ImageProviderStatusDTO | null,
+): { value: string | null; label: string }[] {
+  return [
+    { value: null, label: 'Auto' },
+    ...(chosen?.aspectRatios ?? []).map((ratio) => ({
+      value: ratio,
+      label: SHAPE_LABELS[ratio] ?? ratio,
+    })),
+  ];
+}
 
 type Phase = 'idle' | 'planning' | 'making' | 'done';
 
@@ -154,9 +180,9 @@ export function AskSection({
   const chosen = providers.images.find((p) => p.choice === provider) ?? null;
   const videoReady = providers.video.configured;
   const ready = mediaType === 'image' ? Boolean(chosen?.configured) : videoReady;
-  // What choosing this size will actually do, said before it is pressed rather
-  // than explained afterwards.
-  const shapeNote = shapeNoteFor(mediaType, shape, chosen, providers.images);
+  // Every size offered is one this generator makes itself, so there is nothing
+  // to warn about before it is pressed.
+  const shapes = shapesFor(chosen);
 
   const refresh = useCallback(async () => {
     const res = await fetch('/api/media/generations', { cache: 'no-store' });
@@ -361,9 +387,9 @@ export function AskSection({
             a story is 9:16 wherever it runs, and asking for one in words and
             hoping was how a banner came back square. */}
         {mediaType === 'image' && (
-          <div className="row" style={{ gap: 6, marginBottom: shapeNote ? 6 : 12, flexWrap: 'wrap' }}>
+          <div className="row" style={{ gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
             <span className="tiny muted" style={{ marginRight: 2 }}>Size:</span>
-            {SHAPES.map((option) => (
+            {shapes.map((option) => (
               <button
                 key={option.value ?? '__auto'}
                 type="button"
@@ -373,18 +399,13 @@ export function AskSection({
                 title={
                   option.value === null
                     ? 'CIP reads the size from your request, or decides from the format'
-                    : chosen?.aspectRatios.includes(option.value)
-                      ? `${IMAGE_PROVIDER_LABELS[chosen.choice]} makes this size directly`
-                      : `${chosen ? IMAGE_PROVIDER_LABELS[chosen.choice] : 'This generator'} does not make this size directly`
+                    : `${chosen ? IMAGE_PROVIDER_LABELS[chosen.choice] : 'This generator'} makes this size directly`
                 }
               >
                 {option.label}
               </button>
             ))}
           </div>
-        )}
-        {shapeNote && (
-          <p className="tiny muted" style={{ marginBottom: 12 }}>{shapeNote}</p>
         )}
 
         <textarea
@@ -731,24 +752,6 @@ function Plan({ plan }: { plan: PlanSummary }) {
  * Both outcomes are honest and neither is an error: another configured
  * generator makes it exactly, or the nearest shape is made and cut down.
  */
-function shapeNoteFor(
-  mediaType: MediaType,
-  shape: string | null,
-  chosen: ImageProviderStatusDTO | null,
-  images: ImageProviderStatusDTO[],
-): string | null {
-  if (mediaType !== 'image' || !shape || !chosen) return null;
-  if (chosen.aspectRatios.includes(shape)) return null;
-
-  const other = images.find(
-    (p) => p.choice !== chosen.choice && p.configured && p.aspectRatios.includes(shape),
-  );
-
-  return other
-    ? `${IMAGE_PROVIDER_LABELS[chosen.choice]} does not make ${shape}. CIP will make it on ${IMAGE_PROVIDER_LABELS[other.choice]}, which does.`
-    : `Nothing set up here makes ${shape} directly, so CIP makes the nearest shape and cuts it to ${shape}.`;
-}
-
 type GenerationCheckState =
   | { state: 'waiting' }
   | { state: 'unchecked' }

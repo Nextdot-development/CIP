@@ -7,8 +7,12 @@ import { linkBriefToGeneration, planGeneration, promptFromBrief } from './planne
 import type { PlannedGeneration } from './planner';
 import { FORMAT_ASPECT, FORMAT_LABELS, closestAspectRatio } from './providers/types';
 import type { CreativeFormat } from './providers/types';
-import { imageGenerationProvider, videoGenerationProvider } from '../media/providers';
-import { IMAGE_PROVIDER_CHOICES, MEDIA_LIMITS } from '../media/providers/types';
+import {
+  allowedImageChoices,
+  imageGenerationProvider,
+  videoGenerationProvider,
+} from '../media/providers';
+import { MEDIA_LIMITS } from '../media/providers/types';
 import type { ImageGenerationProvider, ImageProviderChoice } from '../media/providers/types';
 import { requestedShape, sameShape } from '../media/reframe';
 import type { TargetShape } from '../media/reframe';
@@ -329,7 +333,10 @@ function generatorFor(input: BrainGenerateInput, asked: TargetShape | null): Cho
   const current = imageGenerationProvider(named);
   if (makesShape(current, asked)) return { choice: named, switched: null };
 
-  for (const choice of IMAGE_PROVIDER_CHOICES) {
+  // Only a generator this deployment allows. Handing a shape to one that is
+  // switched off is how a 4:5 request reached a Gemini account with no image
+  // quota at all and came back as a rate limit that waiting could not clear.
+  for (const choice of allowedImageChoices()) {
     const other = imageGenerationProvider(choice);
     // The same provider under another name is not an alternative, which is
     // what a deployment with one key configured has.
@@ -355,7 +362,10 @@ function makesShape(provider: ImageGenerationProvider, asked: TargetShape): bool
 }
 
 function namedChoice(value: unknown): ImageProviderChoice | null {
-  return typeof value === 'string' && (IMAGE_PROVIDER_CHOICES as readonly string[]).includes(value)
+  // A name this deployment does not allow is treated as no name at all, so an
+  // older page still sending one gets the default rather than a refusal.
+  return typeof value === 'string' &&
+    (allowedImageChoices() as readonly string[]).includes(value)
     ? (value as ImageProviderChoice)
     : null;
 }

@@ -1025,12 +1025,30 @@ describe('choosing which image provider answers', () => {
     assert.equal(generation.model, 'gpt-image-2');
   });
 
-  it('provider "gemini" generates through Gemini', async () => {
-    const generation = await media.generateImage(mm, { prompt: 'via gemini', provider: 'gemini' });
-    assert.equal(gemini.calls, 1);
-    assert.equal(openai.calls, 0);
-    assert.equal(generation.provider, 'google');
-    assert.equal(generation.model, 'gemini-3.1-flash-image');
+  it('provider "gemini" generates through Gemini when the deployment allows it', async () => {
+    const before = process.env.CIP_IMAGE_PROVIDERS;
+    process.env.CIP_IMAGE_PROVIDERS = 'openai,gemini';
+    try {
+      const generation = await media.generateImage(mm, { prompt: 'via gemini', provider: 'gemini' });
+      assert.equal(gemini.calls, 1);
+      assert.equal(openai.calls, 0);
+      assert.equal(generation.provider, 'google');
+      assert.equal(generation.model, 'gemini-3.1-flash-image');
+    } finally {
+      if (before === undefined) delete process.env.CIP_IMAGE_PROVIDERS;
+      else process.env.CIP_IMAGE_PROVIDERS = before;
+    }
+  });
+
+  // Gemini's account allows zero image generations, so a request routed to it
+  // could only ever come back as a rate limit. A generator that is switched off
+  // is refused at the door rather than accepted and failed a minute later.
+  it('refuses a provider this deployment does not allow', async () => {
+    await assert.rejects(
+      () => media.generateImage(mm, { prompt: 'x', provider: 'gemini' }),
+      /Provider must be one of/i,
+    );
+    assert.equal(openai.calls + gemini.calls, 0, 'something ran on the way to being refused');
   });
 
   it('refuses a provider name it does not publish', async () => {
@@ -1094,10 +1112,22 @@ describe('choosing which image provider answers', () => {
     assert.equal(read.aspectRatio, '1:1');
   });
 
-  it('reports both providers, each with its own configured state', () => {
+  it('offers only the generators this deployment allows', () => {
     const status = providers.providerStatus();
-    assert.deepEqual(status.images.map((p) => p.choice).sort(), ['gemini', 'openai']);
-    assert.ok(status.defaultImageProvider === 'gemini' || status.defaultImageProvider === 'openai');
+    assert.deepEqual(status.images.map((p) => p.choice), ['openai']);
+    assert.equal(status.defaultImageProvider, 'openai');
+  });
+
+  it('offers both when the deployment names both', () => {
+    const before = process.env.CIP_IMAGE_PROVIDERS;
+    process.env.CIP_IMAGE_PROVIDERS = 'openai,gemini';
+    try {
+      const status = providers.providerStatus();
+      assert.deepEqual(status.images.map((p) => p.choice).sort(), ['gemini', 'openai']);
+    } finally {
+      if (before === undefined) delete process.env.CIP_IMAGE_PROVIDERS;
+      else process.env.CIP_IMAGE_PROVIDERS = before;
+    }
   });
 });
 

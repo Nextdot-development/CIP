@@ -44,6 +44,30 @@ function forceFake(): boolean {
   return process.env.CIP_FORCE_FAKE_PROVIDERS === 'true';
 }
 
+/**
+ * The image generators this deployment is allowed to use, best first.
+ *
+ * Gemini makes shapes OpenAI does not, and CIP used to hand it those requests.
+ * But the Gemini account's free tier allows zero image generations — Google's
+ * own answer is `limit: 0` — so every 4:5, 9:16 and 16:9 request was handed to
+ * a generator that could not run, and came back as "the image provider is rate
+ * limiting us" however long anyone waited. A shape is better cut from one that
+ * works than made exactly by one that does not.
+ *
+ * So OpenAI is the only generator unless a deployment says otherwise:
+ * CIP_IMAGE_PROVIDERS="openai,gemini" brings Gemini back once somebody has
+ * enabled billing on that account.
+ */
+export function allowedImageChoices(): ImageProviderChoice[] {
+  const named = (process.env.CIP_IMAGE_PROVIDERS ?? '')
+    .split(',')
+    .map((part) => part.trim())
+    .filter((part): part is ImageProviderChoice =>
+      (IMAGE_PROVIDER_CHOICES as readonly string[]).includes(part),
+    );
+  return named.length > 0 ? named : ['openai'];
+}
+
 function build(choice: ImageProviderChoice): ImageGenerationProvider {
   return choice === 'openai' ? openAIImageProviderFromEnv() : googleImageProviderFromEnv();
 }
@@ -57,11 +81,12 @@ function providerFor(choice: ImageProviderChoice): ImageGenerationProvider {
 }
 
 function defaultChoice(): ImageProviderChoice {
+  const allowed = allowedImageChoices();
   const configured = process.env.CIP_DEFAULT_IMAGE_PROVIDER;
-  if (configured && (IMAGE_PROVIDER_CHOICES as readonly string[]).includes(configured)) {
+  if (configured && allowed.includes(configured as ImageProviderChoice)) {
     return configured as ImageProviderChoice;
   }
-  return 'gemini';
+  return allowed[0]!;
 }
 
 /**
@@ -79,11 +104,13 @@ export function imageGenerationProvider(choice?: ImageProviderChoice | null): Im
   const preferred = providerFor(defaultChoice());
   if (preferred.configured) return preferred;
 
-  // The preferred provider has no key. Use the other one if it has one, rather
-  // than refusing work the deployment is plainly equipped to do.
-  const other = defaultChoice() === 'gemini' ? 'openai' : 'gemini';
-  const alternative = providerFor(other);
-  if (alternative.configured) return alternative;
+  // The preferred provider has no key. Use another allowed one if it has one,
+  // rather than refusing work the deployment is plainly equipped to do.
+  for (const other of allowedImageChoices()) {
+    if (other === defaultChoice()) continue;
+    const alternative = providerFor(other);
+    if (alternative.configured) return alternative;
+  }
 
   return fallbackImageOverride ?? new FakeImageProvider();
 }
@@ -134,7 +161,9 @@ export function providerStatus(): {
   const active = imageGenerationProvider();
   const video = videoGenerationProvider();
 
-  const images = IMAGE_PROVIDER_CHOICES.map((choice) => {
+  // Only the generators this deployment will actually use. A picker that
+  // offers one CIP would refuse is a picker that lies.
+  const images = allowedImageChoices().map((choice) => {
     const provider = providerFor(choice);
     return {
       choice,
