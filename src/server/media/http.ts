@@ -74,15 +74,15 @@ export function mediaErrorResponse(error: unknown): Response {
  * The per-user limit stops a runaway client. The per-company limit stops a
  * whole team doing it at once, which the per-user limit cannot see.
  */
-export function checkGenerationRate(
+export async function checkGenerationRate(
   scope: CompanyScope,
   kind: 'image' | 'video',
   perUser: RateLimitOptions,
-): Response | null {
-  const user = rateLimit(`media:${kind}:user:${scope.userId}`, perUser);
+): Promise<Response | null> {
+  const user = await rateLimit(`media:${kind}:user:${scope.userId}`, perUser);
   if (!user.allowed) return tooMany(user.retryAfterSeconds);
 
-  const company = rateLimit(`media:company:${scope.companyId}`, COMPANY_GENERATION_LIMIT());
+  const company = await rateLimit(`media:company:${scope.companyId}`, COMPANY_GENERATION_LIMIT());
   if (!company.allowed) return tooMany(company.retryAfterSeconds);
 
   return null;

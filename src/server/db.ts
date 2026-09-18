@@ -78,6 +78,65 @@ export const sql: postgres.Sql =
 
 if (process.env.NODE_ENV !== 'production') globalThis.__cipSql = sql;
 
+/**
+ * Errors that mean the connection failed, not the query.
+ *
+ * Supavisor hands out a backend per client and occasionally answers a new one
+ * with "password authentication failed for user cip_app" or drops it mid
+ * handshake. Nothing is wrong with the credentials or the statement, and a
+ * second attempt a moment later succeeds - but a page that treats it as a real
+ * failure is a page that goes white because a pooler hiccuped. It did: reading
+ * the session threw this straight through the workspace layout.
+ *
+ * Only failures that happen instead of a query, never during one. A statement
+ * that reached the server and failed there is a real error and is rethrown, so
+ * nothing half-written is ever retried.
+ */
+const TRANSIENT_CONNECTION_CODES = new Set([
+  '28P01', // password authentication failed - from the pooler, not the role
+  '08000', '08003', '08006', // connection exception, does not exist, failure
+  '57P01', // admin shutdown: the backend went away
+  'CONNECT_TIMEOUT',
+  'CONNECTION_CLOSED',
+  'CONNECTION_DESTROYED',
+  'CONNECTION_ENDED',
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'EAUTHQUERY',
+  'ETIMEDOUT',
+]);
+
+function isTransientConnection(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === 'string' && TRANSIENT_CONNECTION_CODES.has(code);
+}
+
+/**
+ * Runs a database call again when the connection was the thing that failed.
+ *
+ * Three attempts over about half a second, which is the shape of the flake:
+ * it is gone by the next try. A caller sees either a result or the original
+ * error, never a retry it has to know about.
+ */
+export async function withConnectionRetry<T>(run: () => Promise<T>, attempts = 3): Promise<T> {
+  let last: unknown;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await run();
+    } catch (error) {
+      if (!isTransientConnection(error)) throw error;
+      last = error;
+      if (attempt < attempts) {
+        await new Promise((resolve) => setTimeout(resolve, attempt * 150));
+      }
+    }
+  }
+
+  throw last;
+}
+
 export type CompanyRole = 'owner' | 'admin' | 'member' | 'viewer';
 
 /** A company the current session has been proven to hold a membership in. */
@@ -101,10 +160,14 @@ export async function withCompanyScope<T>(
   scope: CompanyScope,
   fn: (tx: postgres.TransactionSql) => Promise<T>,
 ): Promise<T> {
-  const result = await sql.begin(async (tx) => {
-    await tx`select set_config('cip.company_id', ${scope.companyId}, true)`;
-    return fn(tx);
-  });
+  // Retried only when the connection itself failed, in which case the
+  // transaction never began and there is nothing half-done to repeat.
+  const result = await withConnectionRetry(() =>
+    sql.begin(async (tx) => {
+      await tx`select set_config('cip.company_id', ${scope.companyId}, true)`;
+      return fn(tx);
+    }),
+  );
   return result as T;
 }
 

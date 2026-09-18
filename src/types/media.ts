@@ -58,6 +58,8 @@ export type ImageProviderStatusDTO = {
   provider: string;
   model: string;
   configured: boolean;
+  /** The shapes this generator makes itself. Anything else is cut from one of these. */
+  aspectRatios: string[];
 };
 
 export type ProviderStatusDTO = {

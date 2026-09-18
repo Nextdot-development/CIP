@@ -217,3 +217,63 @@ describe('row-level security holds even when a query forgets its filter', () => 
     );
   });
 });
+
+describe('a pooler hiccup is not a failed request', () => {
+  /** The error Supavisor answers a new backend with, now and then. */
+  function poolerFlake(): Error & { code: string } {
+    const error = new Error('password authentication failed for user "cip_app"') as Error & { code: string };
+    error.code = '28P01';
+    return error;
+  }
+
+  it('runs the call again when the connection was what failed', async () => {
+    const { withConnectionRetry } = await import('../src/server/db');
+
+    let attempts = 0;
+    const value = await withConnectionRetry(async () => {
+      attempts += 1;
+      // Twice, then fine — which is how this arrives: reading the session
+      // threw it straight through the workspace layout and the page went
+      // white, for something that was gone a moment later.
+      if (attempts < 3) throw poolerFlake();
+      return 'the session';
+    });
+
+    assert.equal(value, 'the session');
+    assert.equal(attempts, 3);
+  });
+
+  it('gives up on an error that is about the query, not the connection', async () => {
+    const { withConnectionRetry } = await import('../src/server/db');
+
+    let attempts = 0;
+    await assert.rejects(
+      () =>
+        withConnectionRetry(async () => {
+          attempts += 1;
+          const error = new Error('column "nope" does not exist') as Error & { code: string };
+          error.code = '42703';
+          throw error;
+        }),
+      /does not exist/,
+    );
+
+    // A real error retried is a real error reported three times as late.
+    assert.equal(attempts, 1);
+  });
+
+  it('stops after its attempts and reports what actually went wrong', async () => {
+    const { withConnectionRetry } = await import('../src/server/db');
+
+    let attempts = 0;
+    await assert.rejects(
+      () =>
+        withConnectionRetry(async () => {
+          attempts += 1;
+          throw poolerFlake();
+        }),
+      /password authentication failed/,
+    );
+    assert.equal(attempts, 3);
+  });
+});

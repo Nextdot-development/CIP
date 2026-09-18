@@ -135,6 +135,29 @@ describe('the graph is built from real rows', () => {
     );
   });
 
+  it('never returns an edge to a node it did not return', async () => {
+    const folder = await drive.createFolder(mm, null, 'Plenty');
+    for (let i = 0; i < 6; i += 1) {
+      await upload(mm, folder.id, `file-${i}.txt`, `Something to read, number ${i}.`);
+    }
+
+    // Under a limit, which is the ordinary case on a company with plenty in
+    // it: nodes come back under the limit and edges come back under their own.
+    const result = await graph.knowledgeGraph(mm, { view: 'files', limit: 4 });
+
+    const present = new Set(result.nodes.map((n) => n.id));
+    const dangling = result.edges.filter((e) => !present.has(e.source) || !present.has(e.target));
+
+    // The renderer invents a missing end as a bare `{ id }` — no label, no
+    // type — and the first draw that reads its label throws, taking the page
+    // down with "Cannot read properties of undefined".
+    assert.deepEqual(
+      dangling.map((e) => `${e.kind}: ${e.source} -> ${e.target}`),
+      [],
+      'an edge points at a node that was not returned',
+    );
+  });
+
   it('a CIP Drive source node appears, and Google Drive only once something is synced', async () => {
     await upload(mm, null, 'uploaded.txt', 'An ordinary upload.');
 

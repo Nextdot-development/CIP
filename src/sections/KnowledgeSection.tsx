@@ -98,11 +98,20 @@ export function KnowledgeSection({
     try {
       const result = await post('/api/integrations/google-drive/sync');
       if (result) {
-        const o = result.outcome as { added: number; updated: number; unchanged: number; unsupported: number; removed: number };
+        // Counted from whatever came back, rather than asserted about it. The
+        // reply was cast and then read five fields deep: anything else on the
+        // wire - a proxy's page, an older route - threw inside this handler,
+        // which swallowed it, so "Sync now" looked like it had quietly done
+        // nothing. A sync that worked and says so badly is still a sync.
+        const o = (result.outcome ?? {}) as Partial<
+          Record<'added' | 'updated' | 'unchanged' | 'unsupported' | 'removed', number>
+        >;
+        const count = (value: number | undefined): number => (typeof value === 'number' ? value : 0);
+
         note(
-          `Synced — ${o.added} new, ${o.updated} updated, ${o.unchanged} unchanged` +
-            (o.unsupported > 0 ? `, ${o.unsupported} could not be read` : '') +
-            (o.removed > 0 ? `, ${o.removed} removed` : ''),
+          `Synced — ${count(o.added)} new, ${count(o.updated)} updated, ${count(o.unchanged)} unchanged` +
+            (count(o.unsupported) > 0 ? `, ${count(o.unsupported)} could not be read` : '') +
+            (count(o.removed) > 0 ? `, ${count(o.removed)} removed` : ''),
         );
         await refresh();
       }

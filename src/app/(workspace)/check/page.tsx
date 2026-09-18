@@ -1,6 +1,6 @@
 import { requireSession } from '@/server/auth/guards';
-import { listChecks, listRules } from '@/server/brain/checker';
-import { companyBrands } from '@/server/brain/brands';
+import { getCheck, listChecks, listRules } from '@/server/brain/checker';
+import { activeBrand } from '@/server/brain/activeBrand';
 import { companyMarkets } from '@/server/brain/markets';
 import { brainStatus } from '@/server/brain/providers';
 import { withCompanyScope } from '@/server/db';
@@ -17,11 +17,13 @@ export const dynamic = 'force-dynamic';
  * The images are read here directly rather than through the Drive listing,
  * because the checker only ever wants one thing from it: pictures it can judge.
  */
-export default async function CheckPage() {
+export default async function CheckPage({ searchParams }: { searchParams: Promise<{ check?: string }> }) {
   const session = await requireSession();
   const scope = session.scope;
+  // ?check= opens one check straight away - the link under a generated image.
+  const { check } = await searchParams;
 
-  const [images, checks, rules, brands, markets] = await Promise.all([
+  const [images, checks, rules, lens, markets, opened] = await Promise.all([
     withCompanyScope(scope, (tx) =>
       tx<{ id: string; name: string; brand: string | null; market: string | null; created_at: Date }[]>`
         select id, name, brand, market, created_at
@@ -35,8 +37,9 @@ export default async function CheckPage() {
     ),
     listChecks(scope, 20),
     listRules(scope),
-    companyBrands(scope),
+    activeBrand(scope),
     companyMarkets(scope),
+    check ? getCheck(scope, check) : Promise.resolve(null),
   ]);
 
   return (
@@ -50,8 +53,10 @@ export default async function CheckPage() {
       }))}
       recent={checks}
       rules={rules}
-      brands={brands.map((b) => b.name)}
+      brands={lens.brands.map((b) => b.name)}
+      activeBrand={lens.active}
       markets={markets.map((m) => m.market)}
+      initialCheck={opened}
     />
   );
 }

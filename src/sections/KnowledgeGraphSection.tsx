@@ -412,10 +412,25 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
     [edgeFilter, edges],
   );
 
-  const graphData = useMemo(
-    () => ({ nodes, links: visibleEdges as unknown as SimLink[] }),
-    [nodes, visibleEdges],
-  );
+  /**
+   * What is drawn, with every edge proved to have both its ends on screen.
+   *
+   * Nodes come back under a limit and edges come back under their own, so a
+   * graph can arrive holding an edge to a node the limit cut off. Handed one,
+   * the renderer invents the missing end as a bare `{ id }` - no label, no
+   * type - and the first thing that reads `node.label.length` throws, which
+   * took the whole page down with "Cannot read properties of undefined".
+   *
+   * An edge with nothing at one end is not drawable anyway, so it is dropped
+   * here rather than guessed at further in.
+   */
+  const graphData = useMemo(() => {
+    const present = new Set(nodes.map((n) => n.id));
+    const links = (visibleEdges as unknown as SimLink[]).filter(
+      (edge) => present.has(endId(edge.source)) && present.has(endId(edge.target)),
+    );
+    return { nodes, links };
+  }, [nodes, visibleEdges]);
 
   const liveStats = useMemo(
     () => ({ ...stats, nodes: nodes.length, edges: visibleEdges.length }),
@@ -876,7 +891,12 @@ function drawNode(
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
 
-    const label = node.label.length > 30 ? `${node.label.slice(0, 29)}…` : node.label;
+    // Its own name where it has one, and its id where it does not. A node
+    // without a label should not reach here any more - dangling edges are
+    // dropped before the graph is handed over - but a label is a thing to
+    // draw, and one missing must never be a thing that takes down a page.
+    const name = node.label ?? node.id;
+    const label = name.length > 30 ? `${name.slice(0, 29)}…` : name;
 
     // A dark halo behind the text, so a label crossing an edge or another
     // node stays readable instead of dissolving into it.

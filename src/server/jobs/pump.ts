@@ -8,6 +8,12 @@ import {
 } from '../brain/understanding';
 import { recomputeEverywhere } from '../brain/brandDna';
 import { suggestBrandsEverywhere } from '../brain/brands';
+import { suggestMarketsEverywhere } from '../brain/markets';
+import { checkNextGeneration } from '../brain/checker';
+import { claimOcrJob, enqueueOcrEverywhere, runOcrJob } from '../brain/ocr';
+import { claimMarketSource, readClaimedMarketSource, sweepMarketFoldersEverywhere } from '../brain/market';
+import { analyseNextFeedback } from '../brain/learning';
+import { brain } from '../brain/providers';
 import { claimConnectionForSync, runClaimedSync } from '../integrations/googleDrive/jobs';
 
 /**
@@ -76,6 +82,8 @@ export type PumpTally = {
   extracted: number;
   embedded: number;
   understood: number;
+  /** Ratings turned into lessons. */
+  lessons: number;
   failed: number;
   /** True when a limit stopped the pass with work still waiting. */
   moreWaiting: boolean;
@@ -121,7 +129,9 @@ export function pumpInBackground(): void {
 }
 
 async function runPass(): Promise<PumpTally> {
-  const tally: PumpTally = { synced: 0, extracted: 0, embedded: 0, understood: 0, failed: 0, moreWaiting: false };
+  const tally: PumpTally = {
+    synced: 0, extracted: 0, embedded: 0, understood: 0, lessons: 0, failed: 0, moreWaiting: false,
+  };
   const deadline = Date.now() + MAX_RUN_MS;
   const outOfTime = (): boolean => Date.now() > deadline;
 
@@ -170,6 +180,11 @@ async function runPass(): Promise<PumpTally> {
     await suggestBrandsEverywhere();
   });
 
+  // 0.6 And which market, from the file's name or the folders it sits in.
+  await stage(async () => {
+    await suggestMarketsEverywhere();
+  });
+
   // 1. Text out of anything new.
   await stage(async () => {
     for (let i = 0; i < PER_STAGE; i += 1) {
@@ -183,6 +198,20 @@ async function runPass(): Promise<PumpTally> {
       tally.extracted += 1;
       if (i === PER_STAGE - 1) tally.moreWaiting = true;
     }
+  });
+
+  // 1.5 Scanned documents have no text layer to extract. Read them by looking,
+  //     so their words are searchable and quotable like any document's. One
+  //     document a pass here: every page is a vision call.
+  await stage(async () => {
+    if (!brain().configured) return;
+    await enqueueOcrEverywhere();
+    if (outOfTime()) {
+      tally.moreWaiting = true;
+      return;
+    }
+    const job = await claimOcrJob();
+    if (job) await runOcrJob(job);
   });
 
   // 2. Vectors for the chunks that came out of it.
@@ -219,6 +248,55 @@ async function runPass(): Promise<PumpTally> {
 
   // 4. What they add up to, but only when something new was actually learned.
   if (tally.understood > 0) await recomputeEverywhere().catch(() => {});
+
+  // 4.5 Generated images, through the checker before anyone treats them as
+  //     final. Two a pass at most: each one is a vision call.
+  await stage(async () => {
+    if (!brain().configured) return;
+    for (let i = 0; i < 2; i += 1) {
+      if (outOfTime()) {
+        tally.moreWaiting = true;
+        return;
+      }
+      if ((await checkNextGeneration()) === null) break;
+    }
+  });
+
+  // 5. Market reports. After extraction, because a report is read from its
+  //    text. Not attempted without a configured Brain: each attempt would fail
+  //    and use up the report's retries for nothing.
+  await stage(async () => {
+    if (!brain().configured) return;
+    await sweepMarketFoldersEverywhere();
+    for (let i = 0; i < 3; i += 1) {
+      if (outOfTime()) {
+        tally.moreWaiting = true;
+        return;
+      }
+      const claim = await claimMarketSource();
+      if (!claim) break;
+      await readClaimedMarketSource(claim);
+    }
+  });
+
+  // 6. What anybody said about a result.
+  //
+  //    This ran in the standalone worker and nowhere else, so on a deployment
+  //    without one — which is what this has been — a rating was stored and
+  //    never read. The page said "CIP will use that next time" and nothing
+  //    ever did, which is the one promise a learning system must not break.
+  await stage(async () => {
+    if (!brain().configured) return;
+    for (let i = 0; i < PER_STAGE; i += 1) {
+      if (outOfTime()) {
+        tally.moreWaiting = true;
+        return;
+      }
+      const outcome = await analyseNextFeedback();
+      if (!outcome) break;
+      if (outcome.status === 'learned') tally.lessons += outcome.lessons;
+    }
+  });
 
   return tally;
 }

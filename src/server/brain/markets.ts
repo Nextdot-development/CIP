@@ -1,6 +1,7 @@
 import 'server-only';
 import { withCompanyScope } from '../db';
 import type { CompanyScope } from '../db';
+import { adminSql } from '../db-admin';
 
 /**
  * Which market a piece of knowledge belongs to.
@@ -29,16 +30,20 @@ import type { CompanyScope } from '../db';
  * of sight. Anything not on this list simply has no suggestion.
  */
 const KNOWN_MARKETS: { market: string; patterns: RegExp }[] = [
+  // Two-letter codes are left out on purpose now that this runs on its own:
+  // "us" is a word before it is a country, and "Contact us.pdf" is not American.
   { market: 'India', patterns: /\b(india|indian|bharat)\b/i },
-  { market: 'Europe', patterns: /\b(europe|european|eu)\b/i },
-  { market: 'Nigeria', patterns: /\b(nigeria|nigerian)\b/i },
+  { market: 'Europe', patterns: /\b(europe|european)\b/i },
+  { market: 'Nigeria', patterns: /\b(nigeria|nigerian|lagos)\b/i },
+  { market: 'Ghana', patterns: /\b(ghana|ghanaian|accra)\b/i },
+  { market: 'West Africa', patterns: /\bwest[\s-]?africa(n)?\b/i },
   { market: 'UAE', patterns: /\b(uae|dubai|emirates)\b/i },
-  { market: 'UK', patterns: /\b(uk|britain|british)\b/i },
-  { market: 'USA', patterns: /\b(usa|us|america|american)\b/i },
-  { market: 'Singapore', patterns: /\b(singapore|sg)\b/i },
-  { market: 'Kenya', patterns: /\b(kenya|kenyan)\b/i },
-  { market: 'South Africa', patterns: /\b(south[\s-]?africa|za)\b/i },
-  { market: 'Australia', patterns: /\b(australia|australian|aus)\b/i },
+  { market: 'UK', patterns: /\b(uk|britain|british|united kingdom)\b/i },
+  { market: 'USA', patterns: /\b(usa|united states|america|american)\b/i },
+  { market: 'Singapore', patterns: /\bsingapore\b/i },
+  { market: 'Kenya', patterns: /\b(kenya|kenyan|nairobi)\b/i },
+  { market: 'South Africa', patterns: /\bsouth[\s-]?africa(n)?\b/i },
+  { market: 'Australia', patterns: /\b(australia|australian)\b/i },
 ];
 
 /**
@@ -270,15 +275,30 @@ export async function suggestMarkets(
   scope: CompanyScope,
 ): Promise<{ fileId: string; name: string; market: string }[]> {
   return withCompanyScope(scope, async (tx) => {
-    const unlabelled = await tx<{ id: string; name: string }[]>`
-      select id, name from drive_files
-       where company_id = ${scope.companyId} and archived_at is null and market is null
+    // With the names of the folders each file sits in, outermost first: a
+    // deck called "post-3.jpg" inside "Nigeria / Q2" is Nigeria's.
+    const unlabelled = await tx<{ id: string; name: string; path: string | null }[]>`
+      with recursive chain as (
+        select f.id as file_id, d.parent_id, d.name::text as path
+          from drive_files f
+          join drive_folders d on d.id = f.folder_id and d.company_id = f.company_id
+         where f.company_id = ${scope.companyId} and f.archived_at is null and f.market is null
+        union all
+        select c.file_id, p.parent_id, p.name || ' ' || c.path
+          from chain c
+          join drive_folders p on p.id = c.parent_id and p.company_id = ${scope.companyId}
+      )
+      select f.id, f.name,
+             (select c.path from chain c where c.file_id = f.id and c.parent_id is null limit 1) as path
+        from drive_files f
+       where f.company_id = ${scope.companyId} and f.archived_at is null and f.market is null
     `;
 
     const changed: { fileId: string; name: string; market: string }[] = [];
 
     for (const file of unlabelled) {
-      const market = marketFromFilename(file.name);
+      // The file's own name wins; the folders only speak when it says nothing.
+      const market = marketFromFilename(file.name) ?? (file.path ? marketFromFilename(file.path) : null);
       if (!market) continue;
 
       await tx`
@@ -290,4 +310,28 @@ export async function suggestMarkets(
 
     return changed;
   });
+}
+
+/**
+ * Suggests markets across every company, scoped properly for each.
+ *
+ * Run by the worker, so a file dropped into a country's folder is placed in
+ * that country without anybody labelling it - which is what fills the
+ * country groupings on the graph and narrows a brief to the right market.
+ */
+export async function suggestMarketsEverywhere(): Promise<number> {
+  const sql = adminSql();
+  let companies: { id: string }[];
+  try {
+    companies = await sql<{ id: string }[]>`select id from companies`;
+  } finally {
+    await sql.end();
+  }
+  let placed = 0;
+  for (const company of companies) {
+    placed += (
+      await suggestMarkets({ companyId: company.id, userId: '00000000-0000-0000-0000-000000000000', role: 'owner' })
+    ).length;
+  }
+  return placed;
 }

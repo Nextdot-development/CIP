@@ -473,9 +473,16 @@ describe('Brand DNA is counted, not asserted', () => {
   });
 
   it('agreement across assets raises evidence and promotes the fact', async () => {
-    // The fake derives its facts from the bytes, so identical bytes agree.
+    // Two different assets that say the same thing, which is what evidence is.
+    // This used to upload one image twice, and CIP now reads one content once:
+    // two copies of a deck are one asset with two names, and counting them as
+    // two inflated the evidence behind every claim they made.
+    fake.imageFacts = [
+      { section: 'visual', attribute: 'composition', value: 'centred' },
+      { section: 'visual', attribute: 'lighting', value: 'soft daylight' },
+    ];
     await uploadImage(mm, 'a.png', 7);
-    await uploadImage(mm, 'b.png', 7);
+    await uploadImage(mm, 'b.png', 8);
     await understanding.enqueueUnderstanding(mm);
     await understandAll();
     await brandDna.recomputeBrandDna(mm);
@@ -1476,6 +1483,110 @@ describe('THE BOUNDARY: asked for one brand, only that brand is read', () => {
   });
 });
 
+describe('the same file twice', () => {
+  it('is read once, however many copies of it a company has', async () => {
+    const bytes = png(256, 256, 91);
+    await drive.uploadFile(mm, {
+      folderId: null, filename: 'twice-a.png', mimeType: 'image/png', body: bytes,
+    });
+    await drive.uploadFile(mm, {
+      folderId: null, filename: 'twice-b.png', mimeType: 'image/png', body: bytes,
+    });
+
+    await understanding.enqueueUnderstanding(mm);
+
+    // Two readings of one deck were two assets as far as Brand DNA was
+    // concerned, and it promotes a claim when enough separate assets agree.
+    const rows = await adminSql<{ n: number }[]>`
+      select count(*)::int as n
+        from asset_understanding u
+        join drive_files f on f.id = u.file_id
+       where f.company_id = ${mm.companyId}
+         and f.name in ('twice-a.png', 'twice-b.png')
+    `;
+    assert.equal(rows[0]!.n, 1, 'the same bytes were queued to be read twice');
+  });
+});
+
+describe('the product in the picture is the company\'s own', () => {
+  /** An asset already understood, described the way the real Brain describes one. */
+  async function understood(
+    scope: Scope,
+    filename: string,
+    seed: number,
+    brand: string,
+    summary: string,
+    structured: { contentType: string; products?: string[] },
+  ): Promise<string> {
+    const file = await uploadImage(scope, filename, seed);
+    await adminSql`update drive_files set brand = ${brand} where id = ${file.id}`;
+    await adminSql`
+      insert into asset_understanding
+        (company_id, file_id, kind, provider, model, content_hash, status, summary, structured)
+      values
+        (${scope.companyId}, ${file.id}, 'image', 'fake', 'fake-1', ${`hash-${seed}`}, 'ready',
+         ${summary}, ${adminSql.json(structured)})
+    `;
+    return file.id;
+  }
+
+  it('leads the references with a photograph of the product, and says to copy it', async () => {
+    const brands = await import('../src/server/brain/brands');
+    await brands.addBrand(mm, { name: '8PM' });
+
+    const packshot = await understood(
+      mm, '8pm-honey-packshot.png', 41, '8PM',
+      'Packshot of the 8PM Honey bottle on a solid black background.',
+      { contentType: 'packshot', products: ['bottle of whisky'] },
+    );
+    await understood(
+      mm, 'diwali-poster.png', 42, '8PM',
+      'Diwali poster with diyas, marigolds and a headline.',
+      { contentType: 'out-of-home (OOH) creative / poster' },
+    );
+
+    const plan = await planner.planGeneration(mm, {
+      requestText: 'A Diwali banner for 8PM Honey',
+      mediaType: 'image',
+      brand: '8PM',
+      market: 'India',
+    });
+
+    // Similarity answers "what resembles a Diwali banner", and for a brand
+    // with a Diwali poster the answer is the poster — so the generator was
+    // shown the campaign and never the bottle, and drew a bottle of its own.
+    assert.equal(plan.productShots[0]?.fileName, '8pm-honey-packshot.png', 'the packshot was not found');
+    assert.equal(plan.references[0]?.fileId, packshot, 'the packshot did not lead the references');
+  });
+
+  it('tells the generator the attached photograph is the product, not a mood board', async () => {
+    const brands = await import('../src/server/brain/brands');
+    await brands.addBrand(mm, { name: '8PM' });
+    await understood(
+      mm, '8pm-packshot.png', 43, '8PM',
+      'Packshot of the 8PM bottle.',
+      { contentType: 'packshot', products: ['bottle of whisky'] },
+    );
+
+    mediaProviders.__setProviders(null, null);
+    const out = await brainGenerate.generateWithBrain(mm, {
+      requestText: 'A Diwali banner for 8PM',
+      mediaType: 'image',
+      market: 'India',
+    });
+    assert.equal(out.status, 'generated');
+    if (out.status !== 'generated') return;
+
+    const rows = await adminSql<{ prompt: string }[]>`
+      select prompt from media_generations where id = ${out.generation.id}
+    `;
+    // Reference images were attached and nothing said what they were for.
+    assert.match(rows[0]!.prompt, /photograph/i, 'the prompt never says what the attachment is');
+    assert.match(rows[0]!.prompt, /do not redesign the label/i, 'nothing told it to keep the label');
+    assert.ok(out.plan.productShots.length > 0, 'the plan does not say a product photo was used');
+  });
+});
+
 describe('what the Brain hands the generator', () => {
   it('delivers the shape the request asked for, not the nearest one on sale', async () => {
     await uploadText(mm, 'voice.txt', 'Warm, celebratory, never about the alcohol itself.');
@@ -1506,6 +1617,221 @@ describe('what the Brain hands the generator', () => {
         `asked for 4:5 and got ${asset.width}x${asset.height}`,
       );
     }
+  });
+
+  it('keeps a shape given in the answer to a question', async () => {
+    const { generateWithBrain } = await import('../src/server/brain/generate');
+    const out = await generateWithBrain(mm, {
+      // A banner on its own is 3:1. The square was only said in reply, and the
+      // reply was never read for a shape, so this came back a strip.
+      requestText: 'Generate a banner of honey whisky with wildlife behind it',
+      clarification: 'make it 4:4',
+      mediaType: 'image',
+    });
+
+    assert.equal(out.status, 'generated', 'nothing was made');
+    assert.equal(out.plan.deliveredShape, '1:1', 'the shape in the answer was ignored');
+
+    const assets = await adminSql<{ width: number; height: number }[]>`
+      select width, height from media_generation_assets
+       where generation_id = ${(out as { generation: { id: string } }).generation.id}
+    `;
+    assert.ok(assets.length > 0, 'the generation produced no asset');
+    for (const asset of assets) {
+      assert.equal(asset.width, asset.height, `asked for 1:1 and got ${asset.width}x${asset.height}`);
+    }
+  });
+
+  it('makes a size the generator has not got, rather than refusing it', async () => {
+    mediaProviders.__setProviders(null, null);
+
+    const out = await brainGenerate.generateWithBrain(mm, {
+      requestText: 'A Diwali banner for honey whisky',
+      mediaType: 'image',
+      // Picked on the page rather than typed. 4:5 is not on this generator's
+      // list, and a ratio it does not make used to be passed straight through
+      // and refused — so choosing a size produced an error, not a picture.
+      aspectRatio: '4:5',
+    });
+
+    assert.equal(out.status, 'generated', 'a size the generator has not got was refused');
+    if (out.status !== 'generated') return;
+    assert.equal(out.plan.deliveredShape, '4:5');
+    assert.equal(out.plan.cropped, true, 'the plan says nothing was trimmed, and something was');
+
+    const assets = await adminSql<{ width: number; height: number }[]>`
+      select width, height from media_generation_assets where generation_id = ${out.generation.id}
+    `;
+    assert.ok(assets.length > 0, 'the generation produced no asset');
+    for (const asset of assets) {
+      assert.ok(
+        Math.abs(Math.log(asset.width / asset.height / (4 / 5))) < 0.02,
+        `asked for 4:5 and got ${asset.width}x${asset.height}`,
+      );
+    }
+  });
+
+  it('uses the generator that makes the shape, when the one named does not', async () => {
+    /** Two doubles with different shapes on offer, so which one ran is observable. */
+    class Double {
+      readonly configured = true;
+      readonly imageSizes = ['auto'];
+      calls = 0;
+      constructor(
+        readonly name: 'openai' | 'google',
+        readonly model: string,
+        readonly aspectRatios: string[],
+      ) {}
+      async generate() {
+        this.calls += 1;
+        return {
+          assets: [{ bytes: Buffer.from('an image'), mimeType: 'image/png', width: 1024, height: 1280 }],
+          model: this.model,
+          usage: {},
+        };
+      }
+    }
+    type AnyImageProvider = import('../src/server/media/providers').ImageGenerationProvider;
+
+    const openai = new Double('openai', 'gpt-image-2', ['1:1', '3:2', '2:3']);
+    const gemini = new Double('google', 'gemini-3.1-flash-image', ['1:1', '4:5', '9:16']);
+    mediaProviders.__setProviders(null, null, {
+      openai: openai as unknown as AnyImageProvider,
+      gemini: gemini as unknown as AnyImageProvider,
+    });
+
+    try {
+      const out = await brainGenerate.generateWithBrain(mm, {
+        requestText: 'A Diwali post for honey whisky',
+        mediaType: 'image',
+        provider: 'openai',
+        aspectRatio: '4:5',
+      });
+
+      assert.equal(out.status, 'generated');
+      if (out.status !== 'generated') return;
+      // OpenAI would have made a 2:3 and had its edges cut off, losing a logo
+      // or a statutory warning, while Gemini makes 4:5 exactly.
+      assert.equal(gemini.calls, 1, 'the generator that makes 4:5 was not used');
+      assert.equal(openai.calls, 0, 'a shape was cut down while another generator made it exactly');
+      assert.equal(out.plan.switchedProvider?.to, 'gemini', 'the swap was not reported in the plan');
+    } finally {
+      mediaProviders.__setProviders(null, null);
+    }
+  });
+
+  it('tells a settled lesson apart from one a single rating produced', async () => {
+    await adminSql`
+      insert into brain_lessons
+        (company_id, polarity, statement, brand, status, evidence_count, confidence)
+      values
+        (${mm.companyId}, 'prefer', 'Keep the label facing the camera.', null, 'confirmed', 3, 0.6),
+        (${mm.companyId}, 'prefer', 'Make the bottle enormous.', null, 'candidate', 1, 0.33)
+    `;
+
+    const plan = await planner.planGeneration(mm, {
+      requestText: 'A Diwali post for honey whisky',
+      mediaType: 'image',
+    });
+
+    // Both reach the generator: feedback is meant to change the next piece of
+    // work, not the one after three more ratings.
+    assert.ok(
+      plan.brief.learnedPreferences.some((s) => s.includes('label facing the camera')),
+      'a confirmed lesson did not reach the brief',
+    );
+    assert.ok(
+      plan.brief.learnedPreferences.some((s) => s.includes('bottle enormous')),
+      'a lesson from a recent rating did not reach the brief',
+    );
+
+    // What changes is what CIP claims about them. A page that showed one
+    // person's single rating exactly as it shows a settled pattern is how a
+    // one-off "make the bottle enormous" reads as the brand's own rule.
+    assert.ok(
+      plan.pendingLessons.some((l) => l.statement.includes('bottle enormous')),
+      'a lesson with one rating behind it was presented as settled',
+    );
+    assert.ok(
+      !plan.pendingLessons.some((l) => l.statement.includes('label facing the camera')),
+      'a confirmed lesson was reported as still gathering evidence',
+    );
+  });
+
+  it('carries a required disclaimer into the prompt, rather than hoping for it', async () => {
+    const checker = await import('../src/server/brain/checker');
+    await checker.addComplianceRule(mm, {
+      rule: 'Carry the statutory warning that consumption of liquor is injurious to health.',
+      requirement: 'required',
+      category: 'disclaimer',
+      source: 'manual',
+    });
+
+    mediaProviders.__setProviders(null, null);
+    const out = await brainGenerate.generateWithBrain(mm, {
+      requestText: 'A Diwali post for honey whisky',
+      mediaType: 'image',
+    });
+
+    assert.equal(out.status, 'generated');
+    if (out.status !== 'generated') return;
+
+    // The checker fails a creative for a missing statutory warning. Nothing
+    // had ever told the generator to put one there, so CIP made the mistake
+    // and then flagged itself for it.
+    assert.ok(
+      out.plan.mustCarry.some((rule) => rule.includes('injurious to health')),
+      'the plan does not say the warning is required',
+    );
+
+    const rows = await adminSql<{ prompt: string }[]>`
+      select prompt from media_generations where id = ${out.generation.id}
+    `;
+    assert.ok(
+      rows[0]!.prompt.includes('injurious to health'),
+      `the required warning never reached the generator: ${rows[0]!.prompt.slice(0, 300)}`,
+    );
+  });
+
+  it('builds on a picture it made earlier', async () => {
+    mediaProviders.__setProviders(null, null);
+
+    const first = await brainGenerate.generateWithBrain(mm, {
+      requestText: 'A Diwali post for honey whisky',
+      mediaType: 'image',
+    });
+    assert.equal(first.status, 'generated');
+    if (first.status !== 'generated') return;
+
+    // "The same thing with less text" used to start again from nothing, and
+    // came back a different picture that happened to obey the same brief.
+    const second = await brainGenerate.generateWithBrain(mm, {
+      requestText: 'The same thing, with less text on it',
+      mediaType: 'image',
+      basedOnGenerationId: first.generation.id,
+    });
+    assert.equal(second.status, 'generated');
+    if (second.status !== 'generated') return;
+
+    const rows = await adminSql<{ input_metadata: { basedOn?: string; referenceCount?: number } }[]>`
+      select input_metadata from media_generations where id = ${second.generation.id}
+    `;
+    assert.equal(rows[0]!.input_metadata.basedOn, first.generation.id, 'the earlier picture was not recorded');
+    assert.ok(
+      (rows[0]!.input_metadata.referenceCount ?? 0) >= 1,
+      'the earlier picture never reached the generator',
+    );
+
+    // The boundary holds here as everywhere: a generation id is only an id
+    // inside the company that owns it.
+    await assert.rejects(
+      () => brainGenerate.generateWithBrain(nh, {
+        requestText: 'Build on that',
+        mediaType: 'image',
+        basedOnGenerationId: first.generation.id,
+      }),
+      'another company built on a picture that was not theirs',
+    );
   });
 
   it('never attaches more reference images than a generator will take', async () => {

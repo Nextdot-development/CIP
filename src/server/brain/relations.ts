@@ -1,4 +1,5 @@
 import 'server-only';
+import type { TransactionSql } from 'postgres';
 import { withCompanyScope } from '../db';
 import type { CompanyScope } from '../db';
 import { adminSql } from '../db-admin';
@@ -166,12 +167,43 @@ type Held = { kind: string; value: string; count: number };
  * yesterday's conclusions sitting alongside today's with no way to tell them
  * apart.
  */
-export async function recomputeRelations(scope: CompanyScope): Promise<{
+export async function recomputeRelations(
+  scope: CompanyScope,
+  options: { force?: boolean } = {},
+): Promise<{
   brands: number;
   traits: number;
   relations: number;
 }> {
   return withCompanyScope(scope, async (tx) => {
+    // Nothing has changed since the map was last drawn.
+    //
+    // The worker rebuilds every company's relations after every pass, and on
+    // real data this is the slowest stage it runs: every trait and every pair
+    // deleted and written again to arrive at the rows already there. One
+    // fingerprint says whether that work would change anything.
+    //
+    // It counts as well as dates, because a fact that is deleted moves no
+    // timestamp — and a relation whose evidence has been retired is exactly
+    // the stale conclusion this recompute exists to clear.
+    const fingerprint = await fingerprintOf(tx, scope.companyId);
+
+    if (!options.force) {
+      const [state] = await tx<{ fingerprint: string }[]>`
+        select fingerprint from brand_relation_state where company_id = ${scope.companyId}
+      `;
+
+      if (state?.fingerprint === fingerprint) {
+        const [counts] = await tx<{ brands: number; traits: number; relations: number }[]>`
+          select
+            (select count(*)::int from company_brands  where company_id = ${scope.companyId}) as brands,
+            (select count(*)::int from brand_traits    where company_id = ${scope.companyId}) as traits,
+            (select count(*)::int from brand_relations where company_id = ${scope.companyId}) as relations
+        `;
+        return counts ?? { brands: 0, traits: 0, relations: 0 };
+      }
+    }
+
     const roster = await tx<{ name: string }[]>`
       select name from company_brands where company_id = ${scope.companyId}
     `;
@@ -181,7 +213,10 @@ export async function recomputeRelations(scope: CompanyScope): Promise<{
 
     // One brand cannot be related to anything, and no brands means a company
     // that does not work this way at all.
-    if (roster.length < 2) return { brands: roster.length, traits: 0, relations: 0 };
+    if (roster.length < 2) {
+      await remember(tx, scope.companyId, fingerprint);
+      return { brands: roster.length, traits: 0, relations: 0 };
+    }
 
     // --- traits ------------------------------------------------------------
 
@@ -240,18 +275,30 @@ export async function recomputeRelations(scope: CompanyScope): Promise<{
     for (const row of factRows) add(row.brand, row.kind, row.value, row.n);
     for (const row of marketRows) add(row.brand, 'market', row.value, row.n);
 
-    let written = 0;
+    // One statement per thousand traits rather than one per trait. Row by row
+    // across a network pooler, 2,260 traits took minutes. Two entries naming the
+    // same trait are folded first, because one insert cannot update a row twice.
+    const traitRows = new Map<string, { brand: string; kind: string; value: string; count: number }>();
     for (const [brand, forBrand] of traits) {
       for (const held of forBrand.values()) {
-        await tx`
-          insert into brand_traits (company_id, brand, kind, value, evidence_count)
-          values (${scope.companyId}, ${brand}, ${held.kind}, ${held.value}, ${held.count})
-          on conflict (company_id, brand, kind, value)
-            do update set evidence_count = excluded.evidence_count, updated_at = now()
-        `;
-        written += 1;
+        const id = `${brand}|${held.kind}|${held.value}`;
+        const existing = traitRows.get(id);
+        if (existing) existing.count += held.count;
+        else traitRows.set(id, { brand, kind: held.kind, value: held.value, count: held.count });
       }
     }
+    const allTraits = [...traitRows.values()];
+    for (let start = 0; start < allTraits.length; start += 1000) {
+      await tx`
+        insert into brand_traits (company_id, brand, kind, value, evidence_count)
+        select ${scope.companyId}::uuid, r.brand, r.kind, r.value, r.count
+          from jsonb_to_recordset(${tx.json(allTraits.slice(start, start + 1000))})
+            as r(brand text, kind text, value text, count int)
+        on conflict (company_id, brand, kind, value)
+          do update set evidence_count = excluded.evidence_count, updated_at = now()
+      `;
+    }
+    const written = allTraits.length;
 
     // --- relations ---------------------------------------------------------
 
@@ -294,6 +341,7 @@ export async function recomputeRelations(scope: CompanyScope): Promise<{
     for (const [brand, forBrand] of traits) magnitudes.set(brand, magnitude(forBrand));
 
     let relations = 0;
+    const relationRows: { brand_a: string; brand_b: string; score: number; shared: { kind: string; value: string }[] }[] = [];
     const named = [...traits.keys()].sort();
 
     for (let i = 0; i < named.length; i += 1) {
@@ -329,19 +377,58 @@ export async function recomputeRelations(scope: CompanyScope): Promise<{
 
         // Ordered, so a pair cannot be stored twice with its ends swapped.
         const [first, second] = a < b ? [a, b] : [b, a];
-        await tx`
-          insert into brand_relations (company_id, brand_a, brand_b, score, shared)
-          values (${scope.companyId}, ${first!}, ${second!}, ${score.toFixed(4)},
-                  ${tx.json(explanation)})
-          on conflict (company_id, brand_a, brand_b)
-            do update set score = excluded.score, shared = excluded.shared, updated_at = now()
-        `;
+        relationRows.push({ brand_a: first!, brand_b: second!, score: Number(score.toFixed(4)), shared: explanation });
         relations += 1;
       }
     }
 
+    for (let start = 0; start < relationRows.length; start += 500) {
+      await tx`
+        insert into brand_relations (company_id, brand_a, brand_b, score, shared)
+        select ${scope.companyId}::uuid, r.brand_a, r.brand_b, r.score, r.shared
+          from jsonb_to_recordset(${tx.json(relationRows.slice(start, start + 500))})
+            as r(brand_a text, brand_b text, score numeric, shared jsonb)
+        on conflict (company_id, brand_a, brand_b)
+          do update set score = excluded.score, shared = excluded.shared, updated_at = now()
+      `;
+    }
+
+    await remember(tx, scope.companyId, fingerprint);
     return { brands: roster.length, traits: written, relations };
   });
+}
+
+/**
+ * What the map was drawn from, in one string.
+ *
+ * Counts and dates together: a new fact moves the date, a retired one moves
+ * the count, and either has to redraw the map. Cheap enough to ask every time,
+ * which is the point — it decides whether the expensive part runs at all.
+ */
+async function fingerprintOf(tx: TransactionSql, companyId: string): Promise<string> {
+  const [row] = await tx<{ fingerprint: string }[]>`
+    select concat_ws(':',
+      (select count(*) from brand_dna_facts
+        where company_id = ${companyId} and status = 'active' and brand is not null),
+      (select coalesce(max(updated_at)::text, '') from brand_dna_facts where company_id = ${companyId}),
+      (select count(*) from drive_files
+        where company_id = ${companyId} and archived_at is null
+          and brand is not null and market is not null),
+      (select coalesce(max(updated_at)::text, '') from drive_files where company_id = ${companyId}),
+      (select count(*) from company_brands where company_id = ${companyId}),
+      (select coalesce(max(created_at)::text, '') from company_brands where company_id = ${companyId})
+    ) as fingerprint
+  `;
+  return row?.fingerprint ?? '';
+}
+
+async function remember(tx: TransactionSql, companyId: string, fingerprint: string): Promise<void> {
+  await tx`
+    insert into brand_relation_state (company_id, fingerprint, computed_at)
+    values (${companyId}, ${fingerprint}, now())
+    on conflict (company_id)
+      do update set fingerprint = excluded.fingerprint, computed_at = now()
+  `;
 }
 
 /**

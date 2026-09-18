@@ -3,7 +3,8 @@ import { randomUUID } from 'node:crypto';
 import type { TransactionSql } from 'postgres';
 import { withCompanyScope } from '../db';
 import type { CompanyScope } from '../db';
-import { driveStorage, sha256, storageKeyFor } from './storage';
+import { THUMBNAIL_EDGES, driveStorage, sha256, storageKeyFor, thumbnailKeyFor } from './storage';
+import type { ThumbnailEdge } from './storage';
 import { MAX_FILE_BYTES, maxFileSizeLabel, sanitiseFilename, specFor } from '@/lib/fileTypes';
 import type { FileKind } from '@/lib/fileTypes';
 import type * as D from '@/types/drive';
@@ -312,8 +313,27 @@ export async function uploadFile(scope: CompanyScope, input: UploadInput): Promi
   const storagePath = storageKeyFor(scope.companyId, fileId, spec.extension);
   const checksum = sha256(input.body);
 
-  const row = await withCompanyScope(scope, async (tx) => {
+  const outcome = await withCompanyScope(scope, async (tx) => {
     await requireFolder(tx, scope, input.folderId);
+
+    // Whether these exact bytes are already here under some other name.
+    //
+    // Reported, not refused: the same picture in two folders under two names
+    // is a perfectly ordinary thing to want, and a person who asked for a file
+    // should get the file. What must not happen twice is the *reading* of it —
+    // Brand DNA promotes a claim once enough separate assets agree, and two
+    // copies of one deck are one deck counted twice. That is handled where the
+    // reading is queued, by content hash, so it holds for a file synced from
+    // Google Drive as well as one uploaded here.
+    const existing = await tx<{ id: string }[]>`
+      select id from drive_files
+       where company_id = ${scope.companyId}
+         and checksum_sha256 = ${checksum}
+         and archived_at is null
+       limit 1
+    `;
+    const duplicate = existing.length > 0;
+
     try {
       const rows = await tx<FileRow[]>`
         insert into drive_files (
@@ -329,7 +349,7 @@ export async function uploadFile(scope: CompanyScope, input: UploadInput): Promi
                   null::text as understanding_status, null::text as understanding_kind,
                   uploaded_by as uploaded_by_id, null::text as uploaded_by_name
       `;
-      return rows[0]!;
+      return { row: rows[0]!, duplicate };
     } catch (error) {
       throw translate(error, `A file called "${name}" is already here.`);
     }
@@ -340,7 +360,8 @@ export async function uploadFile(scope: CompanyScope, input: UploadInput): Promi
   // orphaned object nobody can see or clean up.
   await driveStorage().put(storagePath, input.body, mimeType);
 
-  return toFile(row);
+  const file = toFile(outcome.row);
+  return outcome.duplicate ? { ...file, alreadyPresent: true } : file;
 }
 
 export async function renameFile(
@@ -439,6 +460,68 @@ export async function deleteFileForever(scope: CompanyScope, fileId: string): Pr
   });
 
   await driveStorage().remove(key);
+  // Its thumbnails too. Most sizes were never made, so a missing one is fine.
+  await Promise.all(
+    THUMBNAIL_EDGES.map((edge) =>
+      driveStorage().remove(thumbnailKeyFor(scope.companyId, fileId, edge)).catch(() => {}),
+    ),
+  );
+}
+
+const THUMBNAILABLE = new Set(['image/png', 'image/jpeg', 'image/webp']);
+
+/**
+ * A small copy of an image, for grids.
+ *
+ * A page of 120 creatives used to download 120 originals - print-resolution
+ * bottle shots of tens of megabytes each - to draw them at 120 pixels. The
+ * copy is made the first time it is asked for and kept next to the original.
+ * A file's bytes never change under its id, so the copy never goes stale.
+ *
+ * WebP, so a logo cut out against nothing keeps its transparency. Null for
+ * anything that is not a still image this can decode; the caller then serves
+ * the original, exactly as before.
+ */
+export async function readThumbnail(
+  scope: CompanyScope,
+  fileId: string,
+  edge: ThumbnailEdge,
+): Promise<{ body: Buffer; filename: string } | null> {
+  const row = await withCompanyScope(scope, async (tx) => {
+    const rows = await tx<{ mime_type: string; storage_path: string | null; name: string }[]>`
+      select mime_type, storage_path, name from drive_files
+       where id = ${fileId} and company_id = ${scope.companyId} and archived_at is null
+    `;
+    const found = rows[0];
+    if (!found) throw new DriveNotFound('That file');
+    return found;
+  });
+  if (!row.storage_path || !THUMBNAILABLE.has(row.mime_type.toLowerCase())) return null;
+
+  const storage = driveStorage();
+  const key = thumbnailKeyFor(scope.companyId, fileId, edge);
+  try {
+    return { body: await storage.get(key), filename: row.name };
+  } catch {
+    // Not made yet.
+  }
+
+  try {
+    const original = await storage.get(row.storage_path);
+    const { createCanvas, loadImage } = await import('@napi-rs/canvas');
+    const image = await loadImage(original);
+    const scale = Math.min(1, edge / Math.max(image.width, image.height));
+    const width = Math.max(1, Math.round(image.width * scale));
+    const height = Math.max(1, Math.round(image.height * scale));
+    const canvas = createCanvas(width, height);
+    canvas.getContext('2d').drawImage(image, 0, 0, width, height);
+    const body = canvas.toBuffer('image/webp', 80);
+    // Kept for next time. A failed write only means it is made again.
+    await storage.put(key, body, 'image/webp').catch(() => {});
+    return { body, filename: row.name };
+  } catch {
+    return null;
+  }
 }
 
 export type FileForDownload = {

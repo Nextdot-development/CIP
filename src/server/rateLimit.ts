@@ -1,17 +1,23 @@
 import 'server-only';
+import { sql } from './db';
 
 /**
- * A token bucket, per subject, in memory.
+ * A token bucket per subject, shared by every server instance.
  *
- * Semantic search spends money on every call: one embedding request per query.
- * Authentication already stops strangers, but an authenticated user in a loop
- * is a bill, so the paid endpoint needs a ceiling of its own.
+ * Semantic search spends money on every call, and generation spends more.
+ * Authentication stops strangers, but an authenticated user in a loop is a
+ * bill, so the paid endpoints need ceilings of their own.
  *
- * LIMITATION, stated plainly: this counts within one server process. Two
- * instances give a user two buckets. That is the right trade for now — it
- * needs no new infrastructure and it stops the realistic case, which is a
- * runaway client or a careless script rather than a distributed attacker.
- * Moving to a shared counter is a swap of this one module.
+ * The buckets live in the database. They used to live in memory, which counted
+ * within one process: on a host running several instances a person got a bucket
+ * per instance, and a limit of five became five times however many were up.
+ * Each take now happens under a row lock, so two instances cannot both spend
+ * the last token.
+ *
+ * A limiter that cannot reach its store must not take the endpoint down with
+ * it. If the database is unavailable the same bucket is kept in memory for that
+ * call, which is the old behaviour - weaker, and far better than refusing.
+ * CIP_RATE_LIMIT_STORE=memory forces that, for a single-process setup.
  */
 
 export type RateLimitResult = {
@@ -19,6 +25,13 @@ export type RateLimitResult = {
   /** Whole seconds until the next token, for Retry-After. */
   retryAfterSeconds: number;
   remaining: number;
+};
+
+export type RateLimitOptions = {
+  /** Bucket size: how many calls may burst before refill matters. */
+  capacity: number;
+  /** Tokens added per second. capacity 20 at 0.5/s is 20 at once, then 30/min. */
+  refillPerSecond: number;
 };
 
 type Bucket = { tokens: number; lastRefill: number };
@@ -37,14 +50,7 @@ function sweep(now: number): void {
   }
 }
 
-export type RateLimitOptions = {
-  /** Bucket size: how many calls may burst before refill matters. */
-  capacity: number;
-  /** Tokens added per second. capacity 20 at 0.5/s is 20 at once, then 30/min. */
-  refillPerSecond: number;
-};
-
-export function rateLimit(key: string, options: RateLimitOptions): RateLimitResult {
+function takeFromMemory(key: string, options: RateLimitOptions): RateLimitResult {
   const now = Date.now();
   sweep(now);
 
@@ -63,6 +69,46 @@ export function rateLimit(key: string, options: RateLimitOptions): RateLimitResu
   bucket.tokens -= 1;
   buckets.set(key, bucket);
   return { allowed: true, retryAfterSeconds: 0, remaining: Math.floor(bucket.tokens) };
+}
+
+/** Takes one token for `key`, or says how long until there is one. */
+export async function rateLimit(key: string, options: RateLimitOptions): Promise<RateLimitResult> {
+  if (process.env.CIP_RATE_LIMIT_STORE === 'memory') return takeFromMemory(key, options);
+
+  try {
+    const result = await sql.begin(async (tx) => {
+      await tx`
+        insert into rate_limit_buckets (key, tokens, refilled_at)
+        values (${key}, ${options.capacity}, now())
+        on conflict (key) do nothing
+      `;
+      const rows = await tx<{ tokens: number; elapsed: number }[]>`
+        select tokens, extract(epoch from (now() - refilled_at))::float8 as elapsed
+          from rate_limit_buckets
+         where key = ${key}
+         for update
+      `;
+      const row = rows[0]!;
+      const tokens = Math.min(options.capacity, row.tokens + Math.max(0, row.elapsed) * options.refillPerSecond);
+
+      if (tokens < 1) {
+        await tx`update rate_limit_buckets set tokens = ${tokens}, refilled_at = now() where key = ${key}`;
+        const wait = (1 - tokens) / options.refillPerSecond;
+        return { allowed: false, retryAfterSeconds: Math.max(1, Math.ceil(wait)), remaining: 0 };
+      }
+
+      await tx`update rate_limit_buckets set tokens = ${tokens - 1}, refilled_at = now() where key = ${key}`;
+      return { allowed: true, retryAfterSeconds: 0, remaining: Math.floor(tokens - 1) };
+    });
+
+    // Now and then, forget buckets nobody has used for a day.
+    if (Math.random() < 0.01) {
+      void sql`delete from rate_limit_buckets where refilled_at < now() - interval '1 day'`.catch(() => {});
+    }
+    return result;
+  } catch {
+    return takeFromMemory(key, options);
+  }
 }
 
 /** Semantic search: 20 in a burst, then a sustained 30 a minute. */
@@ -110,6 +156,7 @@ export const COMPANY_GENERATION_LIMIT = (): RateLimitOptions =>
   fromEnv('CIP_COMPANY_RATE', { capacity: 20, refillPerSecond: 1 / 6 });
 
 /** Tests need a clean slate between cases. */
-export function __resetRateLimits(): void {
+export async function __resetRateLimits(): Promise<void> {
   buckets.clear();
+  await sql`delete from rate_limit_buckets`.catch(() => {});
 }

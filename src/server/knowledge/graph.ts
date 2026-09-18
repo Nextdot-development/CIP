@@ -410,12 +410,15 @@ async function overview(
   }
 
   const filtered = applyTypeFilter(nodes, edges, options.typeFilter);
+  // This is the whole picture, so an edge to a node that is not in it is an
+  // edge to nothing. Every id here came back from a query under its own limit.
+  const drawable = drawableEdges(filtered.nodes, filtered.edges);
   const matches = options.search ? await searchNodes(scope, options.search) : [];
 
   return {
     nodes: filtered.nodes,
-    edges: filtered.edges,
-    stats: statsFor(filtered.nodes, filtered.edges, totals),
+    edges: drawable,
+    stats: statsFor(filtered.nodes, drawable, totals),
     matches,
     empty: totals.files === 0 && totals.folders === 0,
     truncated: totals.files > files.length || totals.folders > folders.length,
@@ -714,6 +717,25 @@ function applyTypeFilter(
   const kept = nodes.filter((n) => n.type === typeFilter || n.type === 'source');
   const ids = new Set(kept.map((n) => n.id));
   return { nodes: kept, edges: edges.filter((e) => ids.has(e.source) && ids.has(e.target)) };
+}
+
+/**
+ * Edges with both ends among these nodes, and no others.
+ *
+ * For the whole-graph reply only. Nodes come back under a limit and edges come
+ * back under their own, so a company with plenty in it returns edges to nodes
+ * that were cut — and the renderer does not treat such a link as undrawable:
+ * it invents the missing end as a bare `{ id }`, with no label and no type,
+ * and the first draw that reads that label throws. One edge past a limit took
+ * the whole Brand Brain page down.
+ *
+ * An expansion is deliberately not passed through this. It returns the new
+ * nodes and the edges joining them to what the page already has on screen, so
+ * an end it did not send is not a missing one.
+ */
+function drawableEdges(nodes: GraphNode[], edges: GraphEdge[]): GraphEdge[] {
+  const present = new Set(nodes.map((n) => n.id));
+  return edges.filter((e) => present.has(e.source) && present.has(e.target));
 }
 
 /** Counted from the graph itself. Nothing here is a stored or guessed number. */

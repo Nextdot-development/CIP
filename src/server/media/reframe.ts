@@ -43,46 +43,83 @@ const KNOWN_RATIOS = new Set([
 ]);
 
 /** Words that mean the numbers after them are a shape. */
-const MARKERS = /\b(?:ar|a\.r\.|aspect(?:\s+ratio)?|ratio|size|dimensions?)\b[\s:=-]*/i;
+const MARKERS = /\b(?:ar|a\.r\.|aspect(?:\s+ratio)?|ratio|size|dimensions?|format|shape|crop)\b[\s:=-]*/i;
+
+/** A colon as it actually arrives: typed, the ratio sign, or a full-width one from pasted text. */
+const COLON = '[:∶：]';
+
+/**
+ * "Square" said in words. Only with a word beside it that makes it a shape — a
+ * square post, square mein, in a square — so a billboard in Times Square is not
+ * a crop.
+ */
+const SQUARE =
+  /\bsquare\s+(?:posts?|images?|pictures?|creatives?|format|frame|size|shape|crop|ratio|banners?|posters?|ads?|version|m|me|mein|main|mai)\b|\b(?:in|as)\s+(?:a\s+)?square\b/i;
 
 /**
  * The shape a request asks for, if it asks for one.
  *
- * Three ways people write it, all of which turned up in real requests:
- * "ar 4:5" with a marker, a bare "4:5", and "1080x1350" in pixels. Returns
- * null rather than guessing — an unstated shape is decided from the format,
- * which is the behaviour that already existed.
+ * Every way it turned up: "ar 4:5" with a marker, a bare "4:5" or "1 : 1",
+ * "4:4" for a square, "1x1", "1080x1080px" in pixels, and "square post" in
+ * words. A miss is not a small miss: an unstated shape is decided from the
+ * format, and a banner is 3:1, so "banner 4:4" came back a strip. Still returns
+ * null rather than guessing when nothing here is a shape.
  */
 export function requestedShape(text: string): TargetShape | null {
-  // Pixels first: the most specific thing anyone can say, and unambiguous.
-  const pixels = /\b(\d{2,5})\s*[x×]\s*(\d{2,5})\b/i.exec(text);
-  if (pixels) {
-    const width = Number(pixels[1]);
-    const height = Number(pixels[2]);
-    if (width > 0 && height > 0) {
+  // Pixels first: the most specific thing anyone can say. Lookarounds rather
+  // than \b, which fails between a digit and a unit, so "1080x1080px" was lost.
+  for (const match of text.matchAll(/(?<![\d.])(\d{2,5})\s*[x×*]\s*(\d{2,5})(?![\d.])/gi)) {
+    const width = Number(match[1]);
+    const height = Number(match[2]);
+    // Under a hundred a side is not a canvas: "16x9" is a ratio written with
+    // an x, and "12 x 750" is a case of bottles.
+    if (width >= 100 && height >= 100) {
       return { ratio: width / height, label: `${width}x${height}`, pixels: { width, height } };
     }
   }
 
   // A ratio introduced by a word that says it is one. Anything goes here,
   // because the person has said what they mean.
-  const marked = new RegExp(`${MARKERS.source}(\\d{1,3})\\s*[:x×/]\\s*(\\d{1,3})`, 'i').exec(text);
+  const marked = new RegExp(
+    `${MARKERS.source}(\\d{1,3})\\s*(?:${COLON}|[x×*/]|by)\\s*(\\d{1,3})(?!\\d)`,
+    'i',
+  ).exec(text);
   if (marked) {
-    const w = Number(marked[1]);
-    const h = Number(marked[2]);
-    if (w > 0 && h > 0) return { ratio: w / h, label: `${w}:${h}`, pixels: null };
+    const shape = ratioShape(Number(marked[1]), Number(marked[2]));
+    if (shape) return shape;
   }
 
-  // A bare ratio, but only one that is unmistakably a ratio.
-  for (const match of text.matchAll(/\b(\d{1,2}):(\d{1,2})\b/g)) {
-    const label = `${Number(match[1])}:${Number(match[2])}`;
-    if (!KNOWN_RATIOS.has(label)) continue;
-    const w = Number(match[1]);
-    const h = Number(match[2]);
-    if (w > 0 && h > 0) return { ratio: w / h, label, pixels: null };
+  // A bare ratio, but only one that is unmistakably a ratio. A clock always
+  // writes its minutes in two digits, so a single digit after the colon is
+  // never a time: "4:4" is a square typed loosely. Two digits are taken only
+  // when the ratio is a well-known one, which "8:30" is not.
+  const bare = new RegExp(
+    `(?<![\\d.:])(\\d{1,2})\\s*(?:${COLON}|[x×*])\\s*(\\d{1,2})(?![\\d.:])(?!\\s*grid)`,
+    'gi',
+  );
+  for (const match of text.matchAll(bare)) {
+    const shape = ratioShape(Number(match[1]), Number(match[2]));
+    if (!shape) continue;
+    const raw = `${Number(match[1])}:${Number(match[2])}`;
+    if (KNOWN_RATIOS.has(raw) || (match[2]!.length === 1 && KNOWN_RATIOS.has(shape.label))) {
+      return shape;
+    }
   }
+
+  if (SQUARE.test(text)) return { ratio: 1, label: '1:1', pixels: null };
 
   return null;
+}
+
+/** A ratio in its lowest terms, so "4:4" reads back as the 1:1 it is. */
+function ratioShape(w: number, h: number): TargetShape | null {
+  if (!(w > 0 && h > 0)) return null;
+  const divisor = gcd(w, h);
+  return { ratio: w / h, label: `${w / divisor}:${h / divisor}`, pixels: null };
+}
+
+function gcd(a: number, b: number): number {
+  return b === 0 ? a : gcd(b, a % b);
 }
 
 /** Two shapes nobody looking at them could tell apart. */

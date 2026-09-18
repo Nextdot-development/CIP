@@ -5,9 +5,10 @@ import { brain } from './providers';
 import { BRAIN_LIMITS, BrainFailed, defaultTaskType } from './providers/types';
 import type { GenerationBrief } from './providers/types';
 import { knownSubjects, readBrandDna } from './brandDna';
-import { applicableLessons, ratedExamples, similarAssets, similarPosts } from './retrieval';
+import { applicableLessons, productShots, ratedExamples, similarAssets, similarPosts } from './retrieval';
 import { companyMarkets, marketFromEvidence, marketInRequest } from './markets';
 import { brandInRequest, brandNames } from './brands';
+import { rulesForBrief } from './checker';
 
 /**
  * Deciding what to generate, before anything is generated.
@@ -31,6 +32,32 @@ export type PlannedGeneration = {
   /** Set when the Brain needs an answer before it can safely proceed. */
   clarificationQuestion: string | null;
   confidence: number;
+  /**
+   * Disclaimers this market requires on the creative itself.
+   *
+   * Carried into the prompt by CIP rather than left to the model to remember:
+   * a statutory warning that appears only when a model thinks of it is a
+   * statutory warning that is sometimes missing, and the checker fails a
+   * creative for exactly that.
+   */
+  mustCarry: string[];
+  /**
+   * Photographs of the product this is for, which lead the references.
+   *
+   * Empty means CIP has never been shown this product, and the bottle in the
+   * result is the generator's invention — which is worth saying out loud
+   * rather than leaving somebody to notice the label says something else.
+   */
+  productShots: { fileId: string; fileName: string }[];
+  /**
+   * The lessons in this brief that are still one or two ratings old.
+   *
+   * They do reach the generator — feedback is meant to change the next piece
+   * of work, not the one after three more ratings. What they are not is
+   * settled, and the page presented them identically to a pattern forty
+   * assets agree on. Reported so a person can tell the two apart.
+   */
+  pendingLessons: { statement: string; evidenceCount: number }[];
 };
 
 export type PlanInput = {
@@ -52,6 +79,8 @@ export type PlanInput = {
    * produce a look none of the three uses.
    */
   market?: string | null;
+  /** The shape the person named, so the brief is composed for it. Null when unnamed. */
+  requestedShape?: string | null;
 };
 
 /**
@@ -117,6 +146,9 @@ async function askWhich(
     lessonIds: [],
     confidence: 0,
     clarificationQuestion: asking.question,
+    mustCarry: [],
+    productShots: [],
+    pendingLessons: [],
   };
 }
 
@@ -188,7 +220,12 @@ export async function planGeneration(
   }
 
   // Everything the Brain gets to reason with, all of it this company's own.
-  const [facts, assets, posts, subjects] = await Promise.all([
+  const [shots, facts, assets, posts, subjects] = await Promise.all([
+    // Photographs of the product itself. Retrieved separately from anything
+    // that merely resembles the request, and put in front of it: asked for a
+    // Diwali banner, similarity returns Diwali posters, and a generator shown
+    // four posters and no bottle draws a bottle of its own invention.
+    productShots(scope, { brand, requestText, limit: 2 }),
     readBrandDna(scope, {
       limit: BRAIN_LIMITS.maxBrandFacts,
       minEvidence: 1,
@@ -211,6 +248,9 @@ export async function planGeneration(
   ]);
 
   const examples = await ratedExamples(scope, { mediaType: input.mediaType, brand });
+
+  // The rules this creative will be judged against, read before it is made.
+  const rules = await rulesForBrief(scope, { brand, market });
 
   // Lessons are fetched for the context the caller already knows. The brief may
   // identify a narrower one; that is applied on the second pass below.
@@ -240,7 +280,15 @@ export async function planGeneration(
       confidence: f.confidence,
     })),
     relevantAssets: [
-      ...assets.map((a) => ({ summary: a.summary, extractedText: a.extractedText })),
+      // The product first, and said to be the product. What is printed on a
+      // bottle is precisely what a generator invents when nothing shows it.
+      ...shots.map((s) => ({
+        summary: `The product itself (${s.fileName}, ${s.contentType || 'photograph'}): ${s.summary}`,
+        extractedText: s.extractedText,
+      })),
+      ...assets
+        .filter((a) => !shots.some((s) => s.fileId === a.fileId))
+        .map((a) => ({ summary: a.summary, extractedText: a.extractedText })),
       // Named by where they came from, so the model can tell a real past post
       // from a description of a file and weigh it accordingly.
       ...posts.map((p) => ({
@@ -261,6 +309,10 @@ export async function planGeneration(
       score: e.score,
       comment: e.comment,
     })),
+    // Candidates travel too, at the low confidence their evidence earns them.
+    // Feedback is meant to change the next piece of work, not the one after
+    // three more ratings; what confirmation buys is the right to be stated as
+    // something the brand believes, which is Brand DNA and not this.
     lessons: lessons.map((l) => ({
       polarity: l.polarity,
       statement: l.statement,
@@ -268,6 +320,12 @@ export async function planGeneration(
     })),
     knownCampaigns: subjects.campaigns,
     knownProducts: subjects.products,
+    requestedShape: input.requestedShape ?? null,
+    complianceRules: rules.map((rule) => ({
+      rule: rule.rule,
+      requirement: rule.requirement,
+      category: rule.category,
+    })),
   });
 
   // Now that the brief has identified the campaign, product and task type, the
@@ -294,10 +352,27 @@ export async function planGeneration(
       ? `Which campaign is this for: ${subjects.campaigns.slice(0, 5).join(', ')}?`
       : null);
 
+  // Which of them enough ratings have agreed on. Both kinds reach the brief;
+  // the split is reported so a person can tell "the brand does this" from "one
+  // person said so once", which the page used to present identically.
+  const pendingLessons = scopedLessons
+    .filter((l) => l.status !== 'confirmed')
+    .map((l) => ({ statement: l.statement, evidenceCount: l.evidenceCount }));
+
+  // Disclaimers this market requires on the creative itself. Added by CIP, not
+  // left to the model: a real check on a real Indian creative failed for a
+  // missing statutory warning that nothing had ever asked the generator for.
+  const mustCarry = rules
+    .filter((rule) => rule.requirement === 'required' && rule.category === 'disclaimer')
+    .map((rule) => rule.rule);
+
   const finalBrief: GenerationBrief = {
     ...brief,
     confidence,
     clarificationQuestion: clarification,
+    // First, because the prompt keeps only the first few constraints and a
+    // statutory warning is not the one to drop.
+    constraints: [...new Set([...mustCarry, ...brief.constraints])],
     // What this brief was actually built from. The model never sees these as
     // fields to fill in; they are what the planner resolved before it asked.
     brand,
@@ -316,17 +391,26 @@ export async function planGeneration(
     ],
   };
 
+  // The product leads, then whatever resembles the request. Only three of
+  // these reach the generator, and the one that must not be cut is the
+  // photograph of the thing being advertised.
+  const references = [
+    ...shots,
+    ...assets.filter((a) => !shots.some((s) => s.fileId === a.fileId)),
+  ];
+
   const briefId = await storeBrief(scope, {
     requestText,
     brief: finalBrief,
-    referenceFileIds: assets.map((a) => a.fileId),
+    referenceFileIds: references.map((a) => a.fileId),
     lessonIds: scopedLessons.map((l) => l.id),
   });
 
   return {
     briefId,
     brief: finalBrief,
-    references: assets.map((a) => ({
+    productShots: shots.map((s) => ({ fileId: s.fileId, fileName: s.fileName })),
+    references: references.map((a) => ({
       fileId: a.fileId,
       fileName: a.fileName,
       fileType: a.fileType,
@@ -335,6 +419,8 @@ export async function planGeneration(
     lessonIds: scopedLessons.map((l) => l.id),
     clarificationQuestion: clarification,
     confidence,
+    mustCarry,
+    pendingLessons,
   };
 }
 

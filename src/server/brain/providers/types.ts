@@ -392,6 +392,23 @@ export type BriefInput = {
   /** Distinct campaigns and products the company has, for disambiguation. */
   knownCampaigns: string[];
   knownProducts: string[];
+  /**
+   * The rules this creative will be judged against once it exists.
+   *
+   * The checker already had these and the planner did not, so CIP made work
+   * that broke rules it was about to apply. Required disclaimers are also
+   * added to the brief's constraints by the planner, so they do not depend on
+   * the model reading this.
+   */
+  complianceRules?: { rule: string; requirement: 'required' | 'forbidden'; category: string }[];
+  /**
+   * The shape the person named — "1:1", "1080x1350" — or null when they named
+   * none and the format decides.
+   *
+   * The composition depends on it. Told only "banner", the model lays out a
+   * wide piece, and a square cut from that is a banner with its sides missing.
+   */
+  requestedShape?: string | null;
 };
 
 export interface BrainProvider {
@@ -439,7 +456,159 @@ export interface BrainProvider {
    * number a model chooses about its own judgement is not a measurement.
    */
   checkCreative(input: CheckInput): Promise<CheckAnalysis>;
+
+  /**
+   * Reads one part of a market-intelligence document and reports what it states.
+   *
+   * Implementations send the part's text, its display name, the house's brand
+   * names and the markets it works in - nothing else. Every signal quotes the
+   * text, and the caller drops any whose quote is not in what was sent.
+   */
+  readMarketDocument(input: MarketDocumentInput): Promise<MarketReading>;
+
+  /**
+   * Answers a question from numbered sources, citing the refs it relied on.
+   *
+   * Implementations send the question, the recent conversation and the sources
+   * - nothing else. The caller drops a citation to a ref it did not send.
+   */
+  answerQuestion(input: ChatInput): Promise<ChatAnswer>;
+
+  /**
+   * Proposes campaign concepts for a brief, each grounded in numbered sources.
+   *
+   * Implementations send the brief, the brand and the sources - nothing else.
+   * The caller drops a grounding ref it did not send, and a concept left
+   * grounded in nothing.
+   */
+  ideateConcepts(input: IdeationInput): Promise<IdeationResult>;
+
+  /**
+   * Copies the text on one page image, word for word.
+   *
+   * OCR for scanned documents. Implementations send the image, its display name
+   * and its position in the document - nothing else - and return only what is
+   * written on it: no summary, no description, no translation.
+   */
+  transcribePage(input: TranscribeInput): Promise<Transcription>;
 }
+
+/** What a market signal is about. A closed list, so the page can group them. */
+export const MARKET_SIGNAL_KINDS = [
+  'share',
+  'growth',
+  'price',
+  'distribution',
+  'consumer',
+  'competitor_move',
+  'regulation',
+  'trend',
+  'other',
+] as const;
+
+export type MarketSignalKind = (typeof MARKET_SIGNAL_KINDS)[number];
+
+/** One thing a market report states, as a provider reports it. */
+export type MarketSignalDraft = {
+  kind: MarketSignalKind;
+  /** Who it is about: a brand, a competitor company, or the category. */
+  subject: string;
+  subjectType: 'own_brand' | 'competitor' | 'category';
+  market: string | null;
+  category: string | null;
+  metric: string | null;
+  /** Only when the text gives a number. Never estimated. */
+  value: number | null;
+  unit: string | null;
+  period: string | null;
+  /** The finding, in one plain sentence. */
+  statement: string;
+  /** Copied exactly from the text. A signal whose quote is not there is discarded. */
+  excerpt: string;
+};
+
+export type MarketDocumentInput = {
+  /** One part of the document's extracted text. */
+  text: string;
+  /** The display name only. Never a path, never an id. */
+  filename: string;
+  /** The house's own brands, so a competitor is never filed as one of them. */
+  brands: BrandRoster;
+  markets: readonly string[];
+  /** Which part this is, for long reports read in pieces. */
+  part: number;
+  parts: number;
+};
+
+export type MarketReading = {
+  summary: string;
+  signals: MarketSignalDraft[];
+  usage: BrainUsage;
+};
+
+/** One thing the Brain may cite in an answer. */
+export type ChatSource = {
+  /** Short and opaque - "F3", "M1" - never a database id. */
+  ref: string;
+  kind: 'fact' | 'passage' | 'asset' | 'signal' | 'occasion' | 'rule';
+  text: string;
+};
+
+export type ChatInput = {
+  question: string;
+  brand: string | null;
+  history: { role: 'user' | 'assistant'; content: string }[];
+  sources: ChatSource[];
+};
+
+export type ChatAnswer = {
+  answer: string;
+  /** Refs the answer relies on. Only refs that were sent survive. */
+  citations: string[];
+  followUps: string[];
+  usage: BrainUsage;
+};
+
+export type IdeationInput = {
+  brief: string;
+  brand: string | null;
+  sources: ChatSource[];
+  /** How many concepts to propose. */
+  count: number;
+};
+
+/** One campaign concept, as a provider proposes it. */
+export type ConceptDraft = {
+  title: string;
+  pitch: string;
+  /** The media it is for, as a person would put it: "Film + Social". */
+  format: string;
+  /** Refs of the sources it builds on. Only refs that were sent survive. */
+  groundedIn: string[];
+};
+
+export type IdeationResult = {
+  concepts: ConceptDraft[];
+  usage: BrainUsage;
+};
+
+/** One page image to transcribe. */
+export type TranscribeInput = {
+  bytes: Buffer;
+  mimeType: string;
+  /** The display name only. Never a path, never an id. */
+  filename: string;
+  pageNumber: number;
+  pageCount: number;
+  /** A tall page is sent in strips; which strip this is. */
+  part: number;
+  parts: number;
+};
+
+export type Transcription = {
+  text: string;
+  usage: BrainUsage;
+};
 
 /** The three things a creative is judged on. */
 export type CheckDimension = 'visual' | 'verbal' | 'compliance';

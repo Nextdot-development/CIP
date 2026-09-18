@@ -4,38 +4,49 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { KnowledgeGraphSection } from './KnowledgeGraphSection';
 import { BrainSection } from './BrainSection';
+import { BrandBrainGraph } from './BrandBrainGraph';
 import { Card, EmptyState, Pill } from '../components/ui/Bits';
 import { Icon } from '../components/ui/Icon';
+import { useWorkspace } from '@/context/workspace';
 import type { KnowledgeGraphDTO } from '@/types/graph';
 import type { BrainOverviewDTO } from '@/types/brain';
 import type { KnowledgeOverview } from '@/server/brain/overview';
+import type { ProductBrainDTO } from '@/server/brain/productBrain';
+import type { SharedTrait } from '@/server/brain/relations';
 
 /**
- * Trust — everything CIP knows, and where each piece of it came from.
+ * The Brand Brain - everything CIP knows, and where each piece of it came from.
  *
- * The point of this page is that nothing here is asserted. Every fact carries
- * the files that produced it, every file says how far it got, and the graph
- * shows how the two connect. If something CIP made looks wrong, this is where
- * you find out why it thought that.
+ * Two views, as the guidebook draws them. The Product Brain is one brand: its
+ * DNA in six areas, the brand chosen in the sidebar. The Company Brain is the
+ * house: which brands share what, and where each stays its own.
  *
- * What used to be here — work items, rights expiring, a monthly cost split —
- * was seeded demo data describing an agency workflow that does not exist. The
- * graph and the Brain were real, and were each on a page of their own that you
- * had to know to look for.
+ * Nothing here is asserted. Every count is read from the tables, every fact
+ * carries the files that produced it, and an area CIP knows nothing about is
+ * drawn empty rather than filled in to make the picture look finished.
  */
 
-type Tab = 'knowledge' | 'graph' | 'files';
+type Mode = 'product' | 'company';
+type Tab = 'learned' | 'read';
+
+export type CompanyBrainDTO = { brands: number; assets: number; traits: SharedTrait[] };
 
 export function TrustSection({
   overview,
   graph,
   brain,
+  product,
+  company,
 }: {
   overview: KnowledgeOverview;
   graph: KnowledgeGraphDTO;
   brain: BrainOverviewDTO;
+  product: ProductBrainDTO;
+  company: CompanyBrainDTO;
 }) {
-  const [tab, setTab] = useState<Tab>('graph');
+  const workspace = useWorkspace();
+  const [mode, setMode] = useState<Mode>('product');
+  const [tab, setTab] = useState<Tab>('learned');
 
   if (overview.empty) {
     return (
@@ -50,7 +61,7 @@ export function TrustSection({
           copy="Once CIP has read some of your files, everything it has learned appears here — each fact next to the file it came from."
           action={
             <Link className="btn btn-primary btn-sm" href="/teach">
-              Teach CIP <Icon name="arrow-right" size={14} />
+              Add data <Icon name="arrow-right" size={14} />
             </Link>
           }
         />
@@ -58,52 +69,128 @@ export function TrustSection({
     );
   }
 
+  const reportHref = `/api/brain/brand-dna/report${product.brand ? `?brand=${encodeURIComponent(product.brand)}` : ''}`;
+
   return (
     <div className="rise">
-      <header className="page-head">
-        <p className="eyebrow">Brand Brain</p>
-        <h1>What CIP knows</h1>
-        <p className="lede">
-          {overview.learned.facts} things learned from {overview.files.understood} files. Every one
-          of them can be traced back to what it came from.
-        </p>
-      </header>
-
-      <div className="tabs" role="tablist">
-        <Tabs tab={tab} setTab={setTab} />
+      <div className="brainmodebar" role="group" aria-label="Which brain">
+        <button type="button" className={`modebtn ${mode === 'product' ? 'on' : ''}`} aria-pressed={mode === 'product'} onClick={() => setMode('product')}>
+          Product Brain
+        </button>
+        <button type="button" className={`modebtn ${mode === 'company' ? 'on' : ''}`} aria-pressed={mode === 'company'} onClick={() => setMode('company')}>
+          Company Brain
+        </button>
       </div>
 
-      {tab === 'knowledge' && <BrainSection initial={brain} />}
-      {tab === 'graph' && <KnowledgeGraphSection initial={graph} />}
-      {tab === 'files' && <Files overview={overview} />}
+      {mode === 'product' ? (
+        <>
+          <header className="page-head pagehead-row">
+            <div>
+              <p className="eyebrow">Product Brain</p>
+              <h1>Brand Brain — {product.brand ?? 'All brands'}</h1>
+              <p className="lede">
+                Every colour, phrase, campaign and rule {product.brand ? 'this brand has' : 'the house has'} used,
+                mapped and connected.{product.brand ? '' : ' Choose a brand in the sidebar to see one on its own.'}
+              </p>
+            </div>
+            <div className="headside">
+              <div className="statrow">
+                <Stat n={product.assets.toLocaleString('en-IN')} l="assets indexed" />
+                <Stat n={product.facts.toLocaleString('en-IN')} l="patterns learned" />
+                <Stat n={`${product.covered} of 6`} l="DNA areas covered" />
+              </div>
+              <a className="exportbtn" href={reportHref} download>
+                <Icon name="download" size={14} /> Export Brand DNA Report
+              </a>
+            </div>
+          </header>
+
+          <div className="graphcard">
+            <BrandBrainGraph brain={product} />
+          </div>
+
+          <div className="tabs" role="tablist">
+            <button type="button" role="tab" aria-selected={tab === 'learned'} className={`tab ${tab === 'learned' ? 'active' : ''}`} onClick={() => setTab('learned')}>
+              <Icon name="sparkle" size={16} /> What it learned
+            </button>
+            <button type="button" role="tab" aria-selected={tab === 'read'} className={`tab ${tab === 'read' ? 'active' : ''}`} onClick={() => setTab('read')}>
+              <Icon name="book" size={16} /> What it read
+            </button>
+          </div>
+          {tab === 'learned' ? <BrainSection initial={brain} /> : <Files overview={overview} />}
+        </>
+      ) : (
+        <>
+          <header className="page-head pagehead-row">
+            <div>
+              <p className="eyebrow">Company Brain</p>
+              <h1>Company Brain — {workspace.name}</h1>
+              <p className="lede">
+                How the group&apos;s brands share DNA, and where each one stays distinct. A line between two
+                brands is something both were described as.
+              </p>
+            </div>
+            <div className="statrow">
+              <Stat n={String(company.brands)} l="brands mapped" />
+              <Stat n={company.assets.toLocaleString('en-IN')} l="total assets" />
+              <Stat n={String(company.traits.length)} l="shared traits" />
+            </div>
+          </header>
+
+          <KnowledgeGraphSection initial={graph} />
+          <CompanyInsights traits={company.traits} />
+        </>
+      )}
     </div>
   );
 }
 
-function Tabs({ tab, setTab }: { tab: Tab; setTab: (t: Tab) => void }) {
-  // The graph leads, because it is the only one that shows the whole shape of
-  // what CIP knows at once; the other two are for looking something up in it.
-  const items: { id: Tab; label: string; icon: 'sparkle' | 'grid' | 'book' }[] = [
-    { id: 'graph', label: 'How it connects', icon: 'grid' },
-    { id: 'knowledge', label: 'What it learned', icon: 'sparkle' },
-    { id: 'files', label: 'What it read', icon: 'book' },
-  ];
+function Stat({ n, l }: { n: string; l: string }) {
+  return (
+    <div className="statchip">
+      <span className="n">{n}</span>
+      <span className="l">{l}</span>
+    </div>
+  );
+}
+
+function names(brands: string[]): string {
+  if (brands.length <= 4) return brands.join(', ');
+  return `${brands.slice(0, 4).join(', ')} and ${brands.length - 4} more`;
+}
+
+/**
+ * The two readings the prototype puts under the graph, taken from the traits
+ * rather than written for it: the trait the most brands share, and a telling
+ * one that only a few of them do.
+ */
+function CompanyInsights({ traits }: { traits: SharedTrait[] }) {
+  if (traits.length === 0) return null;
+
+  const widest = [...traits].sort((a, b) => b.brands.length - a.brands.length || b.weight - a.weight)[0]!;
+  const narrow = traits
+    .filter((t) => t !== widest && t.dimension !== null && t.brands.length <= 3)
+    .sort((a, b) => b.weight - a.weight)[0];
 
   return (
-    <>
-      {items.map((item) => (
-        <button
-          key={item.id}
-          type="button"
-          role="tab"
-          aria-selected={tab === item.id}
-          className={`tab ${tab === item.id ? 'active' : ''}`}
-          onClick={() => setTab(item.id)}
-        >
-          <Icon name={item.icon} size={16} /> {item.label}
-        </button>
-      ))}
-    </>
+    <div className="insightgrid">
+      <div className="insightcard">
+        <div className="k">Shared most widely</div>
+        <p>
+          <b>{widest.value}</b> joins {widest.brands.length} brands: {names(widest.brands)}.
+        </p>
+      </div>
+      {narrow && (
+        <div className="insightcard">
+          <div className="k">Shared only where it&apos;s true</div>
+          <p>
+            <b>{narrow.value}</b>
+            {narrow.dimension ? ` (${narrow.dimension})` : ''} joins only {names(narrow.brands)}. The rest of the
+            portfolio keeps its own positioning here.
+          </p>
+        </div>
+      )}
+    </div>
   );
 }
 

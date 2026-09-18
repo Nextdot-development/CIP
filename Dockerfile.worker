@@ -1,0 +1,31 @@
+# The CIP background worker.
+#
+# Everything that happens after a request has returned: Google Drive sync, text
+# extraction, embeddings, the Brain reading assets, market reports, and checking
+# generated images. The web app can stay on Vercel; this cannot, because a
+# serverless function is stopped moments after its request ends. Run it on an
+# always-on host - Render (see render.yaml), Railway, Fly.io or a small VM.
+#
+#   docker build -f Dockerfile.worker -t cip-worker .
+#   docker run --env-file .env.production cip-worker
+#
+# Configuration comes from the environment, never from a file in the image.
+
+FROM node:24-bookworm-slim
+
+# ffmpeg samples frames from videos for the Brain. Without it videos are skipped.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+# Dev dependencies included: the worker runs TypeScript through tsx.
+RUN npm ci
+
+COPY . .
+
+ENV NODE_ENV=production
+
+CMD ["node", "--conditions=react-server", "--import", "tsx", "scripts/cip-worker.ts", "--watch"]

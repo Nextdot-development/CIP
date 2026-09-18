@@ -240,17 +240,22 @@ function tokensAt(payload: unknown, key: string): number | null {
  * customer's.
  */
 async function classify(response: Response): Promise<ProviderFailed> {
-  const code = await errorCode(response);
+  const { code, type } = await errorCodes(response);
+  const said = [code, type].filter(Boolean).join(' ');
 
   if (response.status === 429) {
     const retryAfter = Number(response.headers.get('retry-after'));
     // A spent quota is not a rate limit: waiting will not fix it, and retrying
     // three times just delays telling somebody the account needs attention.
-    if (code === 'insufficient_quota') {
+    // Both the type and the code are read, because only one of them ever says
+    // this: an account with nothing left arrives as type `insufficient_quota`
+    // with code `credit_balance_exhausted`, and reading the code alone told
+    // people to wait for something waiting cannot fix.
+    if (/insufficient_quota|credit_balance_exhausted|billing|quota_exceeded/i.test(said)) {
       return new ProviderFailed(
         'PROVIDER_ERROR',
         'permanent',
-        'The image provider account is out of quota.',
+        'The image provider account is out of credit. Waiting will not help: add credit to the OpenAI account.',
       );
     }
     return new ProviderFailed(
@@ -287,13 +292,15 @@ async function classify(response: Response): Promise<ProviderFailed> {
 }
 
 /** The error code only. The body is never kept: it can echo the prompt. */
-async function errorCode(response: Response): Promise<string | null> {
+async function errorCodes(response: Response): Promise<{ code: string | null; type: string | null }> {
   try {
     const body = (await response.clone().json()) as { error?: { code?: unknown; type?: unknown } };
-    const code = body.error?.code ?? body.error?.type;
-    return typeof code === 'string' ? code : null;
+    return {
+      code: typeof body.error?.code === 'string' ? body.error.code : null,
+      type: typeof body.error?.type === 'string' ? body.error.type : null,
+    };
   } catch {
-    return null;
+    return { code: null, type: null };
   }
 }
 

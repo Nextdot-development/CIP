@@ -5,20 +5,28 @@ import { brainStatus } from '@/server/brain/providers';
 import { readBrandDna } from '@/server/brain/brandDna';
 import { readFeedback, readLessons } from '@/server/brain/learning';
 import { ffmpegAvailable } from '@/server/brain/media';
+import { activeBrand } from '@/server/brain/activeBrand';
+import { productBrain } from '@/server/brain/productBrain';
+import { sharedTraits } from '@/server/brain/relations';
 import { withCompanyScope } from '@/server/db';
 import { TrustSection } from '@/sections/TrustSection';
 
-export const metadata = { title: 'Trust — CIP' };
+export const metadata = { title: 'Brand Brain — CIP' };
 export const dynamic = 'force-dynamic';
 
 /**
- * Everything CIP knows, loaded on the server so the page arrives with real
- * numbers rather than spinners. Loaded for the session's own company: there is
+ * The Brand Brain, loaded on the server so the page arrives with real numbers
+ * rather than spinners.
+ *
+ * Two views of the same knowledge. The Product Brain is one brand - the one
+ * chosen in the sidebar - and the Company Brain is the whole house and what
+ * its brands have in common. Loaded for the session's own company: there is
  * no company parameter to pass and none to forget.
  */
 export default async function TrustPage() {
   const session = await requireSession();
   const scope = session.scope;
+  const { brands, active } = await activeBrand(scope);
 
   const counts = await withCompanyScope(scope, async (tx) => {
     const rows = await tx<
@@ -44,19 +52,24 @@ export default async function TrustPage() {
     return rows[0]!;
   });
 
-  const [overview, graph, facts, lessons, feedback, ffmpeg] = await Promise.all([
+  const [overview, graph, facts, lessons, feedback, ffmpeg, product, traits] = await Promise.all([
     knowledgeOverview(scope),
     knowledgeGraph(scope),
-    readBrandDna(scope, { limit: 120, minEvidence: 1 }),
+    // "What it learned" follows the brand in the sidebar, like the graph above it.
+    readBrandDna(scope, { brand: active, limit: 120, minEvidence: 1 }),
     readLessons(scope, { limit: 60 }),
     readFeedback(scope, 40),
     ffmpegAvailable(),
+    productBrain(scope, active),
+    sharedTraits(scope, 40),
   ]);
 
   return (
     <TrustSection
       overview={overview}
       graph={graph}
+      product={product}
+      company={{ brands: brands.length, assets: counts.assets, traits }}
       brain={{
         provider: brainStatus(),
         video: { ffmpeg },

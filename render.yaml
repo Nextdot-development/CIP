@@ -1,0 +1,48 @@
+# Render blueprint for the CIP background worker.
+#
+# The web app stays on Vercel. This runs what Vercel cannot: the long-lived
+# loop that syncs Google Drive, extracts and reads files, reads market reports
+# and checks generated images (see Dockerfile.worker).
+#
+# Every value is entered in the Render dashboard (sync: false), never committed.
+# Use the same values as the web app. DATABASE_URL should be the pooler URL on
+# port 6543; DATABASE_ADMIN_URL the session pooler on 5432.
+
+services:
+  - type: worker
+    name: cip-worker
+    runtime: docker
+    dockerfilePath: ./Dockerfile.worker
+    plan: starter
+    autoDeploy: false
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: DATABASE_ADMIN_URL
+        sync: false
+      - key: CIP_APP_DB_PASSWORD
+        sync: false
+      - key: CIP_ENCRYPTION_KEY
+        sync: false
+      - key: SESSION_SECRET
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_REDIRECT_URI
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_STORAGE_BUCKET
+        sync: false
+      - key: RUNWAY_API_KEY
+        sync: false
+      - key: SEEDANCE_API_KEY
+        sync: false

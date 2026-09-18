@@ -11,8 +11,17 @@ import postgres from 'postgres';
  * brief knew what Magic Moments sounds like; and a request for a Nigerian Magic
  * Moments post could only ever have half of that.
  *
- * What moves is everything keyed by company: files and their bytes, what was
- * read from them, what was learned, what was generated, what feedback taught.
+ * What moves is everything keyed by company: the files, what was read from
+ * them, what was learned, what was generated, what feedback taught.
+ *
+ * What does not move is the bytes. An object was written under the old
+ * company's prefix and stays there, because this is one database transaction
+ * and an object store is not in it. Reads keep working — they follow the
+ * stored path — but the key no longer names the company that owns the file,
+ * and that key is what makes a mis-scoped read wrong in the object store too.
+ * `npm run storage:relocate -- --apply` puts them right, and this prints a
+ * reminder when it finishes. It claimed to move them for a while, which is why
+ * thirty-three objects sat under the wrong company until somebody looked.
  * The facts that move are filed under the brand, which is what makes them
  * findable as that brand's rather than the house's.
  *
@@ -246,6 +255,11 @@ async function main() {
   }
 
   console.log(wrong === 0 ? '\n  Every row accounted for.\n' : `\n  ${wrong} table(s) do not add up — check before trusting this.\n`);
+
+  // The rows have moved and their objects have not: they are still under the
+  // old company's prefix, which reads fine and is wrong.
+  console.log('  The bytes are still under the old company. Put them right with:');
+  console.log('    npm run storage:relocate -- --apply\n');
   await admin.end();
   if (wrong > 0) process.exit(1);
 }

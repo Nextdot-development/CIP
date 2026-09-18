@@ -1,12 +1,18 @@
 import { noStore, withBrainScope } from '@/server/brain/http';
 import { submitFeedback } from '@/server/brain/learning';
+import { pumpInBackground } from '@/server/jobs/pump';
 
 /**
  * POST /api/brain/feedback
  *
  * A 0-10 score and an optional comment on a generation. Stored immediately;
- * what it teaches is worked out by the worker, because one person's opinion
- * should not rewrite a company's Brand DNA inside their own HTTP request.
+ * what it teaches is worked out after the response, because one person's
+ * opinion should not rewrite a company's Brand DNA inside their own HTTP
+ * request.
+ *
+ * "After the response" used to mean "when the standalone worker next runs",
+ * and on a deployment without one that was never. The pump reads it instead,
+ * on the same claim the worker takes, so the two can both be running.
  */
 export const dynamic = 'force-dynamic';
 
@@ -31,6 +37,10 @@ export async function POST(request: Request) {
       score: body.score,
       comment: body.comment,
     });
+
+    // Fire and forget: the rating is already stored, and reading it costs a
+    // model call the person should not wait for.
+    pumpInBackground();
 
     return Response.json({ feedback }, { status: 201, headers: noStore });
   });

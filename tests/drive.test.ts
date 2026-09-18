@@ -427,3 +427,33 @@ describe('one company cannot reach another', () => {
     }
   });
 });
+
+describe('the same file uploaded twice', () => {
+  const TWICE = Buffer.concat([PNG, Buffer.from('one-of-a-kind')]);
+
+  it('stores it under the name asked for, and says it was already here', async () => {
+    const first = await drive.uploadFile(mm, {
+      folderId: null, filename: 'deck.png', mimeType: 'image/png', body: TWICE,
+    });
+    const again = await drive.uploadFile(mm, {
+      folderId: null, filename: 'deck-again.png', mimeType: 'image/png', body: TWICE,
+    });
+
+    // The same picture in two folders under two names is an ordinary thing to
+    // want, so the file is stored. What it is not is a second opinion: reading
+    // it again is what would have inflated the evidence behind a claim.
+    assert.notEqual(again.id, first.id, 'the file asked for was not stored');
+    assert.equal(again.alreadyPresent, true, 'the upload did not say it was already here');
+    assert.notEqual(first.alreadyPresent, true, 'the first copy was called a duplicate');
+  });
+
+  it('is only the same file inside one company', async () => {
+    const theirs = await drive.uploadFile(nh, {
+      folderId: null, filename: 'deck.png', mimeType: 'image/png', body: TWICE,
+    });
+
+    // Identical bytes in another company are another company's file, and
+    // finding the first one would mean reading across the boundary.
+    assert.notEqual(theirs.alreadyPresent, true, 'a match was found in another company');
+  });
+});

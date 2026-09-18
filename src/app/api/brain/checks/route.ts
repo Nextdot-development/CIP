@@ -1,5 +1,5 @@
 import { noStore, withBrainScope } from '@/server/brain/http';
-import { listChecks, runCheck } from '@/server/brain/checker';
+import { latestCheckForGeneration, listChecks, runCheck } from '@/server/brain/checker';
 
 /**
  * /api/brain/checks
@@ -12,8 +12,13 @@ import { listChecks, runCheck } from '@/server/brain/checker';
  */
 export const dynamic = 'force-dynamic';
 
-export async function GET() {
+export async function GET(request: Request) {
   return withBrainScope(async (scope) => {
+    // ?generationId= asks for the verdict on one generated creative.
+    const generationId = new URL(request.url).searchParams.get('generationId');
+    if (generationId) {
+      return Response.json({ check: await latestCheckForGeneration(scope, generationId) }, { headers: noStore });
+    }
     return Response.json({ checks: await listChecks(scope) }, { headers: noStore });
   });
 }

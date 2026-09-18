@@ -9,7 +9,8 @@ export type IconName =
   | 'link' | 'clock' | 'shield' | 'close' | 'people' | 'lock' | 'unlock'
   | 'x' | 'signout'
   | 'drive' | 'folder' | 'folder-plus' | 'upload' | 'download' | 'trash'
-  | 'restore' | 'music' | 'sheet' | 'slides' | 'search' | 'chevron-right' | 'dots';
+  | 'restore' | 'music' | 'sheet' | 'slides' | 'search' | 'chevron-right' | 'dots'
+  | 'chat' | 'graph' | 'compass' | 'bars' | 'calendar';
 
 const P: Record<IconName, string> = {
   home: 'M3 10.2 12 3l9 7.2V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z',
@@ -57,6 +58,11 @@ const P: Record<IconName, string> = {
   signout: 'M15.5 8.5V6a1 1 0 0 0-1-1h-8a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-2.5 M10.5 12h10 M18 9l3 3-3 3',
   people: 'M9 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z M2.5 20a6.5 6.5 0 0 1 13 0 M16 4.5a3.5 3.5 0 0 1 0 7 M17 14.2a6.5 6.5 0 0 1 4.5 5.8',
   lock: 'M7 10.5V8a5 5 0 0 1 10 0v2.5 M5.5 10.5h13a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1h-13a1 1 0 0 1-1-1v-8a1 1 0 0 1 1-1z',
+  chat: 'M7.5 5h9a3 3 0 0 1 3 3v5a3 3 0 0 1-3 3h-5L8 19v-3h-.5a3 3 0 0 1-3-3V8a3 3 0 0 1 3-3z',
+  graph: 'M12 3.3a2.1 2.1 0 1 0 0 4.2 2.1 2.1 0 0 0 0-4.2z M5.6 14.9a2.1 2.1 0 1 0 0 4.2 2.1 2.1 0 0 0 0-4.2z M18.4 14.9a2.1 2.1 0 1 0 0 4.2 2.1 2.1 0 0 0 0-4.2z M11 7.3 6.7 15 M13 7.3l4.3 7.7 M7.7 17h8.6',
+  compass: 'M12 3.8a8.2 8.2 0 1 0 0 16.4 8.2 8.2 0 0 0 0-16.4z M15 9l-2.2 4.6L9 15l2.2-4.6z',
+  bars: 'M6 19v-6.5 M12 19V7.5 M18 19v-8.8',
+  calendar: 'M6 5.6h12a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-10a2 2 0 0 1 2-2z M4 9.6h16 M8 3.6V7 M16 3.6V7',
   unlock: 'M7 10.5V8a5 5 0 0 1 9.6-2 M5.5 10.5h13a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1h-13a1 1 0 0 1-1-1v-8a1 1 0 0 1 1-1z',
 };
 

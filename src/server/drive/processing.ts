@@ -305,8 +305,9 @@ export async function getExtraction(
       select id, kind, content, content_chars, extractor, extractor_version,
              page_count, warnings, created_at
         from drive_file_extractions
-       where company_id = ${scope.companyId} and file_id = ${fileId} and kind = 'text'
-       order by created_at desc
+       where company_id = ${scope.companyId} and file_id = ${fileId} and kind in ('text', 'ocr')
+       -- A scanned file's text layer is empty; the text read off its pages is not.
+       order by content_chars desc, created_at desc
        limit 1
     `;
     const row = rows[0];

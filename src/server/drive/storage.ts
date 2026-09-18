@@ -78,9 +78,21 @@ const SAFE_KEY = new RegExp(
     // Both segments are ids we generated, so the shape stays as strict as the
     // others: no page number, no filename, nothing a caller chose.
     `|pdf-pages\\/${UUID}\\/${UUID}` +
+    // A small copy of an image, for grids. The size is one of a fixed few, so
+    // a URL cannot ask for a thousand different files.
+    `|thumbs\\/${UUID}-(?:160|320|640|1280)` +
     `)${EXTENSION}$`,
   'i',
 );
+
+/** The sizes a thumbnail is made at, on its longer edge. */
+export const THUMBNAIL_EDGES = [160, 320, 640, 1280] as const;
+export type ThumbnailEdge = (typeof THUMBNAIL_EDGES)[number];
+
+/** Where the thumbnail of one uploaded image lives. */
+export function thumbnailKeyFor(companyId: string, fileId: string, edge: ThumbnailEdge): string {
+  return `companies/${companyId}/thumbs/${fileId}-${edge}.webp`;
+}
 
 /** Where one rendered page of a PDF lives. */
 export function pdfPageKeyFor(companyId: string, fileId: string, pageId: string): string {

@@ -55,6 +55,8 @@ export type ComplianceRule = {
   referenceUrl: string | null;
   source: RuleSource;
   active: boolean;
+  /** When a person confirmed the rule is right. Null until someone has. */
+  verifiedAt: string | null;
 };
 
 export type NewComplianceRule = {
@@ -164,7 +166,14 @@ export function scoreFrom(
 /** Where a ref came from, so a finding can be checked against it. */
 type RefTarget =
   | { kind: 'fact'; id: string; dimension: CheckDimension; requirement: 'observed' }
-  | { kind: 'rule'; id: string; dimension: 'compliance'; requirement: 'required' | 'forbidden' };
+  | {
+      kind: 'rule';
+      id: string;
+      dimension: 'compliance';
+      requirement: 'required' | 'forbidden';
+      /** A rule CIP suggested that no person has verified. It can warn; it cannot fail. */
+      advisory?: boolean;
+    };
 
 /**
  * Keeps only findings that are about something CIP actually sent.
@@ -192,6 +201,9 @@ export function groundFindings(
     // What a brand has usually done is not what it must do. Departing from an
     // observed pattern is at most a warning, whatever the model called it.
     if (target.requirement === 'observed' && severity === 'critical') severity = 'warning';
+    // A rule CIP suggested and no person has verified is a question, not a
+    // ruling: it can raise a flag, but it cannot fail a creative on its own.
+    if (target.kind === 'rule' && target.advisory && severity === 'critical') severity = 'warning';
 
     const finding = {
       ref,
@@ -353,20 +365,8 @@ export async function runCheck(
     })
   ).filter((f) => f.section !== 'video');
 
-  // What the category requires. Rules about where and when an advert may run
-  // cannot be judged from a picture, so they are never sent to be judged.
-  const rules = await withCompanyScope(scope, (tx) =>
-    tx<{ id: string; rule: string; requirement: 'required' | 'forbidden' }[]>`
-      select id, rule, requirement
-        from compliance_rules
-       where company_id = ${scope.companyId}
-         and active
-         and category <> 'medium'
-         and (brand is null or brand = ${brand})
-         and (market is null or market = ${market})
-       order by requirement, rule
-    `,
-  );
+  // What the category requires, read exactly as the planner reads it.
+  const rules = await rulesForBrief(scope, { brand, market });
 
   const refs = new Map<string, RefTarget>();
   const sent: CheckRule[] = [];
@@ -378,7 +378,13 @@ export async function runCheck(
   });
   rules.forEach((rule, index) => {
     const ref = `R${index + 1}`;
-    refs.set(ref, { kind: 'rule', id: rule.id, dimension: 'compliance', requirement: rule.requirement });
+    refs.set(ref, {
+      kind: 'rule',
+      id: rule.id,
+      dimension: 'compliance',
+      requirement: rule.requirement,
+      advisory: rule.source === 'suggested' && rule.verifiedAt === null,
+    });
     sent.push({ ref, dimension: 'compliance', requirement: rule.requirement, statement: rule.rule });
   });
 
@@ -685,17 +691,153 @@ export async function correctFlag(
   return { check: (await getCheck(scope, outcome.checkId))!, learned: outcome.learned };
 }
 
+// --- generated creatives ----------------------------------------------------
+
+/** The newest check of a generated creative, if it has been checked. */
+export async function latestCheckForGeneration(
+  scope: CompanyScope,
+  generationId: string,
+): Promise<CreativeCheck | null> {
+  if (!UUID.test(generationId)) return null;
+  const rows = await withCompanyScope(scope, (tx) =>
+    tx<{ id: string }[]>`
+      select id from creative_checks
+       where company_id = ${scope.companyId} and generation_id = ${generationId}
+       order by created_at desc
+       limit 1
+    `,
+  );
+  return rows[0] ? getCheck(scope, rows[0].id) : null;
+}
+
+/**
+ * Checks the next generated image nobody has checked, across companies.
+ *
+ * The guidebook's rule: nothing CIP makes is treated as final until it has been
+ * through the checker. Run from the worker rather than from the request that
+ * made the picture, so nobody waits on a second vision call - the result card
+ * fills in the verdict when it lands.
+ *
+ * Only images from the last week, and only ones a person asked for, because a
+ * check is recorded against whoever made the request.
+ */
+export async function checkNextGeneration(): Promise<'checked' | 'failed' | null> {
+  const sql = adminSql();
+  let claim: { company_id: string; created_by: string; id: string } | undefined;
+  try {
+    const rows = await sql<{ company_id: string; created_by: string; id: string }[]>`
+      select g.company_id, g.created_by, g.id
+        from media_generations g
+       where g.type = 'image'
+         and g.status = 'completed'
+         and g.created_by is not null
+         and g.completed_at > now() - interval '7 days'
+         and not exists (
+           select 1 from creative_checks c
+            where c.company_id = g.company_id and c.generation_id = g.id
+         )
+       order by g.completed_at
+       limit 1
+    `;
+    claim = rows[0];
+  } finally {
+    await sql.end();
+  }
+  if (!claim) return null;
+
+  const scope: CompanyScope = { companyId: claim.company_id, userId: claim.created_by, role: 'owner' };
+  try {
+    await runCheck(scope, { generationId: claim.id });
+    return 'checked';
+  } catch (error) {
+    // A check that failed after it started has already recorded that. One that
+    // could not start - the picture is gone - records it here, so the same
+    // generation is not picked up on every pass for a week.
+    const provider = brain();
+    const message = error instanceof Error ? error.message.slice(0, 300) : 'The creative could not be checked.';
+    await withCompanyScope(scope, (tx) => tx`
+      insert into creative_checks
+        (company_id, generation_id, status, error_message, facts_considered, rules_considered,
+         provider, model, created_by, completed_at)
+      select ${scope.companyId}::uuid, ${claim.id}::uuid, 'failed', ${message}, 0, 0,
+             ${provider.name}, ${provider.model}, ${scope.userId}::uuid, now()
+       where not exists (
+         select 1 from creative_checks
+          where company_id = ${scope.companyId} and generation_id = ${claim.id}
+       )
+    `).catch(() => {});
+    return 'failed';
+  }
+}
+
+/** A person confirming a rule is right, or taking that back. */
+export async function setRuleVerified(scope: CompanyScope, ruleId: string, verified: boolean): Promise<boolean> {
+  if (!UUID.test(ruleId)) return false;
+  return withCompanyScope(scope, async (tx) => {
+    const rows = await tx<{ id: string }[]>`
+      update compliance_rules
+         set verified_at = ${verified ? new Date() : null},
+             verified_by = ${verified ? scope.userId : null},
+             updated_at = now()
+       where id = ${ruleId} and company_id = ${scope.companyId}
+      returning id
+    `;
+    return rows.length > 0;
+  });
+}
+
 // --- compliance rules --------------------------------------------------------
 
 /** Every rule, active first, grouped the way a reviewer reads them. */
+export type BriefRule = {
+  id: string;
+  rule: string;
+  requirement: 'required' | 'forbidden';
+  category: RuleCategory;
+  source: RuleSource;
+  verifiedAt: Date | null;
+};
+
+/**
+ * The rules that apply to one brand in one market.
+ *
+ * Rules about where and when an advert may run are left out: a picture cannot
+ * show what time it was broadcast, and a generator has no use for them either.
+ *
+ * Shared by the checker and the planner, because a rule the checker will fail
+ * a creative for is a rule the brief has to carry. They were separate, and the
+ * consequence was exactly what you would expect - CIP made Indian creatives
+ * with no statutory warning on them, then flagged them for not having one.
+ */
+export async function rulesForBrief(
+  scope: CompanyScope,
+  context: { brand?: string | null; market?: string | null },
+): Promise<BriefRule[]> {
+  const brand = context.brand?.trim() || null;
+  const market = context.market?.trim() || null;
+
+  return withCompanyScope(scope, (tx) =>
+    tx<BriefRule[]>`
+      select id, rule, requirement, category, source, verified_at as "verifiedAt"
+        from compliance_rules
+       where company_id = ${scope.companyId}
+         and active
+         and category <> 'medium'
+         and (brand is null or brand = ${brand})
+         and (market is null or market = ${market})
+       order by requirement, rule
+    `,
+  );
+}
+
 export async function listRules(scope: CompanyScope): Promise<ComplianceRule[]> {
   return withCompanyScope(scope, async (tx) => {
     const rows = await tx<{
       id: string; brand: string | null; market: string | null; category: RuleCategory;
       requirement: 'required' | 'forbidden'; rule: string; note: string | null;
-      reference_url: string | null; source: RuleSource; active: boolean;
+      reference_url: string | null; source: RuleSource; active: boolean; verified_at: Date | null;
     }[]>`
-      select id, brand, market, category, requirement, rule, note, reference_url, source, active
+      select id, brand, market, category, requirement, rule, note, reference_url, source, active, verified_at
         from compliance_rules
        where company_id = ${scope.companyId}
        order by active desc, market nulls first, brand nulls first, category, rule
@@ -711,6 +853,7 @@ export async function listRules(scope: CompanyScope): Promise<ComplianceRule[]> 
       referenceUrl: r.reference_url,
       source: r.source,
       active: r.active,
+      verifiedAt: r.verified_at ? r.verified_at.toISOString() : null,
     }));
   });
 }

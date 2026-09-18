@@ -1,0 +1,9 @@
+node_modules
+.next
+.git
+.storage
+.env
+.env.*
+design
+tests/fwmagicmomentsjamunbrandcollaterals
+*.log

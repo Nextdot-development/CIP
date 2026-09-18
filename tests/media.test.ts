@@ -113,10 +113,10 @@ before(async () => {
   nh = { companyId: b.company_id, userId: b.user_id, role: 'owner' };
 }, { timeout: 180_000 });
 
-beforeEach(() => {
+beforeEach(async () => {
   fakeImage.failWith = null;
   fakeVideo.reset();
-  rateLimit.__resetRateLimits();
+  await rateLimit.__resetRateLimits();
 });
 
 after(async () => {
@@ -686,21 +686,22 @@ describe('row-level security and composite ownership', () => {
 });
 
 describe('rate limiting', () => {
-  it('refuses a burst and says how long to wait', () => {
+  it('refuses a burst and says how long to wait', async () => {
     const options = { capacity: 3, refillPerSecond: 0.1 };
-    const results = Array.from({ length: 6 }, () => rateLimit.rateLimit('media-test-subject', options));
+    const results = [];
+    for (let i = 0; i < 6; i += 1) results.push(await rateLimit.rateLimit('media-test-subject', options));
 
     assert.equal(results.filter((r) => r.allowed).length, 3, 'the bucket let more through than it holds');
     const refused = results.find((r) => !r.allowed)!;
     assert.ok(refused.retryAfterSeconds >= 1, 'a refusal must say when to come back');
   });
 
-  it('one company burst does not consume another company allowance', () => {
+  it('one company burst does not consume another company allowance', async () => {
     const options = { capacity: 2, refillPerSecond: 0.1 };
-    rateLimit.rateLimit(`media:company:${mm.companyId}`, options);
-    rateLimit.rateLimit(`media:company:${mm.companyId}`, options);
+    await rateLimit.rateLimit(`media:company:${mm.companyId}`, options);
+    await rateLimit.rateLimit(`media:company:${mm.companyId}`, options);
 
-    const theirs = rateLimit.rateLimit(`media:company:${nh.companyId}`, options);
+    const theirs = await rateLimit.rateLimit(`media:company:${nh.companyId}`, options);
     assert.ok(theirs.allowed, 'one company exhausted another company bucket');
   });
 
@@ -787,6 +788,53 @@ describe('OpenAI as a second image provider', () => {
         },
       );
       assert.deepEqual(reached, [], 'an unconfigured provider must not reach the network');
+    } finally {
+      restoreFetch();
+    }
+  });
+
+  it('reads a spent account as spent, not as a rate limit', async () => {
+    const provider = await makeProvider();
+    // What OpenAI actually sends when the credits run out: the type says
+    // insufficient_quota and the code says credit_balance_exhausted. Reading
+    // the code alone, CIP told people it was being rate limited — so the page
+    // said "try again", and trying again could never work.
+    stubFetch(429, {
+      error: {
+        message: 'You have no credits remaining.',
+        type: 'insufficient_quota',
+        code: 'credit_balance_exhausted',
+      },
+    });
+
+    try {
+      await assert.rejects(
+        () => provider.generate({ prompt: 'anything', references: [] }),
+        (error: unknown) => {
+          assert.equal((error as { kind: string }).kind, 'permanent', 'a spent account was called transient');
+          assert.notEqual((error as { code: string }).code, 'RATE_LIMITED');
+          assert.match((error as { message: string }).message, /credit/i);
+          return true;
+        },
+      );
+    } finally {
+      restoreFetch();
+    }
+  });
+
+  it('still reads a real rate limit as one', async () => {
+    const provider = await makeProvider();
+    stubFetch(429, { error: { message: 'slow down', type: 'rate_limit_error', code: 'rate_limit_exceeded' } }, { 'retry-after': '7' });
+
+    try {
+      await assert.rejects(
+        () => provider.generate({ prompt: 'anything', references: [] }),
+        (error: unknown) => {
+          assert.equal((error as { code: string }).code, 'RATE_LIMITED');
+          assert.equal((error as { retryAfterSeconds: number }).retryAfterSeconds, 7);
+          return true;
+        },
+      );
     } finally {
       restoreFetch();
     }

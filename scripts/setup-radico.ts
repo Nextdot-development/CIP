@@ -27,12 +27,16 @@ const SLUG = 'radico-khaitan';
  * The roster, from the brand voice matrix in the document itself.
  *
  * Each note is what tells one from another when a fact could belong to
- * either — "Whytehall" and "Whytehall Honey" share a name and not a mood.
+ * either. A brand's lines - Whytehall Honey, Magic Moments Remix - are the
+ * brand, not brands of their own: the house thinks of Whytehall as one brand,
+ * and listing its lines beside it read as the same brand three times. They are
+ * named in the note, and their names are the brand's aliases.
  */
-const BRANDS: { name: string; note: string }[] = [
+const BRANDS: { name: string; note: string; aliases?: string[] }[] = [
   {
     name: 'Magic Moments',
-    note: 'Vodka. Fun, playful, social, magical. Bright premium visuals, movement, cocktails, flavour. Platform: MAKE IT MAGIC.',
+    note: 'Vodka. Fun, playful, social, magical. Bright premium visuals, movement, cocktails, flavour. Platform: MAKE IT MAGIC. Lines: Dazzle, Remix.',
+    aliases: ['magic moments dazzle', 'magic moments remix'],
   },
   {
     name: '8PM',
@@ -40,19 +44,8 @@ const BRANDS: { name: string; note: string }[] = [
   },
   {
     name: 'Whytehall',
-    note: 'Premium whisky. Regal, sophisticated, restrained. Gold, black, ivory, crest and crown. Refined and confident.',
-  },
-  {
-    name: 'Whytehall Honey',
-    note: 'Warm, smooth, indulgent. Golden honey tones, lifestyle settings, African-market work in Lagos and Accra.',
-  },
-  {
-    name: 'Whytehall Fire',
-    note: 'Bold, intense, energetic. Fire and heat against dark premium. Punchy and confident.',
-  },
-  {
-    name: 'Whytehall Peanut Butter',
-    note: 'Experimental, sensory, indulgent. Roasted peanuts, creamy peanut butter, smooth whisky warmth. UNDERRATED. UNAPOLOGETIC. UNFORGETTABLE.',
+    note: 'Premium whisky. Regal, sophisticated, restrained. Gold, black, ivory, crest and crown. Refined and confident. Lines: Honey (warm, smooth, golden honey tones), Fire (bold, intense, fire and heat), Peanut Butter (experimental, sensory, indulgent).',
+    aliases: ['whytehall honey', 'whytehall fire', 'whytehall peanut butter'],
   },
   {
     name: 'Morpheus',
@@ -90,7 +83,15 @@ async function main() {
   console.log(`  company    ${SLUG}`);
 
   // --- somebody to sign in as ----------------------------------------------
-  const password = process.env.CIP_SEED_PASSWORD ?? 'cip-demo-password';
+  // A real client workspace never gets the demo password: it is written in this
+  // repository, so it is everybody's password. Changing an existing sign-in is
+  // `npm run set-login`; this only sets the password of a user it creates.
+  const password = process.env.CIP_SEED_PASSWORD ?? '';
+  if (password.length < 12 || password === 'cip-demo-password') {
+    throw new Error(
+      'Set CIP_SEED_PASSWORD to a real password of at least 12 characters. The demo password is public.',
+    );
+  }
   const [user] = await admin<{ id: string }[]>`
     insert into users (email, full_name, password_hash)
     values ('brand@radico.test', 'Radico Brand Team', ${await hashPassword(password)})
@@ -164,7 +165,7 @@ async function main() {
   // The Brain attributes each fact to a brand as it reads, and it can only do
   // that against a roster it already has.
   for (const [index, brand] of BRANDS.entries()) {
-    await addBrand(scope, { name: brand.name, note: brand.note, position: index });
+    await addBrand(scope, { name: brand.name, note: brand.note, position: index, aliases: brand.aliases });
   }
   console.log(`  brands     ${BRANDS.length} on the roster`);
 

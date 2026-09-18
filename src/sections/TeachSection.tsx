@@ -44,7 +44,7 @@ export function TeachSection({
   return (
     <div className="rise">
       <header className="page-head">
-        <p className="eyebrow">Teach</p>
+        <p className="eyebrow">Add data to brain</p>
         <h1>Give CIP something to learn from</h1>
         <p className="lede">
           Connect a Google Drive folder and it stays up to date on its own, or upload files here.

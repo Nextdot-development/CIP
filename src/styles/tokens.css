@@ -1,78 +1,83 @@
 /* ============================================================
-   CIP Design tokens
-   Neutral, calm, premium. Tenant colour is injected at runtime
-   through --brand-* variables set by <CompanyWorkspace />.
+   CIP design tokens
+   Taken from the CIS Brand Brain prototype: a warm, dark working
+   surface with one amber accent. The names stay the ones the
+   components already use, so the whole app changes here.
    ============================================================ */
 
 :root {
-  /* Ink / neutrals */
-  --ink-900: #0b1220;
-  --ink-800: #16203a;
-  --ink-700: #26324e;
-  --ink-600: #48546f;
-  --ink-500: #66738c;
-  --ink-400: #8e99ad;
-  --ink-300: #b7c0cf;
-  --ink-200: #dde3ec;
-  --ink-100: #eef1f6;
-  --ink-050: #f6f8fb;
+  color-scheme: dark;
 
-  --surface: #ffffff;
-  --canvas: #f7f9fc;
-  --line: #e6eaf1;
-  --line-soft: #eef1f6;
+  /* Ink - on a dark ground the scale runs from light text (900)
+     down to the faintest raised surface (050). */
+  --ink-900: #f3ede2;
+  --ink-800: #e8dfd0;
+  --ink-700: #d3c8b6;
+  --ink-600: #bcb09c;
+  --ink-500: #a89d8a;
+  --ink-400: #857a68;
+  --ink-300: #5e5648;
+  --ink-200: #3b352b;
+  --ink-100: #2a261e;
+  --ink-050: #221f18;
 
-  /* Semantic — the colour rule matters:
+  --surface: #1b1912;
+  --canvas: #15130f;
+  --line: rgba(255, 255, 255, 0.08);
+  --line-soft: rgba(255, 255, 255, 0.05);
+  --line-strong: rgba(255, 255, 255, 0.16);
+
+  /* Semantic - the colour rule still holds:
      red = cannot ship, amber = attention, green = ready */
-  --ok-700: #0d7a52;
-  --ok-500: #12a273;
-  --ok-050: #e8f7f1;
-  --warn-700: #9a6300;
-  --warn-500: #d38b06;
-  --warn-050: #fdf4e3;
-  --stop-700: #a4262c;
-  --stop-500: #d64550;
-  --stop-050: #fdeeef;
-  --info-700: #3f3d9e;
-  --info-500: #5b58d6;
-  --info-050: #eeeefc;
+  --ok-700: #a9c48c;
+  --ok-500: #8faa72;
+  --ok-050: rgba(143, 170, 114, 0.16);
+  --warn-700: #e8bb6f;
+  --warn-500: #d9a441;
+  --warn-050: rgba(217, 164, 65, 0.14);
+  --stop-700: #ef8d6a;
+  --stop-500: #d1653f;
+  --stop-050: rgba(209, 101, 63, 0.16);
+  --info-700: #b3bcf2;
+  --info-500: #8591e0;
+  --info-050: rgba(133, 145, 224, 0.14);
 
-  /* Brand — overridden per tenant */
-  --brand: #5b58d6;
-  --brand-deep: #3f3d9e;
-  --brand-soft: #eeeefc;
-  --brand-tint: #f6f6ff;
-  --brand-ink: #ffffff;
+  /* The accent */
+  --brand: #e2934a;
+  --brand-deep: #f2ac66;
+  --brand-soft: rgba(226, 147, 74, 0.14);
+  --brand-tint: rgba(226, 147, 74, 0.07);
+  --brand-ink: #1c1408;
 
-  /* Sidebar — overridden per tenant */
-  --nav-bg: #ffffff;
-  --nav-fg: #48546f;
-  --nav-fg-strong: #0b1220;
-  --nav-line: #e6eaf1;
-  --nav-active-bg: var(--brand-soft);
-  --nav-active-fg: var(--brand-deep);
-  --nav-hover: #f3f5f9;
-  --nav-card: #f7f9fc;
+  /* Sidebar */
+  --nav-bg: #1b1912;
+  --nav-fg: #a89d8a;
+  --nav-fg-strong: #f3ede2;
+  --nav-line: rgba(255, 255, 255, 0.08);
+  --nav-active-bg: rgba(226, 147, 74, 0.14);
+  --nav-active-fg: #f3ede2;
+  --nav-hover: rgba(255, 255, 255, 0.045);
+  --nav-card: #221f18;
 
   /* Shape */
-  --r-xs: 8px;
-  --r-sm: 12px;
-  --r-md: 16px;
-  --r-lg: 22px;
-  --r-xl: 28px;
+  --r-xs: 7px;
+  --r-sm: 9px;
+  --r-md: 13px;
+  --r-lg: 16px;
+  --r-xl: 20px;
   --r-pill: 999px;
 
-  /* Elevation — soft, never heavy */
-  --sh-1: 0 1px 2px rgba(16, 24, 40, .04), 0 1px 3px rgba(16, 24, 40, .06);
-  --sh-2: 0 2px 4px rgba(16, 24, 40, .03), 0 8px 20px rgba(16, 24, 40, .06);
-  --sh-3: 0 4px 8px rgba(16, 24, 40, .04), 0 18px 40px rgba(16, 24, 40, .09);
-  --sh-focus: 0 0 0 4px color-mix(in srgb, var(--brand) 18%, transparent);
+  /* Elevation - on dark, depth is mostly border; shadows stay low */
+  --sh-1: 0 1px 2px rgba(0, 0, 0, .25);
+  --sh-2: 0 6px 16px rgba(0, 0, 0, .3);
+  --sh-3: 0 14px 28px rgba(0, 0, 0, .4);
+  --sh-focus: 0 0 0 3px color-mix(in srgb, var(--brand) 45%, transparent);
 
   /* Type */
-  --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  --font-display: 'Fraunces', 'Iowan Old Style', Georgia, serif;
+  --font: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-display: 'Space Grotesk', 'IBM Plex Sans', -apple-system, 'Segoe UI', sans-serif;
 
-  --sidebar-w: 268px;
+  --sidebar-w: 236px;
   --shell-max: 1240px;
 }
 
@@ -85,23 +90,24 @@ body {
   background: var(--canvas);
   color: var(--ink-700);
   font-family: var(--font);
-  font-size: 15px;
+  font-size: 14.5px;
   line-height: 1.55;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
 
-h1, h2, h3, h4 { color: var(--ink-900); margin: 0; line-height: 1.2; letter-spacing: -0.02em; font-weight: 600; }
-h1 { font-size: 34px; letter-spacing: -0.03em; }
-h2 { font-size: 22px; }
-h3 { font-size: 17px; }
-h4 { font-size: 15px; }
+h1, h2, h3, h4 { color: var(--ink-900); margin: 0; line-height: 1.2; font-family: var(--font-display); font-weight: 600; }
+h1 { font-size: 26px; letter-spacing: -0.01em; }
+h2 { font-size: 19px; }
+h3 { font-size: 15.5px; }
+h4 { font-size: 14.5px; }
 p { margin: 0; }
 a { color: inherit; text-decoration: none; }
 button, input, textarea, select { font: inherit; color: inherit; }
 button { cursor: pointer; }
+input, textarea, select { background-color: var(--surface); }
 
-::selection { background: color-mix(in srgb, var(--brand) 22%, transparent); }
+::selection { background: color-mix(in srgb, var(--brand) 35%, transparent); }
 
 :focus-visible { outline: none; box-shadow: var(--sh-focus); border-radius: var(--r-sm); }
 /* The composer draws its own focus state on the whole card. */
@@ -109,8 +115,8 @@ button { cursor: pointer; }
 
 /* Utility scraps used across the app */
 .muted { color: var(--ink-500); }
-.tiny { font-size: 12.5px; }
-.small { font-size: 13.5px; }
+.tiny { font-size: 12px; }
+.small { font-size: 13px; }
 .strong { color: var(--ink-900); font-weight: 600; }
 .row { display: flex; align-items: center; }
 .gap-6 { gap: 6px; } .gap-8 { gap: 8px; } .gap-10 { gap: 10px; }

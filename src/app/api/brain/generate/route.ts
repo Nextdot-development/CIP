@@ -28,6 +28,8 @@ type Body = {
   idempotencyKey?: unknown;
   clarification?: unknown;
   market?: unknown;
+  /** An earlier generation to build on, by id. */
+  basedOn?: unknown;
 };
 
 export async function POST(request: Request) {
@@ -51,7 +53,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const limited = checkGenerationRate(
+    const limited = await checkGenerationRate(
       scope,
       mediaType,
       mediaType === 'video' ? VIDEO_GENERATION_LIMIT() : IMAGE_GENERATION_LIMIT(),
@@ -120,6 +122,8 @@ export async function POST(request: Request) {
       idempotencyKey: body.idempotencyKey,
       clarification: typeof body.clarification === 'string' ? body.clarification : null,
       market: typeof body.market === 'string' ? body.market : null,
+      // Resolved against this company's own generations, like any other id.
+      basedOnGenerationId: typeof body.basedOn === 'string' ? body.basedOn : null,
     };
 
     // A caller that asks for a stream is told when the brief is written, which

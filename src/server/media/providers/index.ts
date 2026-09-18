@@ -108,6 +108,14 @@ export type ImageProviderStatus = {
   provider: string;
   model: string;
   configured: boolean;
+  /**
+   * The shapes this one makes itself.
+   *
+   * Reported so the page can say which sizes are made directly and which are
+   * cut from a larger one, instead of offering five sizes as though every
+   * generator made all of them. OpenAI makes three; Gemini makes ten.
+   */
+  aspectRatios: string[];
 };
 
 /**
@@ -133,6 +141,7 @@ export function providerStatus(): {
       provider: provider.name,
       model: provider.model,
       configured: provider.name !== 'fake-image' && provider.configured,
+      aspectRatios: [...provider.aspectRatios],
     };
   });
 

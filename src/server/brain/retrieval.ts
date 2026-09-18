@@ -44,6 +44,15 @@ export type RetrievedLesson = {
   campaign: string | null;
   product: string | null;
   platform: string | null;
+  /**
+   * Whether enough separate ratings have said this for CIP to act on it.
+   *
+   * Returned because the caller has to tell them apart. A candidate is one
+   * person's opinion about one picture, and it used to reach the generator as
+   * though the brand had decided it.
+   */
+  status: 'candidate' | 'confirmed';
+  evidenceCount: number;
 };
 
 /** Below this two things are not meaningfully related. Matches Phase 4's floor. */
@@ -126,6 +135,147 @@ export async function similarAssets(
     score: Number(row.score),
   }));
 }
+
+/**
+ * Words that say a picture is of the product itself.
+ *
+ * Read off what the Brain called each asset while it looked at it, which is
+ * the company's own vocabulary rather than a list anybody maintains: "packshot",
+ * "product photograph", "photorealistic product render".
+ */
+const IS_PRODUCT_SHOT =
+  /pack\s?shot|packaging|product\s*(shot|photo|photograph|image|render)|bottle/i;
+
+/** And words that say it is a piece of advertising, which is a different thing. */
+const IS_ADVERTISING = /advert|poster|ooh|out-of-home|billboard|creative|social|banner|campaign/i;
+
+/** Artwork of the label or logo: not the bottle, but the truth about what is printed on it. */
+const IS_ARTWORK = /logo|label|lockup|wordmark|artwork/i;
+
+export type ProductShot = RetrievedAsset & {
+  /** What the Brain called it when it looked at it. */
+  contentType: string;
+};
+
+/**
+ * Photographs of the product itself, for the brand and product being made.
+ *
+ * This is the reason a generated bottle looks like the real one. Similarity
+ * retrieval answers "what resembles this request", and for "a Diwali banner"
+ * that is every Diwali poster the brand has ever run — so the generator was
+ * shown four campaign creatives, no photograph of the bottle, and drew a
+ * whisky bottle from its own imagination with invented words on the label.
+ *
+ * Ranked rather than filtered, because every company's vocabulary differs:
+ * a picture the Brain called a packshot beats one it called a poster, a file
+ * whose name or summary carries the product asked for beats a sibling
+ * product's, and label artwork counts because what is printed on a bottle is
+ * exactly what a generator invents when nothing shows it.
+ *
+ * Needs no pgvector: a company without embeddings still gets its own bottle.
+ */
+export async function productShots(
+  scope: CompanyScope,
+  options: { brand: string | null; requestText: string; limit?: number },
+): Promise<ProductShot[]> {
+  const limit = Math.min(Math.max(options.limit ?? 2, 1), 5);
+  const brand = options.brand?.trim() || null;
+
+  const rows = await withCompanyScope(scope, async (tx) =>
+    tx<
+      {
+        file_id: string; name: string; file_type: string; summary: string;
+        extracted_text: string | null; content_type: string; products: string[] | null;
+      }[]
+    >`
+      select u.file_id, f.name, f.file_type, u.summary, u.extracted_text,
+             coalesce(u.structured->>'contentType', '') as content_type,
+             case when jsonb_typeof(u.structured->'products') = 'array'
+                  then array(select jsonb_array_elements_text(u.structured->'products'))
+                  else null end as products
+        from asset_understanding u
+        join drive_files f on f.id = u.file_id
+       where u.status = 'ready'
+         and f.archived_at is null
+         and lower(f.file_type) in ('png', 'jpg', 'jpeg', 'webp')
+         -- This brand's own. A bottle is the one thing that must never come
+         -- from a sibling, and an unattributed photograph of "a bottle" is
+         -- some brand's bottle - just not knowably this one.
+         and (${brand}::text is null or f.brand = ${brand})
+       limit 400
+    `,
+  );
+
+  const wanted = words(options.requestText);
+
+  const scored = rows
+    .map((row) => {
+      const said = `${row.name} ${row.content_type} ${row.summary}`;
+      const named = [row.name, row.summary, ...(row.products ?? [])].join(' ');
+
+      let score = 0;
+      if (IS_PRODUCT_SHOT.test(row.content_type)) score += 4;
+      if (IS_PRODUCT_SHOT.test(row.name)) score += 3;
+      if (IS_ARTWORK.test(said)) score += 2;
+      // A poster of the product is not a photograph of it: it is the product
+      // already dressed in a layout, and copied it brings the layout with it.
+      if (IS_ADVERTISING.test(row.content_type)) score -= 5;
+
+      // The product actually asked for, and weighted above everything else.
+      // "Whytehall Honey" and "Whytehall Chocolate" are one brand and two
+      // different bottles, and the label is the whole difference between them:
+      // asked for Honey, CIP sent the Chocolate pack because that file had the
+      // better-sounding description. Which bottle it is beats how well it was
+      // photographed, every time.
+      const overlap = [...words(named)].filter((word) => wanted.has(word)).length;
+      score += Math.min(overlap, 3) * 4;
+
+      return { row, score, overlap };
+    })
+    .filter((candidate) => candidate.score > 0)
+    .sort((a, b) => b.score - a.score || b.overlap - a.overlap || a.row.name.localeCompare(b.row.name));
+
+  // A photograph of the pack leads, with label artwork behind it. Both are
+  // worth sending — the artwork is the only thing that says exactly what is
+  // printed — but the generator should see the object first.
+  const isPhoto = (row: { content_type: string; name: string }): boolean => {
+    const said = `${row.content_type} ${row.name}`;
+    // "label/packaging artwork" carries the word packaging and is a drawing of
+    // a label, not a picture of the pack. Both are useful; only one is the
+    // object.
+    return (IS_PRODUCT_SHOT.test(row.content_type) || IS_PRODUCT_SHOT.test(row.name))
+      && !IS_ARTWORK.test(said);
+  };
+
+  return scored
+    .slice(0, limit)
+    .sort((a, b) => Number(isPhoto(b.row)) - Number(isPhoto(a.row)))
+    .map(({ row, score }) => ({
+    fileId: row.file_id,
+    fileName: row.name,
+    fileType: row.file_type,
+    summary: row.summary,
+    extractedText: row.extracted_text,
+    contentType: row.content_type,
+    score,
+  }));
+}
+
+/** The words worth matching on: long enough to mean something, lower case. */
+function words(text: string): Set<string> {
+  return new Set(
+    text
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((word) => word.length >= 3 && !STOPWORDS.has(word)),
+  );
+}
+
+const STOPWORDS = new Set([
+  'the', 'and', 'for', 'with', 'this', 'that', 'from', 'make', 'create', 'image',
+  'photo', 'picture', 'post', 'banner', 'poster', 'new', 'png', 'jpg', 'jpeg', 'webp',
+  'copy', 'final', 'revised', 'radico', 'bottles',
+]);
 
 /** One post read off a PDF page, retrieved by what it was about. */
 export type RetrievedPost = {
@@ -298,9 +448,11 @@ export async function applicableLessons(
       {
         id: string; polarity: 'prefer' | 'avoid'; statement: string; confidence: string;
         task_type: string | null; campaign: string | null; product: string | null; platform: string | null;
+        status: 'candidate' | 'confirmed'; evidence_count: number;
       }[]
     >`
-      select id, polarity, statement, confidence, task_type, campaign, product, platform
+      select id, polarity, statement, confidence, task_type, campaign, product, platform,
+             status, evidence_count
         from brain_lessons
        where status in ('candidate', 'confirmed')
          -- A null scope column means "applies anywhere". A set one must match.
@@ -323,6 +475,8 @@ export async function applicableLessons(
     campaign: row.campaign,
     product: row.product,
     platform: row.platform,
+    status: row.status,
+    evidenceCount: row.evidence_count,
   }));
 }
 

@@ -24,7 +24,7 @@ type Body = {
 
 export async function POST(request: Request) {
   return withMediaScope(async (scope) => {
-    const limited = checkGenerationRate(scope, 'video', VIDEO_GENERATION_LIMIT());
+    const limited = await checkGenerationRate(scope, 'video', VIDEO_GENERATION_LIMIT());
     if (limited) return limited;
 
     let body: Body;

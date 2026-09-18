@@ -316,3 +316,47 @@ describe('one company cannot see another company relations', () => {
     assert.equal(mine.length, 1);
   });
 });
+
+describe('redrawing the map only when something has changed', () => {
+  it('leaves the map alone when nothing has changed since it was drawn', async () => {
+    await roster(mm, 'Whytehall Honey', 'Magic Moments Remix');
+    await fact(mm, 'Whytehall Honey', 'flavour', 'honey');
+    await fact(mm, 'Magic Moments Remix', 'flavour', 'honey');
+    await relations.recomputeRelations(mm);
+
+    // Tampered rather than deleted, so a rebuild would be visible. The worker
+    // runs this after every pass, and on real data it is the slowest stage
+    // there is: every trait and every pair written again for the same answer.
+    await adminSql`update brand_relations set score = 0 where company_id = ${mm.companyId}`;
+    await relations.recomputeRelations(mm);
+
+    const kept = await adminSql<{ score: string }[]>`
+      select score from brand_relations where company_id = ${mm.companyId}
+    `;
+    assert.ok(kept.length > 0, 'nothing was related to anything');
+    assert.ok(
+      kept.every((row) => Number(row.score) === 0),
+      'the map was rebuilt though nothing had changed',
+    );
+  });
+
+  it('redraws it as soon as a fact changes', async () => {
+    await roster(mm, 'Whytehall Honey', 'Magic Moments Remix');
+    await fact(mm, 'Whytehall Honey', 'flavour', 'honey');
+    await fact(mm, 'Magic Moments Remix', 'flavour', 'honey');
+    await relations.recomputeRelations(mm);
+    await adminSql`update brand_relations set score = 0 where company_id = ${mm.companyId}`;
+
+    await fact(mm, 'Whytehall Honey', 'liquid colour', 'warm amber');
+    await fact(mm, 'Magic Moments Remix', 'liquid colour', 'warm amber');
+    await relations.recomputeRelations(mm);
+
+    const rebuilt = await adminSql<{ score: string }[]>`
+      select score from brand_relations where company_id = ${mm.companyId}
+    `;
+    assert.ok(
+      rebuilt.some((row) => Number(row.score) > 0),
+      'a new fact did not redraw the map',
+    );
+  });
+});

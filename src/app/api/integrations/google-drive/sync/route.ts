@@ -19,7 +19,7 @@ export const dynamic = 'force-dynamic';
 
 export async function POST() {
   return withIntegrationScope(async (scope) => {
-    const limit = rateLimit(`gdrive:sync:${scope.companyId}`, GOOGLE_SYNC_LIMIT());
+    const limit = await rateLimit(`gdrive:sync:${scope.companyId}`, GOOGLE_SYNC_LIMIT());
     if (!limit.allowed) {
       return Response.json(
         { error: 'RATE_LIMITED', message: 'That sync just ran. Give it a moment.' },

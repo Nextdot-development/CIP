@@ -16,6 +16,14 @@ import {
 import { recomputeEverywhere } from '../src/server/brain/brandDna';
 import { suggestBrandsEverywhere } from '../src/server/brain/brands';
 import { analyseNextFeedback } from '../src/server/brain/learning';
+import { suggestMarketsEverywhere } from '../src/server/brain/markets';
+import { checkNextGeneration } from '../src/server/brain/checker';
+import { claimOcrJob, enqueueOcrEverywhere, runOcrJob } from '../src/server/brain/ocr';
+import {
+  claimMarketSource,
+  readClaimedMarketSource,
+  sweepMarketFoldersEverywhere,
+} from '../src/server/brain/market';
 import { brainStatus } from '../src/server/brain/providers';
 import { watchLoop } from './watchLoop';
 
@@ -101,6 +109,23 @@ async function pass(): Promise<Tally> {
     tally.extracted += 1;
   }
 
+  // 2.5 Scanned documents, read by looking - OCR - so their text is searchable
+  //     and quotable. Before embedding, so the new chunks are embedded this pass.
+  if (brainStatus().configured) {
+    const queued = await enqueueOcrEverywhere().catch(() => 0);
+    if (queued > 0) console.log(`  ocr: ${queued} scanned file(s) queued`);
+    for (let i = 0; i < PER_STAGE && !stopping; i += 1) {
+      const job = await claimOcrJob();
+      if (!job) break;
+      const outcome = await runOcrJob(job);
+      console.log(
+        outcome.status === 'ready'
+          ? `  ocr read ${outcome.pages} page(s), ${outcome.chars} characters`
+          : `  ocr ${outcome.status}: ${outcome.message}`,
+      );
+    }
+  }
+
   // 3. Vectors for the chunks that came out of it.
   for (let i = 0; i < PER_STAGE && !stopping; i += 1) {
     const claim = await claimChunksNeedingEmbedding();
@@ -131,6 +156,33 @@ async function pass(): Promise<Tally> {
 
   // 5. What they add up to, but only if something new was learned.
   if (tally.understood > 0) await recomputeEverywhere();
+
+  // 5.3 Which market each file is for, from its name or its folders.
+  const placed = await suggestMarketsEverywhere().catch(() => 0);
+  if (placed > 0) console.log(`  placed ${placed} file(s) in a market`);
+
+  // 5.4 Generated images, through the checker before anyone treats them as final.
+  if (brainStatus().configured) {
+    for (let i = 0; i < PER_STAGE && !stopping; i += 1) {
+      const outcome = await checkNextGeneration();
+      if (outcome === null) break;
+      console.log(`  generated image ${outcome}`);
+    }
+  }
+
+  // 5.5 Market reports, read from their extracted text into quoted signals.
+  if (brainStatus().configured) {
+    const found = await sweepMarketFoldersEverywhere().catch(() => 0);
+    if (found > 0) console.log(`  market: ${found} new report(s) from Market Intelligence folders`);
+    for (let i = 0; i < PER_STAGE && !stopping; i += 1) {
+      const claim = await claimMarketSource();
+      if (!claim) break;
+      const outcome = await readClaimedMarketSource(claim);
+      if (outcome.status === 'ready') console.log(`  market report read: ${outcome.signals} signal(s)`);
+      else if (outcome.status === 'no_text') console.log('  market report has no readable text');
+      else console.log(`  market report ${outcome.status}: ${outcome.message}`);
+    }
+  }
 
   // 6. Queued video generations, which are slow and asynchronous by nature.
   for (let i = 0; i < PER_STAGE && !stopping; i += 1) {

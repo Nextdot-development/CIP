@@ -31,7 +31,7 @@ export async function POST(request: Request) {
   const { scope } = auth.session;
 
   // Every search costs an embedding call, so the ceiling is per user.
-  const limit = rateLimit(`semantic:${scope.userId}`, SEMANTIC_SEARCH_LIMIT);
+  const limit = await rateLimit(`semantic:${scope.userId}`, SEMANTIC_SEARCH_LIMIT);
   if (!limit.allowed) {
     return Response.json(
       { error: 'rate_limited', message: 'That is a lot of searching. Try again in a moment.' },

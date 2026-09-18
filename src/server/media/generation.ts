@@ -108,6 +108,15 @@ export type ImageGenerationInput = {
    * back. The nearest is still what gets generated; this is what comes out.
    */
   deliverShape?: TargetShape | null;
+  /**
+   * A picture CIP made earlier, to carry into this one.
+   *
+   * "Make it 9:16", "same thing with less text" - every one of those started
+   * again from nothing, because the only references a generation could take
+   * were files in the Drive, and what CIP makes does not go there. The earlier
+   * image goes in as a reference image like any other.
+   */
+  basedOnGenerationId?: unknown;
 };
 
 export type VideoGenerationInput = {
@@ -153,6 +162,11 @@ export async function generateImage(
   // company is simply not found, so it cannot become a reference image.
   const { references, skipped: skippedReferences } = await resolveReferences(scope, referenceIds);
 
+  // The picture this one is being built from, resolved through the same scope:
+  // a generation belonging to another company is simply not found.
+  const basedOn = await carriedForward(scope, input.basedOnGenerationId, references.length);
+  const allReferences = [...references, ...basedOn.references];
+
   const id = await insertGeneration(scope, {
     type: 'image',
     provider: provider.name,
@@ -162,7 +176,9 @@ export async function generateImage(
     inputMetadata: {
       aspectRatio,
       imageSize,
-      referenceCount: references.length,
+      referenceCount: allReferences.length,
+      /** The generation this one was built from, so a chain can be followed back. */
+      basedOn: basedOn.id,
       // Recorded rather than silently dropped: a picture made with one
       // reference instead of four looks different, and this is the only place
       // that says why.
@@ -178,7 +194,9 @@ export async function generateImage(
   });
 
   try {
-    const result = await provider.generate({ prompt, references, aspectRatio, imageSize });
+    const result = await provider.generate({
+      prompt, references: allReferences, aspectRatio, imageSize,
+    });
 
     // Cut to the shape that was asked for, before anything is stored. Storing
     // the generator's shape and cropping on the way out would mean the file
@@ -580,6 +598,43 @@ async function resolveReferences(
   }
 
   return { references, skipped };
+}
+
+/**
+ * The picture from an earlier generation, as a reference for this one.
+ *
+ * Read through readAsset, which proves the generation belongs to this company
+ * before it hands back a byte - the same path a download takes, so there is no
+ * second way in. A generation that produced a video, or something no generator
+ * accepts, is skipped rather than refused: building on an earlier picture is
+ * an aid, and losing the aid must not lose the request.
+ */
+async function carriedForward(
+  scope: CompanyScope,
+  generationId: unknown,
+  used: number,
+): Promise<{ id: string | null; references: ReferenceImage[] }> {
+  const none = { id: null, references: [] };
+  if (typeof generationId !== 'string' || generationId.length === 0) return none;
+  if (!isUuid(generationId)) throw new MediaNotFound('That generation');
+  if (used >= MEDIA_LIMITS.maxReferenceImages) return none;
+
+  const asset = await readAsset(scope, generationId, null);
+  if (!isSupportedImageType(asset.mimeType)) return none;
+
+  let bytes = asset.bytes;
+  let mimeType = asset.mimeType;
+  if (bytes.byteLength > MEDIA_LIMITS.maxReferenceBytes) {
+    const fitted = await fitForVision(bytes, mimeType, {
+      maxBytes: MEDIA_LIMITS.maxReferenceBytes,
+      maxEdge: MEDIA_LIMITS.referenceEdgePixels,
+    });
+    if (fitted.bytes.byteLength > MEDIA_LIMITS.maxReferenceBytes) return none;
+    bytes = fitted.bytes;
+    mimeType = fitted.mimeType;
+  }
+
+  return { id: generationId, references: [{ bytes, mimeType }] };
 }
 
 function imageMimeFor(fileType: string): string | null {

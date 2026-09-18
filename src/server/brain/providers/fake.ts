@@ -3,13 +3,24 @@ import { createHash } from 'node:crypto';
 import { BrainFailed } from './types';
 import type {
   AssetAnalysis,
+  AssetFact,
   BrainProvider,
   BriefInput,
   CheckAnalysis,
   CheckFinding,
   CheckInput,
+  ChatAnswer,
+  ChatInput,
+  ConceptDraft,
   CreativeFormat,
+  IdeationInput,
+  IdeationResult,
+  TranscribeInput,
+  Transcription,
   DocumentInput,
+  MarketDocumentInput,
+  MarketReading,
+  MarketSignalDraft,
   FeedbackAnalysis,
   FeedbackInput,
   FramesInput,
@@ -41,7 +52,7 @@ export class FakeBrainProvider implements BrainProvider {
   /** Set by tests to exercise a failure path. */
   failWith: BrainFailed | null = null;
   /** Counts calls, so idempotency can be proved rather than assumed. */
-  calls = { image: 0, frames: 0, document: 0, pdfPage: 0, feedback: 0, brief: 0, check: 0 };
+  calls = { image: 0, frames: 0, document: 0, pdfPage: 0, feedback: 0, brief: 0, check: 0, market: 0, chat: 0, ideas: 0, ocr: 0 };
 
   /**
    * What the next checks report. Null means a clean pass.
@@ -53,10 +64,47 @@ export class FakeBrainProvider implements BrainProvider {
    */
   checkFindings: CheckFinding[] | null = null;
 
+  /**
+   * What the next market readings report. Null means: every sentence in the
+   * text carrying a percentage becomes a share signal quoting itself.
+   */
+  marketSignals: MarketSignalDraft[] | null = null;
+
+  /** What the next answer says. Null means: cite the first three sources. */
+  chatAnswer: Partial<Omit<ChatAnswer, 'usage'>> | null = null;
+
+  /** The last question's input, so a test can see what the Brain was given. */
+  lastChatInput: ChatInput | null = null;
+
+  /** What the next concepts are. Null means: one concept per source, in order. */
+  ideaConcepts: ConceptDraft[] | null = null;
+
+  lastIdeationInput: IdeationInput | null = null;
+
+  /** What each page reads as, by page number. Null means each page says which page it is. */
+  ocrPages: string[] | null = null;
+
+  /**
+   * What the next images report as facts. Null means: derived from the bytes.
+   *
+   * Set when a test needs two *different* assets to agree with each other.
+   * Uploading the same bytes twice used to do that, and does not any more:
+   * one content is read once, because two copies of a deck are one asset with
+   * two names and counting them as two inflates the evidence behind a claim.
+   */
+  imageFacts: AssetFact[] | null = null;
+
   reset(): void {
+    this.ocrPages = null;
+    this.imageFacts = null;
+    this.ideaConcepts = null;
+    this.lastIdeationInput = null;
     this.failWith = null;
     this.checkFindings = null;
-    this.calls = { image: 0, frames: 0, document: 0, pdfPage: 0, feedback: 0, brief: 0, check: 0 };
+    this.marketSignals = null;
+    this.chatAnswer = null;
+    this.lastChatInput = null;
+    this.calls = { image: 0, frames: 0, document: 0, pdfPage: 0, feedback: 0, brief: 0, check: 0, market: 0, chat: 0, ideas: 0, ocr: 0 };
   }
 
   private check(): void {
@@ -102,11 +150,13 @@ export class FakeBrainProvider implements BrainProvider {
         mood: pick(digest, 14, ['warm', 'calm', 'energetic']),
         contentType: 'brand asset',
       },
-      facts: [
-        { section: 'visual', attribute: 'dominant_colour', value: colour },
-        { section: 'visual', attribute: 'composition', value: composition },
-        { section: 'visual', attribute: 'lighting', value: lighting },
-      ],
+      facts: this.imageFacts
+        ? this.imageFacts.map((fact) => ({ ...fact }))
+        : [
+            { section: 'visual', attribute: 'dominant_colour', value: colour },
+            { section: 'visual', attribute: 'composition', value: composition },
+            { section: 'visual', attribute: 'lighting', value: lighting },
+          ],
       usage: { inputTokens: 10, outputTokens: 20, durationMs: 1 },
     };
   }
@@ -333,6 +383,92 @@ export class FakeBrainProvider implements BrainProvider {
       findings: this.checkFindings ? this.checkFindings.map((f) => ({ ...f })) : [],
       usage: { durationMs: 1 },
     };
+  }
+
+  async readMarketDocument(input: MarketDocumentInput): Promise<MarketReading> {
+    this.calls.market += 1;
+    this.check();
+
+    const signals: MarketSignalDraft[] = this.marketSignals
+      ? this.marketSignals.map((s) => ({ ...s }))
+      : input.text
+          .split(/(?<=[.!?])\s+/)
+          .filter((sentence) => /\d+(?:\.\d+)?%/.test(sentence))
+          .slice(0, 20)
+          .map((sentence) => {
+            const trimmed = sentence.trim();
+            const own = input.brands.find((b) => trimmed.toLowerCase().includes(b.name.toLowerCase()));
+            return {
+              kind: 'share' as const,
+              subject: own?.name ?? trimmed.split(/\s+/).slice(0, 2).join(' '),
+              subjectType: own ? ('own_brand' as const) : ('competitor' as const),
+              market: input.markets.find((m) => trimmed.includes(m)) ?? null,
+              category: null,
+              metric: 'share',
+              value: Number(/(\d+(?:\.\d+)?)%/.exec(trimmed)![1]),
+              unit: '%',
+              period: null,
+              statement: trimmed,
+              excerpt: trimmed,
+            };
+          });
+
+    return {
+      summary: `Part ${input.part} of ${input.parts} of "${input.filename}".`,
+      signals,
+      usage: { durationMs: 1 },
+    };
+  }
+
+  async answerQuestion(input: ChatInput): Promise<ChatAnswer> {
+    this.calls.chat += 1;
+    this.check();
+    this.lastChatInput = { ...input, sources: input.sources.map((s) => ({ ...s })) };
+
+    if (this.chatAnswer) {
+      return {
+        answer: this.chatAnswer.answer ?? '',
+        citations: [...(this.chatAnswer.citations ?? [])],
+        followUps: [...(this.chatAnswer.followUps ?? [])],
+        usage: { durationMs: 1 },
+      };
+    }
+
+    const used = input.sources.slice(0, 3);
+    return {
+      answer: used.length
+        ? used.map((s) => `${s.text} [${s.ref}]`).join(' ')
+        : 'CIP has nothing stored that answers this yet.',
+      citations: used.map((s) => s.ref),
+      followUps: ['What else do we know about this?'],
+      usage: { durationMs: 1 },
+    };
+  }
+
+  async ideateConcepts(input: IdeationInput): Promise<IdeationResult> {
+    this.calls.ideas += 1;
+    this.check();
+    this.lastIdeationInput = { ...input, sources: input.sources.map((s) => ({ ...s })) };
+
+    const concepts: ConceptDraft[] = this.ideaConcepts
+      ? this.ideaConcepts.map((c) => ({ ...c, groundedIn: [...c.groundedIn] }))
+      : input.sources.slice(0, input.count).map((source, i) => ({
+          title: `Concept ${i + 1}`,
+          pitch: `Built on ${source.text}.`,
+          format: 'Social',
+          groundedIn: [source.ref],
+        }));
+    return { concepts, usage: { durationMs: 1 } };
+  }
+
+  async transcribePage(input: TranscribeInput): Promise<Transcription> {
+    this.calls.ocr += 1;
+    this.check();
+    const text = this.ocrPages
+      ? (this.ocrPages[input.pageNumber - 1] ?? '')
+      : `Page ${input.pageNumber} of ${input.filename}.`;
+    // A tall page arrives in strips; its text comes back once, with the first.
+    return { text: input.part === 1 ? text : '', usage: { durationMs: 1 } };
   }
 }
 

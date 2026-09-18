@@ -197,7 +197,16 @@ export async function startTestDatabase(): Promise<TestDb> {
     skipMigrations: hasVector ? [] : MIGRATIONS_NEEDING_VECTOR,
     stop: async () => {
       await closeApplicationPool();
-      await pg.stop();
+      try {
+        await pg.stop();
+      } catch {
+        // embedded-postgres removes its own data directory as it stops, and on
+        // Windows those files are still locked for a moment after the server
+        // exits: "EBUSY: resource busy or locked, rmdir ...\\data". The server
+        // is down either way, and this throws from an after hook, so a suite
+        // whose every test passed was reported as failed - twice in one run,
+        // which is exactly how a real failure goes unnoticed.
+      }
       try {
         rmSync(dir, { recursive: true, force: true });
       } catch {

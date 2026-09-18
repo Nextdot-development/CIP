@@ -22,7 +22,7 @@ export async function POST(_request: Request, context: { params: Promise<{ id: s
     // company is 404 before it can consume anybody's allowance.
     const { generation: existing } = await getGeneration(scope, id);
 
-    const limited = checkGenerationRate(
+    const limited = await checkGenerationRate(
       scope,
       existing.type,
       existing.type === 'video' ? VIDEO_GENERATION_LIMIT() : IMAGE_GENERATION_LIMIT(),

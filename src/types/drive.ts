@@ -23,6 +23,15 @@ export type DriveFolderDTO = {
 
 export type DriveFileDTO = {
   id: string;
+  /**
+   * Set on an upload whose bytes were already in this company's Drive.
+   *
+   * The file is stored all the same — the same picture under two names in two
+   * folders is an ordinary thing to want. It is said so a person knows, and so
+   * nobody wonders why the Brain only read it once. Absent everywhere else,
+   * because it describes what an upload did rather than what the file is.
+   */
+  alreadyPresent?: boolean;
   /** The display name, which a rename changes. */
   name: string;
   /** What the file was called when it was uploaded. Never changes. */

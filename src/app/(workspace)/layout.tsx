@@ -7,6 +7,7 @@ import { AskSeedProvider } from '@/context/NavContext';
 import { ToastProvider } from '@/context/toast';
 import { CompanyWorkspace } from '@/components/CompanyWorkspace';
 import { Sidebar } from '@/components/Sidebar';
+import { activeBrand } from '@/server/brain/activeBrand';
 
 /**
  * The workspace shell.
@@ -21,11 +22,13 @@ export const dynamic = 'force-dynamic';
 
 export default async function WorkspaceLayout({ children }: { children: React.ReactNode }) {
   const session = await requireSession();
-  const [workspace, notices] = await Promise.all([
+  const [workspace, notices, brandLens] = await Promise.all([
     getWorkspace(session),
     // Counted on the server so the badge is right on the first paint rather
     // than appearing a moment later.
     notifications(session.scope),
+    // The brand chosen in the sidebar, checked against this company's roster.
+    activeBrand(session.scope),
   ]);
 
   return (
@@ -33,7 +36,11 @@ export default async function WorkspaceLayout({ children }: { children: React.Re
       <AskSeedProvider>
         <ToastProvider>
           <CompanyWorkspace>
-            <Sidebar notices={notices} />
+            <Sidebar
+              notices={notices}
+              brands={brandLens.brands.map((brand) => brand.name)}
+              activeBrand={brandLens.active}
+            />
             <div className="main">
               <main className="page">{children}</main>
             </div>

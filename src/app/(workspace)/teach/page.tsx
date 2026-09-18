@@ -3,7 +3,7 @@ import { getConnection, listSyncedFiles } from '@/server/integrations/googleDriv
 import { listFolder } from '@/server/drive/service';
 import { TeachSection } from '@/sections/TeachSection';
 
-export const metadata = { title: 'Teach — CIP' };
+export const metadata = { title: 'Add data — CIP' };
 export const dynamic = 'force-dynamic';
 
 /**

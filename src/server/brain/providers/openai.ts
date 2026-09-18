@@ -3,6 +3,7 @@ import {
   BRAIN_LIMITS,
   BrainFailed,
   CREATIVE_FORMATS,
+  MARKET_SIGNAL_KINDS,
   TASK_TYPES,
   normaliseFormat,
   normaliseTaskType,
@@ -16,7 +17,17 @@ import type {
   CheckAnalysis,
   CheckFinding,
   CheckInput,
+  ChatAnswer,
+  ChatInput,
+  ConceptDraft,
   DocumentInput,
+  IdeationInput,
+  IdeationResult,
+  TranscribeInput,
+  Transcription,
+  MarketDocumentInput,
+  MarketReading,
+  MarketSignalDraft,
   FeedbackAnalysis,
   FeedbackInput,
   FramesInput,
@@ -396,6 +407,86 @@ const CHECK_SCHEMA = {
   },
 } as const;
 
+/**
+ * What a market report states. Every field is required and nullable rather
+ * than optional, so the model has to say "not given" instead of leaving a gap
+ * a parser might fill.
+ */
+const MARKET_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['summary', 'signals'],
+  properties: {
+    summary: { type: 'string' },
+    signals: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['kind', 'subject', 'subjectType', 'market', 'category', 'metric', 'value', 'unit', 'period', 'statement', 'excerpt'],
+        properties: {
+          kind: { type: 'string', enum: [...MARKET_SIGNAL_KINDS] },
+          subject: { type: 'string' },
+          subjectType: { type: 'string', enum: ['own_brand', 'competitor', 'category'] },
+          market: { type: ['string', 'null'] },
+          category: { type: ['string', 'null'] },
+          metric: { type: ['string', 'null'] },
+          value: { type: ['number', 'null'] },
+          unit: { type: ['string', 'null'] },
+          period: { type: ['string', 'null'] },
+          statement: { type: 'string' },
+          excerpt: { type: 'string' },
+        },
+      },
+    },
+  },
+} as const;
+
+/** An answer, the refs it used, and what to ask next. */
+const CHAT_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['answer', 'citations', 'followUps'],
+  properties: {
+    answer: { type: 'string' },
+    citations: { type: 'array', items: { type: 'string' } },
+    followUps: { type: 'array', items: { type: 'string' } },
+  },
+} as const;
+
+/** Campaign concepts, each saying which sources it stands on. */
+const IDEAS_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['concepts'],
+  properties: {
+    concepts: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['title', 'pitch', 'format', 'groundedIn'],
+        properties: {
+          title: { type: 'string' },
+          pitch: { type: 'string' },
+          format: { type: 'string' },
+          groundedIn: { type: 'array', items: { type: 'string' } },
+        },
+      },
+    },
+  },
+} as const;
+
+/** The words on a page, and nothing else. */
+const TRANSCRIPT_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['text'],
+  properties: {
+    text: { type: 'string' },
+  },
+} as const;
+
 type Content =
   | { type: 'text'; text: string }
   | { type: 'image_url'; image_url: { url: string; detail: 'auto' | 'low' | 'high' } };
@@ -681,6 +772,28 @@ export class OpenAIBrainProvider implements BrainProvider {
       sections.push(`Products this company has assets for: ${input.knownProducts.join(', ')}`);
     }
 
+    if (input.complianceRules && input.complianceRules.length > 0) {
+      sections.push(
+        'Rules this creative will be judged against:\n' +
+          input.complianceRules
+            .map((rule) => `- ${rule.requirement}: ${rule.rule}`)
+            .join('\n') +
+          '\n\nA required disclaimer has to be visible in the creative itself: say where the ' +
+          'line sits and keep it clear of the product and the logo. A forbidden thing is ' +
+          'only forbidden where it applies to what was asked for; do not drop the product ' +
+          'from a normal product creative on account of a rule about brand-extension ads.',
+      );
+    }
+
+    if (input.requestedShape) {
+      sections.push(
+        `The person asked for a ${input.requestedShape} frame, and that shape is fixed. ` +
+          'Compose the prompt for it whatever the piece is called: a banner asked for at ' +
+          '1:1 is a square piece with its subject and text arranged for a square, not a ' +
+          'wide layout drawn inside one.',
+      );
+    }
+
     sections.push(
       'Build a production brief. The generation prompt must be concrete and ' +
         'Set `format` from what was asked for. A banner, a billboard, a story, a ' +
@@ -808,6 +921,147 @@ export class OpenAIBrainProvider implements BrainProvider {
       findings: Array.isArray(parsed.findings) ? parsed.findings : [],
       usage,
     };
+  }
+
+  async readMarketDocument(input: MarketDocumentInput): Promise<MarketReading> {
+    const own = input.brands.map((b) => b.name).join(', ') || '(none listed)';
+    const content: Content[] = [
+      {
+        type: 'text',
+        text:
+          `You are reading part ${input.part} of ${input.parts} of a market-intelligence document named ` +
+          `"${input.filename}". The house's own brands are: ${own}.` +
+          (input.markets.length ? ` It works in: ${input.markets.join(', ')}.` : '') +
+          '\n\nReport the market signals this text states: market shares, growth, prices, distribution, ' +
+          'consumer insight, competitor moves, regulation and trends.\n\n' +
+          'Rules:\n' +
+          '- Report only what the text states. Never estimate, infer or calculate a number it does not give.\n' +
+          '- excerpt must be copied exactly, character for character, from the text: the sentence or table ' +
+          'row that states it, under 300 characters. A signal whose excerpt is not in the text is thrown away.\n' +
+          '- subjectType is own_brand only for the brands listed above. Any other brand or company is a ' +
+          'competitor. The market or category as a whole is category.\n' +
+          '- value is a number only when the text gives one, with its unit as written ("%", "INR crore", ' +
+          '"million cases"). Otherwise value and unit are null.\n' +
+          '- period as written ("FY24", "Q2 2025"), or null. market is the country or region the statement ' +
+          'is about, as written, or null.\n' +
+          '- statement is one plain sentence a marketer can read on its own.\n' +
+          '- If this part states no market signals - a contents page, a disclaimer - return none.\n\n' +
+          `Text:\n${input.text}`,
+      },
+    ];
+
+    const { parsed, usage } = await this.call<{ summary: string; signals: MarketSignalDraft[] }>(
+      content,
+      MARKET_SCHEMA,
+      'market_reading',
+      8_000,
+    );
+
+    return {
+      summary: typeof parsed.summary === 'string' ? parsed.summary.trim() : '',
+      signals: Array.isArray(parsed.signals) ? parsed.signals : [],
+      usage,
+    };
+  }
+
+  async answerQuestion(input: ChatInput): Promise<ChatAnswer> {
+    const sources = input.sources.map((s) => `${s.ref} (${s.kind}) ${s.text}`).join('\n');
+    const history = input.history
+      .map((turn) => `${turn.role === 'user' ? 'Them' : 'You'}: ${turn.content}`)
+      .join('\n');
+
+    const content: Content[] = [
+      {
+        type: 'text',
+        text:
+          "You are CIP's Brand Brain, answering someone on a brand team" +
+          (input.brand ? ` working on ${input.brand}` : '') +
+          '.\n\n' +
+          'Answer only from the numbered sources below. Put the ref of each source you rely on in square ' +
+          'brackets straight after the claim it supports, like [F2], and list every ref you used in citations. ' +
+          'If the sources do not answer the question, say plainly that CIP has nothing stored on it yet and ' +
+          'what kind of data would answer it. Do not answer from general knowledge, and never invent a number.' +
+          (input.brand
+            ? ` Stay inside ${input.brand}: do not describe another brand's look, voice or numbers as this one's.`
+            : '') +
+          ' Keep it short - a few sentences or a short list. Suggest up to three follow-up questions these ' +
+          'sources could answer.\n\n' +
+          (history ? `Conversation so far:\n${history}\n\n` : '') +
+          `Sources:\n${sources || '(none - CIP has nothing stored that matches)'}\n\n` +
+          `Question: ${input.question}`,
+      },
+    ];
+
+    const { parsed, usage } = await this.call<{ answer: string; citations: string[]; followUps: string[] }>(
+      content,
+      CHAT_SCHEMA,
+      'brain_answer',
+      4_000,
+    );
+
+    return {
+      answer: typeof parsed.answer === 'string' ? parsed.answer.trim() : '',
+      citations: Array.isArray(parsed.citations) ? parsed.citations.filter((c) => typeof c === 'string') : [],
+      followUps: Array.isArray(parsed.followUps) ? parsed.followUps.filter((f) => typeof f === 'string') : [],
+      usage,
+    };
+  }
+
+  async ideateConcepts(input: IdeationInput): Promise<IdeationResult> {
+    const sources = input.sources.map((s) => `${s.ref} (${s.kind}) ${s.text}`).join('\n');
+    const content: Content[] = [
+      {
+        type: 'text',
+        text:
+          `You are a creative strategist proposing ${input.count} campaign concepts` +
+          (input.brand ? ` for ${input.brand}` : '') +
+          '.\n\n' +
+          'Build every concept on the numbered sources below - what this brand looks like, how it sounds, ' +
+          'what it has done before, what the market is doing and what is coming up. In groundedIn list the refs ' +
+          'of the sources each concept stands on; a concept that stands on none of them is thrown away, so do not ' +
+          'propose a generic idea. Every concept must respect every rule source (R refs): never show under-age ' +
+          'people, never promise effects of drinking, and never plan content for a dry day.' +
+          (input.brand ? ` Stay inside ${input.brand}'s own look and voice; do not borrow another brand's.` : '') +
+          '\n\n' +
+          'Each concept: a title of at most four words; a pitch of one or two plain sentences saying what it is ' +
+          'and why it fits; and a format such as "Film + Social", "OOH + Retail" or "Print + Digital". Make the ' +
+          'concepts genuinely different from each other.\n\n' +
+          `Sources:\n${sources || '(none)'}\n\n` +
+          `Brief: ${input.brief}`,
+      },
+    ];
+
+    const { parsed, usage } = await this.call<{ concepts: ConceptDraft[] }>(content, IDEAS_SCHEMA, 'campaign_concepts', 5_000);
+    return { concepts: Array.isArray(parsed.concepts) ? parsed.concepts : [], usage };
+  }
+
+  async transcribePage(input: TranscribeInput): Promise<Transcription> {
+    const content: Content[] = [
+      {
+        type: 'text',
+        text:
+          `This is page ${input.pageNumber} of ${input.pageCount} of a scanned document named "${input.filename}"` +
+          (input.parts > 1 ? `, strip ${input.part} of ${input.parts} of that page` : '') +
+          '.\n\n' +
+          'Transcribe every piece of text on it, exactly as written. This is OCR: copy it, do not interpret it.\n' +
+          '- Keep the reading order. Put each heading, paragraph and list item on its own line.\n' +
+          '- Write a table as one line per row, with " | " between cells, header row first.\n' +
+          '- Copy numbers, percentages, currencies, dates and units exactly. Never round, convert or correct them.\n' +
+          '- Keep the original language and spelling. Do not translate.\n' +
+          '- Include text inside charts, labels, legends, footnotes and captions.\n' +
+          '- Do not summarise, describe pictures, or add anything that is not written on the page.\n' +
+          '- Write [illegible] for a word you cannot read. If there is no text at all, return an empty string.',
+      },
+      {
+        type: 'image_url',
+        // High detail: the small print is exactly what a scanned report's
+        // numbers are set in.
+        image_url: { url: dataUri(input.mimeType, input.bytes), detail: 'high' },
+      },
+    ];
+
+    const { parsed, usage } = await this.call<{ text: string }>(content, TRANSCRIPT_SCHEMA, 'page_transcript', 10_000);
+    return { text: typeof parsed.text === 'string' ? parsed.text.trim() : '', usage };
   }
 
   private async call<T>(
@@ -1025,6 +1279,20 @@ function safeCode(code: string): string {
 }
 
 /**
+ * Whether a 429 means the account has nothing left to spend.
+ *
+ * OpenAI sends both a `type` and a `code`, and only ever one of them says
+ * this: a spent account arrives as type `insufficient_quota` with code
+ * `credit_balance_exhausted`. Reading the code alone, CIP reported "the
+ * provider is rate limiting us" - which tells a person to wait for something
+ * that waiting cannot fix, while every page quietly failed.
+ */
+function isOutOfCredit(value: string | null): boolean {
+  if (!value) return false;
+  return /insufficient_quota|credit_balance_exhausted|billing|quota_exceeded/i.test(value);
+}
+
+/**
  * Turns an error response into one of ours.
  *
  * Only the status and OpenAI's own error code shape the outcome. The message is
@@ -1032,18 +1300,24 @@ function safeCode(code: string): string {
  */
 async function classify(response: Response): Promise<BrainFailed> {
   let code: string | null = null;
+  let kind: string | null = null;
   try {
     const body = (await response.clone().json()) as { error?: { code?: unknown; type?: unknown } };
-    const value = body.error?.code ?? body.error?.type;
-    code = typeof value === 'string' ? value : null;
+    code = typeof body.error?.code === 'string' ? body.error.code : null;
+    kind = typeof body.error?.type === 'string' ? body.error.type : null;
   } catch {
     /* no body, or not JSON */
   }
+  code = code ?? kind;
 
   if (response.status === 429) {
-    if (code === 'insufficient_quota') {
+    if (isOutOfCredit(code) || isOutOfCredit(kind)) {
       // Waiting does not refill an empty account, so this is not a rate limit.
-      return new BrainFailed('PROVIDER_ERROR', 'permanent', 'The Brain provider account is out of quota.');
+      return new BrainFailed(
+        'PROVIDER_ERROR',
+        'permanent',
+        'The Brain provider account is out of credit. Waiting will not help: add credit to the OpenAI account.',
+      );
     }
     const retryAfter = Number(response.headers.get('retry-after'));
     return new BrainFailed(

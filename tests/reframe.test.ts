@@ -39,6 +39,33 @@ describe('reading a shape out of a request', () => {
     assert.equal(requestedShape('1:1 for the grid')?.label, '1:1');
   });
 
+  it('reads a shape however it was typed', () => {
+    // Each of these came back null, so a banner fell through to 3:1.
+    assert.equal(requestedShape('diwali banner 4:4')?.label, '1:1');
+    assert.equal(requestedShape('banner in 4:4 and 1:1')?.label, '1:1');
+    assert.equal(requestedShape('banner 1 : 1')?.label, '1:1');
+    assert.equal(requestedShape('banner 1:1ratio me')?.label, '1:1');
+    assert.equal(requestedShape('banner 1x1')?.label, '1:1');
+    assert.equal(requestedShape('banner size 1*1')?.label, '1:1');
+    assert.equal(requestedShape('banner 1：1')?.label, '1:1');
+    assert.equal(requestedShape('ar 8:10')?.label, '4:5');
+    assert.equal(requestedShape('size 4 by 5')?.label, '4:5');
+    assert.equal(requestedShape('a square post for Diwali')?.label, '1:1');
+    assert.equal(requestedShape('banner square m bnao')?.label, '1:1');
+  });
+
+  it('reads pixels with a unit on the end', () => {
+    const shape = requestedShape('banner 1080x1080px');
+    assert.deepEqual(shape?.pixels, { width: 1080, height: 1080 });
+  });
+
+  it('does not read a grid, a case count or a landmark as a crop', () => {
+    assert.equal(requestedShape('a 3x3 grid of posts'), null);
+    assert.equal(requestedShape('12 x 750ml bottles on a bar'), null);
+    assert.equal(requestedShape('a billboard in Times Square'), null);
+    assert.equal(requestedShape('launch at 10:10 tonight'), null);
+  });
+
   it('does not read a time or a score as a crop', () => {
     // This library is full of a brand called 8PM, and people write times.
     assert.equal(requestedShape('a post for 8PM to run at 8:30 in the evening'), null);

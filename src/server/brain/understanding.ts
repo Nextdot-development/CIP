@@ -66,28 +66,48 @@ export async function enqueueUnderstanding(scope: CompanyScope): Promise<number>
         select f.id, f.company_id, f.mime_type, f.file_type, f.checksum_sha256
           from drive_files f
          where f.archived_at is null
+           -- Brand material only. A market report or a book is read for what it
+           -- says, never for what this brand looks and sounds like.
+           and f.knowledge_role = 'brand'
            and f.checksum_sha256 is not null
+           -- Once per content, not once per file.
+           --
+           -- Keyed on the file, the same deck uploaded twice was read twice,
+           -- and Brand DNA counted the two readings as two assets agreeing
+           -- with each other. They are one asset with two names, so the
+           -- evidence behind a claim was inflated by however many copies of a
+           -- file somebody had. Radico has the same earnings presentation in
+           -- twice. Keyed on the bytes, the second copy costs nothing and
+           -- proves nothing, which is right on both counts.
            and not exists (
              select 1 from asset_understanding u
-              where u.file_id = f.id
+              where u.company_id = f.company_id
                 and u.content_hash = f.checksum_sha256
            )
+      ),
+      readable as (
+        select c.* from candidate c
+         where lower(c.mime_type) in ('image/png','image/jpeg','image/webp','image/gif',
+                                      'video/mp4','video/quicktime','video/webm','video/x-matroska')
+            -- Passed in rather than written out again. The readable types were
+            -- listed in three places, and adding Markdown to two of them left a
+            -- file that extracted cleanly and was never understood.
+            or lower(c.file_type) = any(${[...EXTRACTABLE_FILE_TYPES]})
       )
       insert into asset_understanding (company_id, file_id, kind, provider, model, content_hash, status)
-      select c.company_id, c.id,
+      -- One row per content, inside this statement as well as against what is
+      -- already stored: two copies queued in the same pass would both pass the
+      -- check above, which is evaluated before either of them exists.
+      select distinct on (r.company_id, r.checksum_sha256)
+             r.company_id, r.id,
              case
-               when lower(c.mime_type) in ('image/png','image/jpeg','image/webp','image/gif') then 'image'
-               when lower(c.mime_type) in ('video/mp4','video/quicktime','video/webm','video/x-matroska') then 'video'
+               when lower(r.mime_type) in ('image/png','image/jpeg','image/webp','image/gif') then 'image'
+               when lower(r.mime_type) in ('video/mp4','video/quicktime','video/webm','video/x-matroska') then 'video'
                else 'document'
              end,
-             ${brain().name}, ${brain().model}, c.checksum_sha256, 'pending'
-        from candidate c
-       where lower(c.mime_type) in ('image/png','image/jpeg','image/webp','image/gif',
-                                    'video/mp4','video/quicktime','video/webm','video/x-matroska')
-          -- Passed in rather than written out again. The readable types were
-          -- listed in three places, and adding Markdown to two of them left a
-          -- file that extracted cleanly and was never understood.
-          or lower(c.file_type) = any(${[...EXTRACTABLE_FILE_TYPES]})
+             ${brain().name}, ${brain().model}, r.checksum_sha256, 'pending'
+        from readable r
+       order by r.company_id, r.checksum_sha256, r.id
       on conflict (file_id, content_hash) do nothing
       returning 1 as n
     `;

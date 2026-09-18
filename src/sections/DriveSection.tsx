@@ -612,7 +612,11 @@ export function DriveSection({
           )
         ) : (
           files.map((f) => {
-            const tint = KIND_TINT[f.kind];
+            // A kind nobody has given a colour to still gets a row. The list
+            // is seven long and the server maps everything into it today, so
+            // this is a guard against tomorrow: an eighth kind would otherwise
+            // read a property off undefined and take the whole Drive down.
+            const tint = KIND_TINT[f.kind] ?? KIND_TINT.document;
             const where = (f as { folderName?: string | null }).folderName;
             return (
               <div className="file-row" key={f.id}>
@@ -645,8 +649,7 @@ export function DriveSection({
                       {searching && where ? ` · in ${where}` : ''}
                     </span>
                     <MarketChip file={f} />
-                    <MarketChip file={f} />
-                <ProcessingChip file={f} />
+                    <ProcessingChip file={f} />
                   </span>
                 </span>
                 <span className="fr-actions">

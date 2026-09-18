@@ -1,7 +1,7 @@
 import 'server-only';
 import { createHmac, randomBytes } from 'node:crypto';
 import { cookies } from 'next/headers';
-import { sql } from '../db';
+import { sql, withConnectionRetry } from '../db';
 import type { CompanyRole, CompanyScope } from '../db';
 
 export const SESSION_COOKIE = 'cip_session';
@@ -73,7 +73,11 @@ export async function getSession(): Promise<AuthenticatedSession | null> {
   const token = jar.get(SESSION_COOKIE)?.value;
   if (!token) return null;
 
-  const rows = await sql<
+  // Retried through a pooler hiccup. Every page in the workspace starts here,
+  // so a dropped connection on this one query used to take the whole page down
+  // with "password authentication failed for user cip_app" - a sentence about
+  // the pooler, shown to somebody who was reading their brand.
+  const rows = await withConnectionRetry(() => sql<
     {
       session_id: string;
       user_id: string;
@@ -99,7 +103,7 @@ export async function getSession(): Promise<AuthenticatedSession | null> {
      where s.token_hash = ${tokenHash(token)}
        and s.expires_at > now()
      limit 1
-  `;
+  `);
 
   const row = rows[0];
   if (!row) return null;
