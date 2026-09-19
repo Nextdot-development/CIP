@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Icon } from './ui/Icon';
@@ -36,7 +37,6 @@ export function AddDataModal({
   // about its brand - IMG_2034.jpg - otherwise belongs to no brand, and reaches
   // every brand's briefs.
   const [brandChoice, setBrandChoice] = useState(brand ?? '');
-
   useEffect(() => {
     closeButton.current?.focus();
     const onKey = (event: KeyboardEvent) => {
@@ -67,7 +67,23 @@ export function AddDataModal({
 
   const uploading = rows.some((r) => r.status === 'uploading');
 
-  return (
+  /**
+   * Into the body, not into the sidebar it is written in.
+   *
+   * The sidebar is `position: sticky`, and a sticky element makes its own
+   * stacking context whatever its z-index. Everything inside it is then stacked
+   * against its siblings rather than against the page, so a dialog that says
+   * `z-index: 100` sits behind the page it is covering: the hero card and the
+   * composer drew straight over the top of it.
+   *
+   * Raising the number would not have helped. The dialog has to leave the
+   * sidebar, and a portal is how it leaves while staying this component's
+   * child for state, focus and the Escape key.
+   *
+   * No guard for the server: this is only ever rendered after somebody presses
+   * the button, so `document` is always there by the time it runs.
+   */
+  return createPortal(
     <div
       className="modalback"
       onMouseDown={(event) => {
@@ -162,6 +178,7 @@ export function AddDataModal({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

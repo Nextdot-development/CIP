@@ -72,3 +72,7 @@ design/
 # Client source material. Radico's own reports and decks are working input,
 # not source code, and this repository is public.
 Radico/
+
+# Training data exported from the database. It is the customer's own
+# documents in plain text, and belongs on a disk, not in a repository.
+data/
