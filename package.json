@@ -48,7 +48,8 @@
     "brands:merge": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/merge-brands.ts",
     "set-login": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/set-login.ts",
     "ingest:market": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/ingest-market.ts",
-    "verify:market": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/verify-market.ts"
+    "verify:market": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/verify-market.ts",
+    "backfill:palette": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/backfill-palette.ts"
   },
   "dependencies": {
     "@google/genai": "^2.21.0",

@@ -533,9 +533,10 @@ export class OpenAIBrainProvider implements BrainProvider {
           'Fill in `design` from the layout itself, not from what would be usual. ' +
           'Placements are stated as a position on the canvas - "top-left", "lower third ' +
           'centred", "bottom-right corner" - and a scale is how much of the width it ' +
-          'takes: "small", "about a quarter", "dominant". paletteHex holds actual hex ' +
-          'values read off the picture, most prominent first, and is empty if you cannot ' +
-          'read them rather than approximated. fonts describes what the type actually is ' +
+          'takes: "small", "about a quarter", "dominant". Leave paletteHex empty: the ' +
+          'hex values are measured from the pixels afterwards and anything you put there ' +
+          'is discarded. Name the colours in `colours` instead, as a reader would say ' +
+          'them. fonts describes what the type actually is ' +
           '- "serif, high contrast, all caps", "geometric sans" - naming a typeface only ' +
           'if you genuinely recognise it. Any field you cannot see is null, and null is a ' +
           'better answer than a plausible one.\n\n' +

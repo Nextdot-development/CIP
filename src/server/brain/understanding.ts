@@ -8,6 +8,7 @@ import { embedder, toVectorLiteral } from '../drive/embedding';
 import { brain } from './providers';
 import { similaritySupported } from './capabilities';
 import { fitForVision } from './fitImage';
+import { readPalette, withMeasuredPalette } from './palette';
 import {
   ANALYSABLE_IMAGE_TYPES,
   ANALYSABLE_VIDEO_TYPES,
@@ -322,6 +323,13 @@ export async function understandClaimedAsset(claim: ClaimedAsset): Promise<Under
                 bytes,
               })).analysis
             : await understandDocument(scope, claim, brands);
+
+    // The colours are measured, not asked for. See palette.ts: the model is
+    // right to refuse to eyeball a hex value, so the pixels are counted here
+    // and written over whatever the model left in the field.
+    if (kind === 'image' && fitted) {
+      withMeasuredPalette(analysis, await readPalette(fitted.bytes, fitted.mimeType));
+    }
 
     await store(scope, { ...claim, kind }, analysis);
 
