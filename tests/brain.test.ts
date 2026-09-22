@@ -517,15 +517,23 @@ describe('Brand DNA is counted, not asserted', () => {
   });
 
   it('re-analysing the same asset cannot inflate its own evidence', async () => {
-    await uploadImage(mm, 'once.png', 11);
+    const once = await uploadImage(mm, 'once.png', 11);
     await understanding.enqueueUnderstanding(mm);
     await understandAll();
     await brandDna.recomputeBrandDna(mm);
 
     const before = await brandDna.readBrandDna(mm, { limit: 50 });
 
-    // Force a second analysis of the same file by changing its hash.
-    await adminSql`update drive_files set checksum_sha256 = 'another-hash'`;
+    // Force a second analysis of the same file by changing its hash. Named,
+    // because an unscoped UPDATE here rewrites the checksum of every file on
+    // the server — which on a shared test database is every other company's
+    // too, and re-queues their assets for analysis in the middle of somebody
+    // else's test.
+    await adminSql`
+      update drive_files
+         set checksum_sha256 = 'another-hash'
+       where id = ${once.id} and company_id = ${mm.companyId}
+    `;
     await understanding.enqueueUnderstanding(mm);
     await understandAll();
     await brandDna.recomputeBrandDna(mm);
@@ -1365,6 +1373,16 @@ describe('THE BOUNDARY: asked for one brand, only that brand is read', () => {
   async function brandFile(brand: string | null, name: string, summary: string): Promise<string> {
     const file = await uploadText(mm, name, summary);
     await extractAll();
+    // Queued before it can be claimed, exactly as the worker does it. Without
+    // this understandAll() finds nothing to take and the file is never
+    // understood, so it has no embedding and similarity cannot return it.
+    //
+    // That was invisible on a database carrying rows from an earlier run — the
+    // file was already there to be found — and showed only on a clean one.
+    // Which is CI, where the assertion below failed on every run while passing
+    // everywhere else. The test above it went on passing throughout, because
+    // it asserts an absence and an empty result satisfies that trivially.
+    await understanding.enqueueUnderstanding(mm);
     await understandAll();
     await adminSql`
       update drive_files set brand = ${brand}
