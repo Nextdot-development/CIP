@@ -29,6 +29,28 @@ grant usage on schema extensions to cip_app;
 -- out OPERATOR(extensions.<=>), which is unreadable and easy to get wrong.
 alter role cip_app set search_path = public, extensions;
 
+-- And for every other role on this database, which on Supabase is already true
+-- and on a database made by hand is not. Tests and migrations connect as an
+-- admin role, not as cip_app, and a plain PostgreSQL then resolves `::vector`
+-- against `public` alone: CI failed for weeks on `type "vector" does not exist`
+-- while the same suite passed against Supabase, which sets this itself.
+--
+-- Guarded, because altering a database needs rights the connecting role may
+-- not have. Where it is refused it is also unnecessary — a managed database
+-- that will not let you set this has already set it.
+do $$
+begin
+  execute format('alter database %I set search_path = public, extensions', current_database());
+exception
+  when insufficient_privilege then null;
+end $$;
+
+-- ALTER DATABASE only reaches connections opened after it, and the connection
+-- running this migration is older than that. Without this the rest of the
+-- session — including the tests that run straight after a migrate() — still
+-- cannot see the type it just installed.
+set search_path = public, extensions;
+
 create table drive_file_embeddings (
   id          uuid primary key default gen_random_uuid(),
   company_id  uuid not null references companies(id) on delete cascade,
