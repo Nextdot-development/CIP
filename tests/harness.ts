@@ -166,6 +166,57 @@ function asRole(url: string, role: string): URL {
   return next;
 }
 
+/**
+ * A database of this run's own, on a server somebody else owns.
+ *
+ * Every test file runs in its own process but they all read
+ * TEST_DATABASE_ADMIN_URL, so they all pointed at the same database and
+ * inherited each other's rows and schema. On a laptop that never showed,
+ * because nothing passes an env file to the runner and each process starts its
+ * own embedded PostgreSQL instead. In CI the variable is set, and the suite had
+ * been failing on it for every run: `migrations.test.ts` asks what `migrate()`
+ * applied and got back an empty list, because the first file to run had already
+ * migrated the shared database, and `brain.test.ts` read rows another file left
+ * behind.
+ *
+ * So each process takes a database named after itself, and drops it on the way
+ * out. Returns null when the server will not have one created — a pooled
+ * Supabase connection routes to a single database and cannot — and the caller
+ * then uses the shared database exactly as before, which is what a developer
+ * pointing one test file at their own server expects anyway.
+ */
+async function ownDatabase(adminUrl: string): Promise<{ url: string; drop: () => Promise<void> } | null> {
+  const name = `cip_test_${process.pid}_${Date.now().toString(36)}`;
+  const server = postgres(adminUrl, { max: 1, connect_timeout: 15, onnotice: () => {} });
+  try {
+    // Not parameterised because an identifier cannot be: it is built above
+    // from a pid and a timestamp, never from anything a test supplies.
+    await server.unsafe(`create database "${name}"`);
+  } catch {
+    await server.end().catch(() => {});
+    return null;
+  }
+  await server.end().catch(() => {});
+
+  const url = new URL(adminUrl);
+  url.pathname = `/${name}`;
+  return {
+    url: url.toString(),
+    drop: async () => {
+      const back = postgres(adminUrl, { max: 1, connect_timeout: 15, onnotice: () => {} });
+      try {
+        // FORCE, because a connection the suite failed to close would
+        // otherwise leave the database behind for ever. Postgres 13+.
+        await back.unsafe(`drop database if exists "${name}" with (force)`);
+      } catch {
+        /* a database left behind is untidy, not a failing test */
+      } finally {
+        await back.end().catch(() => {});
+      }
+    },
+  };
+}
+
 export async function startTestDatabase(): Promise<TestDb> {
   const external = process.env.TEST_DATABASE_ADMIN_URL;
   if (external) {
@@ -174,12 +225,14 @@ export async function startTestDatabase(): Promise<TestDb> {
     // a test one, or migrating a test database would lock the running
     // application out of the production database on the same cluster.
     const appPassword = process.env.CIP_APP_DB_PASSWORD ?? APP_PASSWORD;
-    const appUrl = asRole(external, 'cip_app');
-    appUrl.password = appPassword;
     // Resolve once, then use the same address for both roles, so the admin and
     // application connections cannot end up pointed at different servers.
-    const adminUrl = await withResolvedHost(external);
-    appUrl.hostname = new URL(adminUrl).hostname;
+    const resolved = await withResolvedHost(external);
+    const own = await ownDatabase(resolved);
+    const adminUrl = own?.url ?? resolved;
+
+    const appUrl = asRole(adminUrl, 'cip_app');
+    appUrl.password = appPassword;
     const hasVector = await detectVector(adminUrl, true);
     return {
       adminUrl,
@@ -187,7 +240,10 @@ export async function startTestDatabase(): Promise<TestDb> {
       appPassword,
       hasVector,
       skipMigrations: hasVector ? [] : MIGRATIONS_NEEDING_VECTOR,
-      stop: async () => {},
+      stop: async () => {
+        await closeApplicationPool();
+        await own?.drop();
+      },
     };
   }
 
