@@ -6,6 +6,7 @@ import { driveStorage } from '../drive/storage';
 import { renderPdfPages } from '../drive/extraction/pdfRender';
 import { readAsset } from '../media/generation';
 import { readBrandDna } from './brandDna';
+import { companyBrands } from './brands';
 import { fitForVision } from './fitImage';
 import { brain } from './providers';
 import { BRAIN_LIMITS, BrainFailed } from './providers/types';
@@ -90,6 +91,14 @@ export type CreativeCheck = {
   generationId: string | null;
   /** What was on the page. Only a creative is judged against advertising rules. */
   assetKind: AssetKind;
+  /**
+   * What the Brain read off the creative when nobody said which brand it was.
+   *
+   * Null when a person chose the brand. Present, with how sure it was, so a
+   * verdict can be weighed: a check run as the wrong brand applied the wrong
+   * rules, and the only defence is being able to see which brand was used.
+   */
+  detected: { product: string | null; confidence: number; evidence: string | null } | null;
   /** The display name of what was checked. */
   subject: string;
   brand: string | null;
@@ -413,8 +422,46 @@ export async function runCheck(
 
   const subject = await resolveSubject(scope, input);
   // A reviewer's choice wins; otherwise what the file or the brief already says.
-  const brand = input.brand?.trim() || subject.brand;
+  let brand = input.brand?.trim() || subject.brand;
   const market = input.market?.trim() || subject.market;
+
+  /**
+   * When nobody has said which brand it is, look at the creative and find out.
+   *
+   * Which rules apply depends entirely on the answer. 8PM Honey's prohibition
+   * on bees is not Royal Ranthambore's approval of tigers, and with no brand
+   * named only the thirteen house-wide rules were ever fetched - so the picker
+   * offering "Let CIP work it out" was describing something CIP did not do.
+   *
+   * The roster is sent, and an answer that is not on it is discarded. A brand
+   * this company does not have is not a brand, and a guessed one is worse than
+   * none: it pulls in another product's rules and fails a creative against
+   * standards never written for it.
+   */
+  let identified: { brand: string | null; product: string | null; confidence: number; evidence: string | null } | null = null;
+  if (!brand) {
+    const roster = await companyBrands(scope);
+    const names = roster.map((b) => b.name);
+    if (names.length > 0) {
+      const fitted = await fitForVision(subject.bytes, subject.mimeType);
+      const said = await provider
+        .identifyCreative({
+          bytes: fitted.bytes,
+          mimeType: fitted.mimeType,
+          filename: subject.subject,
+          brands: names,
+        })
+        .catch(() => null);
+
+      if (said) {
+        const match = names.find((name) => name.toLowerCase() === said.brand?.trim().toLowerCase());
+        identified = { ...said, brand: match ?? null };
+        // Below this, the reading is a guess dressed as a fact. Radico's own
+        // document: "Do not invent missing information."
+        if (match && said.confidence >= 0.7) brand = match;
+      }
+    }
+  }
 
   // What the brand has consistently done. Patterns only - a single observation
   // is not something a creative can be faulted for departing from.
@@ -527,6 +574,9 @@ export async function runCheck(
     await tx`
       update creative_checks
          set status = 'ready', summary = ${summary}, asset_kind = ${analysis.assetKind},
+             brand = ${brand}, detected_product = ${identified?.product ?? null},
+             detected_confidence = ${identified ? identified.confidence : null},
+             detected_evidence = ${identified?.evidence ?? null},
              score = ${scores.score}, visual_score = ${scores.visual},
              verbal_score = ${scores.verbal}, compliance_score = ${scores.compliance},
              completed_at = now()
@@ -548,12 +598,13 @@ export async function getCheck(scope: CompanyScope, checkId: string): Promise<Cr
       score: number | null; visual_score: number | null; verbal_score: number | null;
       compliance_score: number | null; summary: string | null; facts_considered: number;
       rules_considered: number; error_message: string | null; created_at: Date;
-      asset_kind: AssetKind;
+      asset_kind: AssetKind; detected_product: string | null;
+      detected_confidence: number | null; detected_evidence: string | null;
     }[]>`
       select c.id, c.file_id, c.generation_id, f.name as subject, c.brand, c.market, c.status,
              c.score, c.visual_score, c.verbal_score, c.compliance_score, c.summary,
              c.facts_considered, c.rules_considered, c.error_message, c.created_at,
-             c.asset_kind
+             c.asset_kind, c.detected_product, c.detected_confidence, c.detected_evidence
         from creative_checks c
         left join drive_files f on f.id = c.file_id and f.company_id = c.company_id
        where c.id = ${checkId} and c.company_id = ${scope.companyId}
@@ -585,6 +636,14 @@ export async function getCheck(scope: CompanyScope, checkId: string): Promise<Cr
       generationId: check.generation_id,
       subject: check.subject ?? (check.generation_id ? `Generated creative ${check.generation_id.slice(0, 8)}` : 'Creative'),
       assetKind: check.asset_kind,
+      detected:
+        check.detected_confidence === null
+          ? null
+          : {
+              product: check.detected_product,
+              confidence: check.detected_confidence,
+              evidence: check.detected_evidence,
+            },
       brand: check.brand,
       market: check.market,
       status: check.status,
@@ -628,12 +687,13 @@ export async function listChecks(
       score: number | null; visual_score: number | null; verbal_score: number | null;
       compliance_score: number | null; summary: string | null; facts_considered: number;
       rules_considered: number; error_message: string | null; created_at: Date;
-      asset_kind: AssetKind;
+      asset_kind: AssetKind; detected_product: string | null;
+      detected_confidence: number | null; detected_evidence: string | null;
     }[]>`
       select c.id, c.file_id, c.generation_id, f.name as subject, c.brand, c.market, c.status,
              c.score, c.visual_score, c.verbal_score, c.compliance_score, c.summary,
              c.facts_considered, c.rules_considered, c.error_message, c.created_at,
-             c.asset_kind
+             c.asset_kind, c.detected_product, c.detected_confidence, c.detected_evidence
         from creative_checks c
         left join drive_files f on f.id = c.file_id and f.company_id = c.company_id
        where c.company_id = ${scope.companyId}
@@ -646,6 +706,14 @@ export async function listChecks(
       generationId: c.generation_id,
       subject: c.subject ?? (c.generation_id ? `Generated creative ${c.generation_id.slice(0, 8)}` : 'Creative'),
       assetKind: c.asset_kind,
+      detected:
+        c.detected_confidence === null
+          ? null
+          : {
+              product: c.detected_product,
+              confidence: c.detected_confidence,
+              evidence: c.detected_evidence,
+            },
       brand: c.brand,
       market: c.market,
       status: c.status,

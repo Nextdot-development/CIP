@@ -18,6 +18,8 @@ import type {
   CheckAnalysis,
   CheckFinding,
   CheckInput,
+  CreativeContext,
+  IdentifyInput,
   ChatAnswer,
   ChatInput,
   ConceptDraft,
@@ -385,6 +387,20 @@ function brandInstruction(brands: BrandRoster | undefined): string {
  * away any finding that names something else, so the schema cannot stop a
  * model inventing a rule - but inventing one gets it nothing.
  */
+const IDENTIFY_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['brand', 'product', 'confidence', 'evidence'],
+  properties: {
+    // Nullable, and required to be present: the model has to say "I could not
+    // tell" rather than leave the field out and let a parser guess.
+    brand: { type: ['string', 'null'] },
+    product: { type: ['string', 'null'] },
+    confidence: { type: 'number' },
+    evidence: { type: ['string', 'null'] },
+  },
+} as const;
+
 const CHECK_SCHEMA = {
   type: 'object',
   additionalProperties: false,
@@ -876,6 +892,45 @@ export class OpenAIBrainProvider implements BrainProvider {
       facts: (parsed.facts ?? []).filter(
         (fact) => fact.attribute?.trim() && fact.value?.trim() && !recordsAnAbsence(fact.value),
       ),
+      usage,
+    };
+  }
+
+  async identifyCreative(input: IdentifyInput): Promise<CreativeContext> {
+    const names = input.brands.join(', ') || '(none)';
+    const content: Content[] = [
+      {
+        type: 'text',
+        text:
+          `Which of this company's brands is this creative for? The brands are: ${names}.\n\n` +
+          'Answer with a name exactly as it appears in that list, or null. Null is a real ' +
+          'answer and the right one whenever you cannot tell — a guess pulls in another ' +
+          "product's rules and fails this creative against standards that were never meant " +
+          'for it.\n\n' +
+          'Go by what is actually on the creative: the logo, the pack, the product name, ' +
+          'the label. Not by what the picture is generally about.\n\n' +
+          'product is the variant where the creative says which one — "8PM Honey" rather ' +
+          'than "8PM" — and null otherwise.\n\n' +
+          'confidence is 0 to 1. evidence is the one thing you read it from, in a few words.',
+      },
+      {
+        type: 'image_url',
+        image_url: { url: dataUri(input.mimeType, input.bytes), detail: 'high' },
+      },
+    ];
+
+    const { parsed, usage } = await this.call<{
+      brand: string | null;
+      product: string | null;
+      confidence: number;
+      evidence: string | null;
+    }>(content, IDENTIFY_SCHEMA, 'creative_context', 1_500);
+
+    return {
+      brand: typeof parsed.brand === 'string' ? parsed.brand.trim() || null : null,
+      product: typeof parsed.product === 'string' ? parsed.product.trim() || null : null,
+      confidence: typeof parsed.confidence === 'number' ? clamp(parsed.confidence) : 0,
+      evidence: typeof parsed.evidence === 'string' ? parsed.evidence.trim().slice(0, 200) || null : null,
       usage,
     };
   }

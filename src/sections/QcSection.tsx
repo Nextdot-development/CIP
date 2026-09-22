@@ -31,6 +31,8 @@ type Report = {
     factsConsidered: number;
     rulesConsidered: number;
     flags: CheckFlag[];
+    /** What CIP worked out when nobody said which brand it was. */
+    detected: { product: string | null; confidence: number; evidence: string | null } | null;
   };
   verdict: 'pass' | 'fix' | 'review' | 'nothing_to_check' | 'not_a_creative';
   passed: { id: string; rule: string; verified: boolean }[];
@@ -547,6 +549,21 @@ function QcReport({
         {report.counts.factsApplied} brand facts · {report.counts.passed} passed,{' '}
         {report.counts.flagged} flagged
       </p>
+
+      {/* Which brand's rules were used, and whether a person chose it. A
+          verdict against the wrong brand applied the wrong rules, and seeing
+          which brand was used is the only defence against one. */}
+      {report.check.detected && (
+        <p className="tiny muted" style={{ marginTop: 4 }}>
+          {report.check.brand
+            ? `CIP read this as ${report.check.brand}${report.check.detected.product ? ` — ${report.check.detected.product}` : ''}`
+            : 'CIP could not tell which brand this is, so only the house-wide rules were applied'}
+          {report.check.detected.evidence ? ` (${report.check.detected.evidence})` : ''}
+          {' · '}
+          {Math.round(report.check.detected.confidence * 100)}% sure
+          {!report.check.brand ? ' — pick the brand above to apply its own rules' : ''}
+        </p>
+      )}
 
       {report.check.summary && (
         <p style={{ marginTop: 12 }}>{report.check.summary}</p>

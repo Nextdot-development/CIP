@@ -458,6 +458,20 @@ export interface BrainProvider {
   checkCreative(input: CheckInput): Promise<CheckAnalysis>;
 
   /**
+   * Which brand a creative is for, read off the creative itself.
+   *
+   * Asked before the rules are fetched, because which rules apply depends on
+   * the answer: 8PM Honey's rules are not Royal Ranthambore's, and applying
+   * every brand's rules to every creative is the thing Radico's QC document
+   * spends a section telling you not to do.
+   *
+   * The names it may answer with are sent to it, and the caller keeps the
+   * answer only if it is one of them. A brand this company does not have is
+   * not a brand.
+   */
+  identifyCreative(input: IdentifyInput): Promise<CreativeContext>;
+
+  /**
    * Reads one part of a market-intelligence document and reports what it states.
    *
    * Implementations send the part's text, its display name, the house's brand
@@ -652,6 +666,33 @@ export type CheckInput = {
    * of a hundred. Only a page of a PDF may excuse itself.
    */
   fromDocument: boolean;
+};
+
+export type IdentifyInput = {
+  bytes: Buffer;
+  mimeType: string;
+  /** The display name only. Never a path, never an id. */
+  filename: string;
+  /** The only brand names an answer may use. */
+  brands: string[];
+};
+
+/**
+ * What a creative turned out to be about.
+ *
+ * Every field may be null, and null is a real answer. Radico's QC document is
+ * explicit about it: "If any information cannot be identified confidently, mark
+ * it as UNKNOWN. Do not invent missing information." A guessed brand pulls in
+ * the wrong rules and fails a creative against another product's standards.
+ */
+export type CreativeContext = {
+  brand: string | null;
+  product: string | null;
+  /** How sure it is of the brand, 0 to 1. */
+  confidence: number;
+  /** What it saw that made it say so, in one line. */
+  evidence: string | null;
+  usage: BrainUsage;
 };
 
 export type CheckFinding = {

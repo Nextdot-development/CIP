@@ -872,23 +872,6 @@ describe('THE CHECKER: a creative judged against the brand, and nothing else', (
     return runCheck(mm, { fileId: file.id });
   }
 
-  it('throws away a flag that cites a rule nobody sent', async () => {
-    await rule('required', 'Carry a responsible drinking message.');
-    // R1 exists. R9 does not: that is a rule the model made up, and a flag
-    // grounded in nothing is exactly the output this product exists to stop.
-    fake.checkFindings = [
-      { ref: 'R9', dimension: 'compliance', severity: 'critical', message: 'Invented rule broken.' },
-      { ref: 'R1', dimension: 'compliance', severity: 'critical', message: 'No responsible drinking message.' },
-    ];
-
-    const check = await checkedImage();
-
-    assert.equal(check.status, 'ready');
-    assert.equal(check.flags.length, 1, 'a flag citing an unsent rule reached the reviewer');
-    assert.equal(check.flags[0]!.message, 'No responsible drinking message.');
-    assert.ok(check.flags[0]!.citedRule, 'the surviving flag does not say which rule it came from');
-  });
-
   // Fifteen of a nineteen-page deck came back needing fixing, and most of them
   // were dividers and title slides failing for not being adverts.
   it('reports a page that is not a creative as judged against nothing', async () => {
@@ -906,6 +889,49 @@ describe('THE CHECKER: a creative judged against the brand, and nothing else', (
     assert.equal(report.passed.length, 0);
     assert.equal(report.counts.rulesApplied, 0);
     assert.equal(report.mustFix.length, 0);
+  });
+
+  // The picker offered "Let CIP work it out" and CIP did not: with no brand
+  // named, only the house-wide rules were ever fetched, so 8PM Honey's
+  // prohibition on bees never applied to an 8PM Honey creative.
+  it('reads the brand off the creative when nobody says which it is', async () => {
+    await adminSql`
+      insert into company_brands (company_id, name) values (${mm.companyId}, '8PM')
+      on conflict do nothing
+    `;
+    await adminSql`
+      insert into compliance_rules (company_id, brand, category, requirement, rule, source)
+      values (${mm.companyId}, '8PM', 'other', 'forbidden', 'Bee imagery must not be used.', 'manual')
+    `;
+    fake.identified = { brand: '8PM', product: '8PM Honey', confidence: 0.92, evidence: 'the pack' };
+    fake.checkFindings = [
+      { ref: 'R1', dimension: 'compliance', severity: 'critical', message: 'A bee is present.' },
+    ];
+
+    const check = await checkedImage('honey-post.png');
+
+    assert.equal(check.brand, '8PM', 'the brand CIP read was not used');
+    assert.equal(check.detected?.product, '8PM Honey');
+    // The brand's own rule was fetched and applied, which is the whole point.
+    assert.ok(check.rulesConsidered >= 1);
+    assert.equal(check.flags.length, 1);
+  });
+
+  it('will not use a brand this company does not have', async () => {
+    // There is a roster, and the answer is not on it.
+    await adminSql`
+      insert into company_brands (company_id, name) values (${mm.companyId}, '8PM')
+      on conflict do nothing
+    `;
+    // A brand nobody has, said with great confidence. A guessed brand pulls in
+    // the wrong rules and fails a creative against standards never written for
+    // it, so none is the safer answer.
+    fake.identified = { brand: 'Glenfiddich', product: null, confidence: 0.99, evidence: 'a label' };
+
+    const check = await checkedImage('someone-elses.png');
+
+    assert.equal(check.brand, null);
+    assert.equal(check.detected?.confidence, 0.99);
   });
 
   it('throws away a flag that cites a rule nobody sent', async () => {

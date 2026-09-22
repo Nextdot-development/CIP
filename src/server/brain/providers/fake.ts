@@ -8,6 +8,8 @@ import type {
   BriefInput,
   AssetKind,
   CheckAnalysis,
+  CreativeContext,
+  IdentifyInput,
   CheckFinding,
   CheckInput,
   ChatAnswer,
@@ -53,7 +55,7 @@ export class FakeBrainProvider implements BrainProvider {
   /** Set by tests to exercise a failure path. */
   failWith: BrainFailed | null = null;
   /** Counts calls, so idempotency can be proved rather than assumed. */
-  calls = { image: 0, frames: 0, document: 0, pdfPage: 0, feedback: 0, brief: 0, check: 0, market: 0, chat: 0, ideas: 0, ocr: 0 };
+  calls = { image: 0, frames: 0, document: 0, pdfPage: 0, feedback: 0, brief: 0, check: 0, identify: 0, market: 0, chat: 0, ideas: 0, ocr: 0 };
 
   /**
    * What the next checks report. Null means a clean pass.
@@ -105,10 +107,11 @@ export class FakeBrainProvider implements BrainProvider {
     this.failWith = null;
     this.checkFindings = null;
     this.checkAssetKind = null;
+    this.identified = null;
     this.marketSignals = null;
     this.chatAnswer = null;
     this.lastChatInput = null;
-    this.calls = { image: 0, frames: 0, document: 0, pdfPage: 0, feedback: 0, brief: 0, check: 0, market: 0, chat: 0, ideas: 0, ocr: 0 };
+    this.calls = { image: 0, frames: 0, document: 0, pdfPage: 0, feedback: 0, brief: 0, check: 0, identify: 0, market: 0, chat: 0, ideas: 0, ocr: 0 };
   }
 
   private check(): void {
@@ -382,6 +385,25 @@ export class FakeBrainProvider implements BrainProvider {
       clarificationQuestion: needsClarification
         ? `Which campaign is this for: ${input.knownCampaigns.join(', ')}?`
         : null,
+      usage: { durationMs: 1 },
+    };
+  }
+
+  /** What the next identification says. Null means: it could not tell. */
+  identified: Partial<Omit<CreativeContext, 'usage'>> | null = null;
+
+  async identifyCreative(_input: IdentifyInput): Promise<CreativeContext> {
+    this.calls.identify += 1;
+    this.check();
+
+    // Null unless a test says otherwise, which is the honest default: a fake
+    // that guessed a brand would hide the fact that a guess pulls in the wrong
+    // rules.
+    return {
+      brand: this.identified?.brand ?? null,
+      product: this.identified?.product ?? null,
+      confidence: this.identified?.confidence ?? 0,
+      evidence: this.identified?.evidence ?? null,
       usage: { durationMs: 1 },
     };
   }
