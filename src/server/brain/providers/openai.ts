@@ -967,6 +967,16 @@ export class OpenAIBrainProvider implements BrainProvider {
               // faults came back at a hundred out of a hundred.
               'Set assetKind to "creative": this is a single creative somebody has ' +
               'submitted for review, not a page of a document.\n\n') +
+          (input.houseBrands.length > 0
+            ? // A rule about competitor logos was turned against the house
+              // itself: checking a Magic Moments creative as 8PM, the Brain
+              // asked for the Magic Moments logo to be removed. Which names
+              // belong to this company is a fact, not something to judge.
+              `These brands all belong to this same company: ${input.houseBrands.join(', ')}. ` +
+              'None of them is a competitor, whichever one this creative is for. If it ' +
+              'carries another of the house\'s brands, say so plainly — but do not report ' +
+              'it as a competitor logo.\n\n'
+            : '') +
           'Judge it only against the rules listed below. Each has a ref. Report a finding ' +
           'only where the creative visibly breaks a rule or visibly lacks something a rule ' +
           'requires, and cite exactly one ref per finding. Never report a rule that is not ' +

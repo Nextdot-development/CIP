@@ -934,6 +934,26 @@ describe('THE CHECKER: a creative judged against the brand, and nothing else', (
     assert.equal(check.detected?.confidence, 0.99);
   });
 
+  // A timestamp is not a brand. "8 PM" inside "03_53_48 PM" filed a Magic
+  // Moments creative under 8PM, and every check of it then ran against 8PM's
+  // rules and reported the Magic Moments logo as a competitor's.
+  it('does not read a brand out of the middle of a number', async () => {
+    const { brandForText } = await import('../src/server/brain/brands');
+    const roster = [
+      { name: '8PM', aliases: ['8 pm', '8pm'], note: null, facts: 0 },
+      { name: 'Rampur', aliases: ['rampur'], note: null, facts: 0 },
+    ];
+
+    assert.equal(brandForText('ChatGPT Image Sep 22, 2026, 03_53_48 PM.png', roster), null);
+    assert.equal(brandForText('Deck at 18pm.png', roster), null);
+
+    // And the ordinary cases still work. File names run words together all the
+    // time, and every one of these is the brand it looks like.
+    assert.equal(brandForText('8PM Honey Diwali.png', roster), '8PM');
+    assert.equal(brandForText('8 PM classic packshot.jpg', roster), '8PM');
+    assert.equal(brandForText('RampurAsava_Tilted.png', roster), 'Rampur');
+  });
+
   it('throws away a flag that cites a rule nobody sent', async () => {
     await rule('required', 'Carry a responsible drinking message.');
     // R1 exists. R9 does not: that is a rule the model made up, and a flag

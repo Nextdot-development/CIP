@@ -421,8 +421,9 @@ export async function runCheck(
   }
 
   const subject = await resolveSubject(scope, input);
-  // A reviewer's choice wins; otherwise what the file or the brief already says.
-  let brand = input.brand?.trim() || subject.brand;
+  // Only a reviewer's own choice skips the look. What the file is tagged with
+  // is the weakest answer of the three and is used last - see below.
+  let brand = input.brand?.trim() || null;
   const market = input.market?.trim() || subject.market;
 
   /**
@@ -462,6 +463,19 @@ export async function runCheck(
       }
     }
   }
+
+  /**
+   * The file's own tag, last of the three.
+   *
+   * It used to be second, ahead of looking at the creative, and it is the least
+   * trustworthy of them: a tag is often nobody's decision at all. A Magic
+   * Moments creative named "ChatGPT Image Sep 22, 2026, 03_53_48 PM.png" was
+   * filed under 8PM because "8 PM" appears in the timestamp, and every check of
+   * it then ran against 8PM's rules and reported the Magic Moments logo as a
+   * competitor's. The creative itself is better evidence than a label somebody
+   * - or something - once put on the file.
+   */
+  if (!brand) brand = subject.brand;
 
   // What the brand has consistently done. Patterns only - a single observation
   // is not something a creative can be faulted for departing from.
@@ -528,6 +542,7 @@ export async function runCheck(
       brand,
       market,
       rules: sent,
+      houseBrands: (await companyBrands(scope)).map((b) => b.name),
       fromDocument: subject.fromDocument,
     });
   } catch (error) {

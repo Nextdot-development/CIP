@@ -91,6 +91,38 @@ export function brandInRequest(requestText: string, brands: readonly string[]): 
  * called "rampur-and-jaisalmer.png" is about both and belongs to neither, and
  * picking one would file its knowledge under the wrong half.
  */
+/**
+ * Where a name appears as a name, not as part of a number.
+ *
+ * A plain indexOf found "8 PM" inside "ChatGPT Image Sep 22, 2026, 03_53_48
+ * PM.png" and filed a Magic Moments creative under 8PM. Everything downstream
+ * believed it: the QC check ran against 8PM's rules and reported the Magic
+ * Moments logo as a competitor's, and Brand DNA files a fact under whichever
+ * brand the file is tagged with, so a timestamp was quietly teaching CIP about
+ * the wrong brand.
+ *
+ * Only digits are guarded, and only against digits. The 8 in "48" is part of
+ * that number and cannot start a brand name. Letters are left alone on purpose:
+ * file names run words together all the time — RampurAsava_Tilted.png,
+ * WA-Sep-RoyalRanthambore-tiger.png, afribullgg.png — and every one of those is
+ * the brand it looks like. Demanding a clean word boundary on both sides
+ * un-tagged fifteen correctly filed files to fix one wrong one.
+ */
+function wholeWordIndex(haystack: string, needle: string): number {
+  if (needle.length === 0) return -1;
+
+  const digit = (ch: string | undefined): boolean => ch !== undefined && ch >= '0' && ch <= '9';
+  const startsWithDigit = digit(needle[0]);
+  const endsWithDigit = digit(needle[needle.length - 1]);
+
+  for (let at = haystack.indexOf(needle); at >= 0; at = haystack.indexOf(needle, at + 1)) {
+    if (startsWithDigit && digit(haystack[at - 1])) continue;
+    if (endsWithDigit && digit(haystack[at + needle.length])) continue;
+    return at;
+  }
+  return -1;
+}
+
 export function brandForText(text: string, brands: readonly Brand[]): string | null {
   const haystack = text.toLowerCase();
 
@@ -111,7 +143,7 @@ export function brandForText(text: string, brands: readonly Brand[]): string | n
   const matched = new Set<string>();
 
   for (const { needle, brand } of needles) {
-    const at = haystack.indexOf(needle);
+    const at = wholeWordIndex(haystack, needle);
     if (at < 0) continue;
 
     const inside = consumed.some((span) => at >= span.start && at + needle.length <= span.end);

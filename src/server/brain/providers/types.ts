@@ -657,6 +657,16 @@ export type CheckInput = {
   market: string | null;
   rules: CheckRule[];
   /**
+   * Every brand this company owns.
+   *
+   * Sent so that a rule about competitor logos cannot be turned against the
+   * house itself. Checking a Magic Moments creative as 8PM, the Brain read the
+   * Magic Moments logo as a competitor's and asked for it to be removed - from
+   * the company that owns it. Which names are the house's is a fact about the
+   * company, not a judgement for a model.
+   */
+  houseBrands: string[];
+  /**
    * Whether this is one page of a document rather than a creative on its own.
    *
    * A deck is mostly not adverts, so its pages have to be allowed to say they
