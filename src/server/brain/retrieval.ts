@@ -2,6 +2,7 @@ import 'server-only';
 import { withCompanyScope } from '../db';
 import type { CompanyScope } from '../db';
 import { embedder, toVectorLiteral } from '../drive/embedding';
+import type { Embedder } from '../drive/embedding/types';
 import { BRAIN_LIMITS } from './providers/types';
 import { similaritySupported } from './capabilities';
 
@@ -55,8 +56,26 @@ export type RetrievedLesson = {
   evidenceCount: number;
 };
 
-/** Below this two things are not meaningfully related. Matches Phase 4's floor. */
-const MIN_SIMILARITY = 0.3;
+/**
+ * Below this two things are not meaningfully related.
+ *
+ * Asked of the embedder rather than fixed here, because the number only means
+ * anything alongside the vectors it judges. Each embedder measures its own and
+ * says so, and semanticSearch.ts has always asked. This module did not: it
+ * hardcoded 0.3, which is OpenAI's figure, and applied it to whatever was
+ * actually running.
+ *
+ * With no API key the deterministic bag-of-words embedder runs instead, and its
+ * floor is 0.25 — measured, and documented in fake.ts as sitting between 0.16
+ * for unrelated text and 0.28 for the weakest true match. A real match landing
+ * in that gap was thrown away. CI has no key, so CI saw it: a house-wide file
+ * that plainly answered the query was reported as withheld from the brand it
+ * applies to, on every run, while the same test passed on any machine with a
+ * key in its environment.
+ */
+function minSimilarity(active: Embedder): number {
+  return active.minRelevanceScore;
+}
 
 /**
  * Assets whose understanding resembles the request.
@@ -101,7 +120,7 @@ export async function similarAssets(
     return [];
   }
 
-  const maxDistance = 1 - MIN_SIMILARITY;
+  const maxDistance = 1 - minSimilarity(active);
 
   const rows = await withCompanyScope(scope, async (tx) =>
     tx<
@@ -322,7 +341,7 @@ export async function similarPosts(
     return [];
   }
 
-  const maxDistance = 1 - MIN_SIMILARITY;
+  const maxDistance = 1 - minSimilarity(active);
 
   // The posts table only exists once 0011 has run. A database that has not
   // migrated yet still plans; it simply has no posts to offer.
