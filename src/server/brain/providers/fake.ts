@@ -392,7 +392,9 @@ export class FakeBrainProvider implements BrainProvider {
 
     // A creative unless a test says otherwise: almost every test is about what
     // happens to a creative, and making each one say so would be noise.
-    const assetKind = this.checkAssetKind ?? 'creative';
+    // The same rule the real provider follows: only a page of a document may
+    // say it is not a creative.
+    const assetKind = input.fromDocument ? (this.checkAssetKind ?? 'creative') : 'creative';
 
     return {
       assetKind,

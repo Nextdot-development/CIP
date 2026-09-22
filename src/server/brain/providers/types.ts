@@ -642,6 +642,16 @@ export type CheckInput = {
   brand: string | null;
   market: string | null;
   rules: CheckRule[];
+  /**
+   * Whether this is one page of a document rather than a creative on its own.
+   *
+   * A deck is mostly not adverts, so its pages have to be allowed to say they
+   * are dividers. A picture somebody uploaded to a QC tool is a different
+   * matter: they are asking whether that creative can go out, and answering
+   * "this looks like a document page" checks nothing and reports a hundred out
+   * of a hundred. Only a page of a PDF may excuse itself.
+   */
+  fromDocument: boolean;
 };
 
 export type CheckFinding = {

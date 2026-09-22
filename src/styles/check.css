@@ -261,3 +261,12 @@
 }
 .qc-held li button:hover:not(:disabled) { border-color: var(--line-strong); background: var(--surface); }
 .qc-held li button:disabled { opacity: .5; }
+
+.qc-held-toggle {
+  width: 100%; display: flex; align-items: center; gap: 9px;
+  padding: 4px 0; background: transparent; border: 0; color: var(--ink-500);
+  font-size: 12.5px; text-align: left;
+}
+.qc-held-toggle > span:first-of-type { flex: 1; }
+.qc-held-toggle:hover:not(:disabled) { color: var(--ink-900); }
+.qc-held-toggle svg { flex: none; }

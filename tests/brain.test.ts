@@ -846,6 +846,26 @@ describe('THE CHECKER: a creative judged against the brand, and nothing else', (
     return rows[0]!.id;
   }
 
+  /**
+   * An uploaded picture that says it is a chart is checked anyway.
+   *
+   * Somebody submitting one creative is asking whether it can go out. Letting
+   * it answer "this is a document page" checks nothing and reports a hundred
+   * out of a hundred, which is how a creative with real faults came back clean.
+   */
+  it('checks a submitted picture even when the model calls it a document page', async () => {
+    await rule('required', 'Carry a responsible drinking message.');
+    fake.checkAssetKind = 'document_page';
+    fake.checkFindings = [
+      { ref: 'R1', dimension: 'compliance', severity: 'critical', message: 'The warning is missing.' },
+    ];
+
+    const check = await checkedImage('a-real-banner.png');
+
+    assert.equal(check.assetKind, 'creative');
+    assert.equal(check.flags.length, 1, 'a submitted creative excused itself and was never checked');
+  });
+
   async function checkedImage(name = 'banner.png') {
     const { runCheck } = await import('../src/server/brain/checker');
     const file = await uploadImage(mm, name);
@@ -871,25 +891,40 @@ describe('THE CHECKER: a creative judged against the brand, and nothing else', (
 
   // Fifteen of a nineteen-page deck came back needing fixing, and most of them
   // were dividers and title slides failing for not being adverts.
-  it('does not judge a page that is not a creative', async () => {
+  it('reports a page that is not a creative as judged against nothing', async () => {
     await rule('required', 'Carry a responsible drinking message.');
-    fake.checkAssetKind = 'document_page';
-    fake.checkFindings = [
-      { ref: 'R1', dimension: 'compliance', severity: 'critical', message: 'The warning is missing.' },
-    ];
-
-    const check = await checkedImage('contents-slide.png');
-
-    assert.equal(check.assetKind, 'document_page');
-    assert.equal(check.flags.length, 0, 'a divider slide was failed for not being an advert');
+    const real = await checkedImage('banner.png');
 
     const { reportOn } = await import('../src/server/brain/qc');
-    const report = await reportOn(mm, check);
+    // The same check, as it comes back for a divider slide: no flags, and a
+    // note that it was never an advert.
+    const report = await reportOn(mm, { ...real, assetKind: 'document_page', flags: [] });
+
     assert.equal(report.verdict, 'not_a_creative');
-    // It passed nothing, because nothing was held up against it.
+    // It passed nothing, because nothing was held up against it. Listing the
+    // rules as passed would claim work that never happened.
     assert.equal(report.passed.length, 0);
     assert.equal(report.counts.rulesApplied, 0);
+    assert.equal(report.mustFix.length, 0);
   });
+
+  it('throws away a flag that cites a rule nobody sent', async () => {
+    await rule('required', 'Carry a responsible drinking message.');
+    // R1 exists. R9 does not: that is a rule the model made up, and a flag
+    // grounded in nothing is exactly the output this product exists to stop.
+    fake.checkFindings = [
+      { ref: 'R9', dimension: 'compliance', severity: 'critical', message: 'Invented rule broken.' },
+      { ref: 'R1', dimension: 'compliance', severity: 'critical', message: 'No responsible drinking message.' },
+    ];
+
+    const check = await checkedImage();
+
+    assert.equal(check.status, 'ready');
+    assert.equal(check.flags.length, 1, 'a flag citing an unsent rule reached the reviewer');
+    assert.equal(check.flags[0]!.message, 'No responsible drinking message.');
+    assert.ok(check.flags[0]!.citedRule, 'the surviving flag does not say which rule it came from');
+  });
+
 
   // A rule that grades itself is the whole point of loading a document that
   // grades its rules. Without this, "tiger imagery is an approved association"

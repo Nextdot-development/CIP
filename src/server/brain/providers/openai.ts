@@ -893,17 +893,25 @@ export class OpenAIBrainProvider implements BrainProvider {
           (input.brand ? ` for the brand ${input.brand}` : '') +
           (input.market ? ` in ${input.market}` : '') +
           '.\n\n' +
-          'First say what you are looking at.\n' +
-          '- "creative": an advert, post, banner, packshot, or any page meant to promote ' +
-          'the product to a customer.\n' +
-          '- "document_page": part of a document rather than an advert — a title slide, a ' +
-          'section divider, a contents page, a chart, a table, a page of body text, an ' +
-          'agenda, a thank-you slide.\n' +
-          '- "blank": nothing on it worth judging.\n\n' +
-          'If it is not a creative, return no findings at all. The rules below are about ' +
-          'advertising, and a divider slide has not broken one by lacking a logo in the ' +
-          'top-right or by not showing the product. Saying so is the right answer, not a ' +
-          'failure to find anything.\n\n' +
+          (input.fromDocument
+            ? 'This is one page of a document, so first say what is on it.\n' +
+              '- "creative": an advert, post, banner, packshot, or anything laid out to ' +
+              'promote the product to a customer.\n' +
+              '- "document_page": the document\'s own furniture — a title slide, a section ' +
+              'divider, a contents page, a chart, a table, a page of body text, an agenda, ' +
+              'a thank-you slide.\n' +
+              '- "blank": nothing on it worth judging.\n\n' +
+              'If it is not a creative, return no findings at all. The rules below are ' +
+              'about advertising, and a divider slide has not broken one by lacking a logo ' +
+              'in the top-right or by not showing the product.\n\n' +
+              'When it could be either, say "creative". A missed fault on a real advert is ' +
+              'far worse than a divider that was checked anyway.\n\n'
+            : // Somebody uploaded this one picture and asked whether it can go
+              // out. Letting it answer "this looks like a chart" checks nothing
+              // and reports it as perfect, which is how a creative with real
+              // faults came back at a hundred out of a hundred.
+              'Set assetKind to "creative": this is a single creative somebody has ' +
+              'submitted for review, not a page of a document.\n\n') +
           'Judge it only against the rules listed below. Each has a ref. Report a finding ' +
           'only where the creative visibly breaks a rule or visibly lacks something a rule ' +
           'requires, and cite exactly one ref per finding. Never report a rule that is not ' +
@@ -933,8 +941,11 @@ export class OpenAIBrainProvider implements BrainProvider {
       findings: CheckFinding[];
     }>(content, CHECK_SCHEMA, 'creative_check', 3_000);
 
+    // Only a page of a document may excuse itself. A single uploaded creative
+    // that decides it is a chart checks nothing and scores a hundred, which is
+    // a worse answer than any finding it might have got wrong.
     const assetKind =
-      parsed.assetKind === 'document_page' || parsed.assetKind === 'blank'
+      input.fromDocument && (parsed.assetKind === 'document_page' || parsed.assetKind === 'blank')
         ? parsed.assetKind
         : 'creative';
 

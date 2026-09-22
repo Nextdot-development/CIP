@@ -284,6 +284,8 @@ async function resolveSubject(
   mimeType: string;
   brand: string | null;
   market: string | null;
+  /** True only for a page drawn out of a PDF. */
+  fromDocument: boolean;
 }> {
   const fileId = input.fileId?.trim() || null;
   const generationId = input.generationId?.trim() || null;
@@ -333,6 +335,7 @@ async function resolveSubject(
         mimeType: band.mimeType,
         brand: file.brand,
         market: file.market,
+        fromDocument: true,
       };
     }
 
@@ -350,6 +353,7 @@ async function resolveSubject(
       mimeType: file.mime_type,
       brand: file.brand,
       market: file.market,
+      fromDocument: false,
     };
   }
 
@@ -374,6 +378,8 @@ async function resolveSubject(
     fileId: null,
     generationId,
     subject: `Generated creative ${generationId!.slice(0, 8)}`,
+    // CIP made it to be an advert. It does not get to claim it is a chart.
+    fromDocument: false,
     bytes: asset.bytes,
     mimeType: asset.mimeType,
     brand: briefs[0]?.brand ?? null,
@@ -475,6 +481,7 @@ export async function runCheck(
       brand,
       market,
       rules: sent,
+      fromDocument: subject.fromDocument,
     });
   } catch (error) {
     const failure =

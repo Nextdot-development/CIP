@@ -153,6 +153,13 @@ export function QcSection({
   // deck is still being looked at.
   const [pages, setPages] = useState<PageReport[]>([]);
   const [search, setSearch] = useState('');
+  // Folded away. Two hundred file names between the dropzone and the report is
+  // how a finished report ends up eleven screens below the fold.
+  const [browsing, setBrowsing] = useState(false);
+  // Where the report will appear. A deck's verdict lands below the dropzone and
+  // the file list, and somebody who has just waited four minutes should not
+  // have to go looking for it.
+  const results = useRef<HTMLDivElement>(null);
 
   // What a check would cover, asked again whenever the brand or the market
   // changes. The number on screen has to be the number that will be used.
@@ -205,6 +212,11 @@ export function QcSection({
       const { report } = (await res.json()) as { report: Report };
       collected.push({ page, report });
       setPages([...collected]);
+      // Once, when the first page lands. Scrolling on every page would fight
+      // anybody reading the ones already there.
+      if (collected.length === 1) {
+        results.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
     }
 
     setPhase({ at: 'done', name: label });
@@ -338,7 +350,9 @@ export function QcSection({
                 ? `Looking at page ${phase.page} of ${phase.of}…`
                 : 'Drop a creative here, or click to browse'}
           </span>
-          <span className="f">PNG, JPEG, WebP or PDF. A PDF is checked one page at a time.</span>
+          <span className="f">
+            PNG, JPEG, WebP or PDF, up to 4.5 MB. A PDF is checked one page at a time.
+          </span>
         </button>
         <input
           ref={input}
@@ -382,13 +396,25 @@ export function QcSection({
             4.5 MB — the hosting platform's limit, not CIP's — and a deck is
             routinely larger. A file already here never went through it. */}
         <div className="qc-held">
+          <button
+            type="button"
+            className="qc-held-toggle"
+            onClick={() => setBrowsing((open) => !open)}
+            disabled={busy}
+          >
+            <Icon name={browsing ? 'chevron-down' : 'chevron-right'} size={14} />
+            <span>Or check something already in CIP — any size, no 4.5 MB limit</span>
+            <span className="tiny muted">{held.length} files</span>
+          </button>
+          {browsing && (
+          <>
           <label className="tiny muted" htmlFor="qc-held-search">
-            Or check something already in CIP — any size
+            Search by name
           </label>
           <input
             id="qc-held-search"
             type="search"
-            placeholder="Search by name"
+            placeholder="Deck, banner, packshot…"
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             disabled={busy}
@@ -411,6 +437,8 @@ export function QcSection({
           {held.length === 0 && (
             <p className="tiny muted">CIP holds no pictures or PDFs yet.</p>
           )}
+          </>
+          )}
         </div>
 
         {phase.at === 'done' && (
@@ -420,9 +448,11 @@ export function QcSection({
         )}
       </div>
 
-      {pages.length > 0 && (
-        <Deck pages={pages} showPassed={showPassed} onTogglePassed={() => setShowPassed((v) => !v)} />
-      )}
+      <div ref={results}>
+        {pages.length > 0 && (
+          <Deck pages={pages} showPassed={showPassed} onTogglePassed={() => setShowPassed((v) => !v)} />
+        )}
+      </div>
     </>
   );
 }
