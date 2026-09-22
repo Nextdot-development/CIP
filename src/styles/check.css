@@ -244,3 +244,20 @@
 }
 .qc-progress-track i { display: block; height: 100%; background: var(--brand); transition: width .3s ease; }
 .qc-verdict.tone-neutral { color: var(--ink-500); }
+
+/* Files CIP already holds, offered beside the dropzone: an upload through the
+   site carries at most 4.5 MB and a deck is routinely larger. */
+.qc-held { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line-soft); }
+.qc-held > label { display: block; margin-bottom: 8px; }
+.qc-held input[type="search"] {
+  width: 100%; max-width: 360px; padding: 8px 11px; border-radius: 9px;
+  border: 1px solid var(--line); background: var(--surface); color: inherit; font-size: 12.5px;
+}
+.qc-held ul { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; }
+.qc-held li button {
+  width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 14px;
+  padding: 9px 12px; border-radius: 9px; border: 1px solid transparent;
+  background: transparent; color: inherit; text-align: left; font-size: 12.5px;
+}
+.qc-held li button:hover:not(:disabled) { border-color: var(--line-strong); background: var(--surface); }
+.qc-held li button:disabled { opacity: .5; }

@@ -17,6 +17,9 @@ import type { CheckFlag } from '@/server/brain/checker';
 
 type Coverage = { rules: number; verifiedRules: number; facts: number };
 
+/** Something CIP already holds, which can be checked whatever its size. */
+type Held = { id: string; name: string; isPdf: boolean; sizeMb: number };
+
 type Report = {
   check: {
     id: string;
@@ -92,18 +95,47 @@ async function findByName(name: string): Promise<string | null> {
   return body?.files?.find((f) => f.name === name)?.id ?? null;
 }
 
+/**
+ * Why the upload did not work, in words that say what to do about it.
+ *
+ * "That file could not be uploaded" is not an answer. The usual cause is not
+ * anything CIP decides: a request to a Vercel function carries at most 4.5 MB,
+ * and a deck is routinely larger. It returns 413 before any of our code runs,
+ * with a body that is not JSON, so the message has to be worked out from the
+ * status and the file rather than read off the response.
+ */
+async function whyUploadFailed(res: Response | null, file: File): Promise<string> {
+  const mb = (file.size / 1024 / 1024).toFixed(1);
+
+  if (!res) return 'The upload did not reach CIP. Check the connection and try again.';
+
+  if (res.status === 413) {
+    return (
+      `This file is ${mb} MB, and an upload through the site is capped at 4.5 MB — ` +
+      'a limit of the hosting platform, not of CIP. Add it through Add data to brain ' +
+      'from a smaller export, or pick it below if it is already in CIP.'
+    );
+  }
+
+  const body = (await res.json().catch(() => null)) as { message?: string } | null;
+  if (body?.message) return body.message;
+  return `The upload failed (${res.status}). The file is ${mb} MB.`;
+}
+
 export function QcSection({
   configured,
   brands,
   activeBrand,
   markets,
   coverage: initialCoverage,
+  held,
 }: {
   configured: boolean;
   brands: string[];
   activeBrand: string | null;
   markets: string[];
   coverage: Coverage;
+  held: Held[];
 }) {
   const input = useRef<HTMLInputElement>(null);
   const [brand, setBrand] = useState(activeBrand ?? '');
@@ -120,6 +152,7 @@ export function QcSection({
   // Filled in as each page comes back, so findings appear while the rest of the
   // deck is still being looked at.
   const [pages, setPages] = useState<PageReport[]>([]);
+  const [search, setSearch] = useState('');
 
   // What a check would cover, asked again whenever the brand or the market
   // changes. The number on screen has to be the number that will be used.
@@ -139,34 +172,8 @@ export function QcSection({
 
   const busy = phase.at === 'uploading' || phase.at === 'checking';
 
-  const check = async (file: File) => {
-    setPages([]);
-    setPhase({ at: 'uploading', name: file.name });
-
-    const form = new FormData();
-    form.append('file', file);
-    if (brand) form.append('brand', brand);
-
-    const upload = await fetch('/api/drive/files', { method: 'POST', body: form }).catch(() => null);
-
-    let fileId: string | null = null;
-    if (upload?.ok) {
-      // The upload route answers with the file itself, not with it wrapped.
-      fileId = ((await upload.json()) as { id: string }).id;
-    } else {
-      // "A file called X is already here." is not a failure here. Somebody
-      // dropping a deck onto a QC page wants that deck checked, and whether CIP
-      // happens to hold a copy already is not their problem.
-      fileId = await findByName(file.name);
-      if (!fileId) {
-        const body: { message?: string } = upload ? await upload.json().catch(() => ({})) : {};
-        setPhase({ at: 'failed', message: body.message ?? 'That file could not be uploaded.' });
-        return;
-      }
-    }
-
-    // How many pages there are, before any of them is looked at, so the count
-    // on screen is real rather than a guess that grows.
+  /** Everything after the file is in CIP: count the pages, then walk them. */
+  const checkStored = async (fileId: string, label: string) => {
     const counted = await fetch(`/api/brain/qc/pages?fileId=${fileId}`).catch(() => null);
     const total = counted?.ok
       ? Math.min(MAX_PAGES, ((await counted.json()) as { pages: number }).pages)
@@ -177,7 +184,7 @@ export function QcSection({
     // would leave the screen silent for all of them.
     const collected: PageReport[] = [];
     for (let page = 1; page <= total; page += 1) {
-      setPhase({ at: 'checking', name: file.name, page, of: total });
+      setPhase({ at: 'checking', name: label, page, of: total });
 
       const res = await fetch('/api/brain/qc', {
         method: 'POST',
@@ -200,7 +207,40 @@ export function QcSection({
       setPages([...collected]);
     }
 
-    setPhase({ at: 'done', name: file.name });
+    setPhase({ at: 'done', name: label });
+  };
+
+  const checkHeld = async (file: Held) => {
+    setPages([]);
+    await checkStored(file.id, file.name);
+  };
+
+  const check = async (file: File) => {
+    setPages([]);
+    setPhase({ at: 'uploading', name: file.name });
+
+    const form = new FormData();
+    form.append('file', file);
+    if (brand) form.append('brand', brand);
+
+    const upload = await fetch('/api/drive/files', { method: 'POST', body: form }).catch(() => null);
+
+    let fileId: string | null = null;
+    if (upload?.ok) {
+      // The upload route answers with the file itself, not with it wrapped.
+      fileId = ((await upload.json()) as { id: string }).id;
+    } else {
+      // "A file called X is already here" is not a failure here. Somebody
+      // dropping a deck onto a QC page wants that deck checked, and whether CIP
+      // happens to hold a copy already is not their problem.
+      fileId = await findByName(file.name);
+      if (!fileId) {
+        setPhase({ at: 'failed', message: await whyUploadFailed(upload, file) });
+        return;
+      }
+    }
+
+    await checkStored(fileId, file.name);
   };
 
   return (
@@ -338,6 +378,41 @@ export function QcSection({
             )}
           </div>
         )}
+        {/* What CIP already holds. An upload through the site carries at most
+            4.5 MB — the hosting platform's limit, not CIP's — and a deck is
+            routinely larger. A file already here never went through it. */}
+        <div className="qc-held">
+          <label className="tiny muted" htmlFor="qc-held-search">
+            Or check something already in CIP — any size
+          </label>
+          <input
+            id="qc-held-search"
+            type="search"
+            placeholder="Search by name"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            disabled={busy}
+          />
+          <ul>
+            {held
+              .filter((f) => f.name.toLowerCase().includes(search.trim().toLowerCase()))
+              .slice(0, 12)
+              .map((file) => (
+                <li key={file.id}>
+                  <button type="button" onClick={() => void checkHeld(file)} disabled={busy || !configured}>
+                    <span className="truncate">{file.name}</span>
+                    <span className="tiny muted">
+                      {file.isPdf ? 'PDF' : 'image'} · {file.sizeMb} MB
+                    </span>
+                  </button>
+                </li>
+              ))}
+          </ul>
+          {held.length === 0 && (
+            <p className="tiny muted">CIP holds no pictures or PDFs yet.</p>
+          )}
+        </div>
+
         {phase.at === 'done' && (
           <p className="tiny muted" style={{ marginTop: 12 }}>
             Finished {phase.name} — {pages.length} page{pages.length === 1 ? '' : 's'} checked.
