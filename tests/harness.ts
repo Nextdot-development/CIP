@@ -146,6 +146,26 @@ async function closeApplicationPool(): Promise<void> {
 
 const APP_PASSWORD = 'test-app-password';
 
+/**
+ * Swaps the role in a connection URL, keeping anything the pooler needs.
+ *
+ * Supabase's pooler reads the tenant out of the username: the admin user is
+ * "postgres.<project-ref>", not "postgres". Setting the username to a bare
+ * "cip_app" dropped the project ref with it, and every test that touched the
+ * database died on connect with "(ENOIDENTIFIER) no tenant identifier provided
+ * (external_id or sni_hostname required)" — 122 of them, which read as the
+ * suite being broken rather than as one string being built wrong.
+ *
+ * The suffix is whatever followed the first dot, so a plain "postgres" on a
+ * local or embedded server becomes a plain "cip_app" exactly as before.
+ */
+function asRole(url: string, role: string): URL {
+  const next = new URL(url);
+  const [, ...tenant] = decodeURIComponent(next.username).split('.');
+  next.username = tenant.length > 0 ? `${role}.${tenant.join('.')}` : role;
+  return next;
+}
+
 export async function startTestDatabase(): Promise<TestDb> {
   const external = process.env.TEST_DATABASE_ADMIN_URL;
   if (external) {
@@ -154,8 +174,7 @@ export async function startTestDatabase(): Promise<TestDb> {
     // a test one, or migrating a test database would lock the running
     // application out of the production database on the same cluster.
     const appPassword = process.env.CIP_APP_DB_PASSWORD ?? APP_PASSWORD;
-    const appUrl = new URL(external);
-    appUrl.username = 'cip_app';
+    const appUrl = asRole(external, 'cip_app');
     appUrl.password = appPassword;
     // Resolve once, then use the same address for both roles, so the admin and
     // application connections cannot end up pointed at different servers.
