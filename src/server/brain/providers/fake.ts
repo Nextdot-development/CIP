@@ -210,7 +210,15 @@ export class FakeBrainProvider implements BrainProvider {
     const tone = pick(digest, 0, ['warm and unhurried', 'direct', 'playful']);
 
     return {
-      summary: `Document "${input.filename}" written in a ${tone} tone.`,
+      // The opening of the document, not only its name and a tone.
+      //
+      // A summary is what gets embedded, so a summary that keeps none of the
+      // document's words leaves nothing for similarity to find: searching for
+      // what a file plainly says returned it on any machine with an API key
+      // and never on CI, where both the Brain and the embedder are these
+      // fakes. A stand-in that drops the property under test is not standing
+      // in for anything.
+      summary: `Document "${input.filename}" written in a ${tone} tone. ${opening(input.text)}`,
       extractedText: input.text.slice(0, 400),
       structured: {
         objects: [], products: [], brandElements: [], logoPresent: false,
@@ -473,6 +481,20 @@ export class FakeBrainProvider implements BrainProvider {
 }
 
 /** Stable choice from a digest, so the same input always picks the same value. */
+/**
+ * The first words of a document, for its summary to carry.
+ *
+ * Trimmed to a sentence or so: enough that a search for what the document says
+ * can find it, short enough that the summary still reads as a summary.
+ */
+function opening(text: string): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  if (flat.length === 0) return '';
+  const stop = flat.indexOf('. ');
+  const first = stop > 0 ? flat.slice(0, stop + 1) : flat;
+  return first.length > 200 ? `${first.slice(0, 200).trimEnd()}…` : first;
+}
+
 function pick(digest: string, offset: number, options: string[]): string {
   const value = parseInt(digest.slice(offset, offset + 2), 16);
   return options[value % options.length]!;

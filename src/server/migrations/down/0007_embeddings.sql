@@ -10,3 +10,12 @@ alter table drive_file_chunks
   drop column if exists next_embedding_attempt_at;
 
 alter role cip_app set search_path = public;
+
+-- The database-level setting goes back too, under the same guard as the one
+-- that set it: a role that could not set it cannot reset it either.
+do $$
+begin
+  execute format('alter database %I set search_path = public', current_database());
+exception
+  when insufficient_privilege then null;
+end $$;
