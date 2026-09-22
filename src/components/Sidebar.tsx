@@ -37,6 +37,10 @@ const BRAIN_NAV: NavItem[] = [
 
 const MODULE_NAV: NavItem[] = [
   { label: 'Creative Search', icon: 'search', href: '/search' },
+  // Two doors onto the same checker, because they answer different questions.
+  // Creative QC takes something that is not in CIP yet and says whether it can
+  // go out; Consistency Check goes back over work CIP already holds.
+  { label: 'Creative QC', icon: 'check', href: '/qc' },
   { label: 'Consistency Check', icon: 'shield', href: '/check' },
   { label: 'Campaign Ideation', icon: 'compass', href: '/ask' },
   { label: 'Market Intelligence', icon: 'bars', href: '/market' },

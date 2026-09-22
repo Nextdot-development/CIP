@@ -1,0 +1,668 @@
+/**
+ * Radico Khaitan's creative QC rules, as written in their own QC document.
+ *
+ *   Radico_Khaitan_AI_Creative_QC_Master_Package.md, Version 1.0, Sept 2026
+ *
+ * WHY THESE ARE TYPED OUT AND NOT EXTRACTED BY A MODEL
+ *
+ * The document says it itself, in section 31: "DO NOT ALLOW THE MODEL TO INVENT
+ * RULES". A model asked to read 1,800 lines of prose and emit a rule list will
+ * produce a plausible one, and the rules it quietly invents are indistinguishable
+ * from the rules it read. These are what the document says, transcribed, with
+ * the section each came from recorded beside it - so any one of them can be
+ * checked against the page it claims to come from in about ten seconds.
+ *
+ * WHAT IS DELIBERATELY NOT HERE
+ *
+ * Section 37 lists the products whose knowledge is not yet complete - the
+ * individual Rampur variants, Kohinoor, Contessa, Morpheus, Jaisalmer, Burn
+ * Barrel, Brown Barley, 8PM Premium Black, Virasat, Sangam, Ankahi - and says
+ * plainly: "Do not fabricate product rules for these products." There are none
+ * here for them.
+ *
+ * Section 10 and 11 describe 8PM's visual and copy preferences at length -
+ * bold, premium, avoid cartoonish, avoid slang. Those are preferences, and the
+ * document's own section 20 separates PREFERRED from MANDATORY: "Recommended,
+ * but absence alone is not a violation." They are loaded as `preferred` with
+ * `informational` severity, which is what stops them failing a creative.
+ *
+ * NOTHING HERE IS VERIFIED
+ *
+ * Every rule loads unverified. A person still has to confirm each one before it
+ * can fail a creative outright, because a rule nobody has read is a rule nobody
+ * has agreed to - and the document is a draft written by one team, not a signed
+ * compliance position.
+ */
+
+export type RuleType =
+  | 'mandatory'
+  | 'prohibited'
+  | 'preferred'
+  | 'allowed'
+  | 'conditional'
+  | 'contextual'
+  | 'human_review';
+
+export type RuleSeverity = 'critical' | 'major' | 'minor' | 'informational';
+
+export type QcRuleSeed = {
+  /** The document's own identifier, or one built the same way where it gives none. */
+  code: string;
+  /** Which section of the document it was read from. */
+  from: string;
+  brand: string | null;
+  product: string | null;
+  market: string | null;
+  domain: string;
+  ruleType: RuleType;
+  severity: RuleSeverity;
+  rule: string;
+  rationale: string | null;
+  allowed: string[];
+  prohibited: string[];
+  humanReview: boolean;
+  /** How CIP's older, two-valued column has to read this rule. */
+  requirement: 'required' | 'forbidden';
+  category: 'disclaimer' | 'audience' | 'claim' | 'placement' | 'medium' | 'other';
+};
+
+const G = (
+  n: string,
+  fields: Omit<QcRuleSeed, 'code' | 'from' | 'brand' | 'product' | 'market'>,
+): QcRuleSeed => ({
+  code: `RADICO-GLOBAL-${n}`,
+  from: `§5 RADICO-GLOBAL-${n}`,
+  brand: null,
+  product: null,
+  market: null,
+  ...fields,
+});
+
+export const RADICO_QC_RULES: QcRuleSeed[] = [
+  // ---- §5 Global rules -------------------------------------------------
+  G('001', {
+    domain: 'Language',
+    ruleType: 'mandatory',
+    severity: 'minor',
+    rule: 'Use British English spelling. "Whisky", never "Whiskey".',
+    rationale:
+      'Radico communication uses British English. An official product name, registered asset, market requirement or supplied client artwork overrides this; flag only where there is a conflict.',
+    allowed: ['Whisky'],
+    prohibited: ['Whiskey'],
+    humanReview: false,
+    requirement: 'required',
+    category: 'other',
+  }),
+  G('002', {
+    domain: 'Logo',
+    ruleType: 'mandatory',
+    severity: 'major',
+    rule: 'The brand logo should sit in the top-right corner.',
+    rationale: 'Unless a documented campaign or format exception exists.',
+    allowed: [],
+    prohibited: [],
+    humanReview: true,
+    requirement: 'required',
+    category: 'placement',
+  }),
+  G('003', {
+    domain: 'Logo',
+    ruleType: 'prohibited',
+    severity: 'critical',
+    rule: 'Do not alter, distort, recolour, stretch, rotate or otherwise modify an approved brand logo.',
+    rationale: null,
+    allowed: [],
+    prohibited: ['Distorted logo', 'Recoloured logo', 'Stretched logo', 'Rotated logo'],
+    humanReview: false,
+    requirement: 'forbidden',
+    category: 'other',
+  }),
+  G('004', {
+    domain: 'Pack / Product',
+    ruleType: 'contextual',
+    severity: 'major',
+    rule: 'Where the creative is meant to communicate the product, the approved pack should be visible.',
+    rationale: 'Unless the campaign brief explicitly permits a pack-free execution.',
+    allowed: [],
+    prohibited: [],
+    humanReview: true,
+    requirement: 'required',
+    category: 'other',
+  }),
+  G('005', {
+    domain: 'Pack / Product',
+    ruleType: 'prohibited',
+    severity: 'critical',
+    rule: 'Product packaging must not be distorted or incorrectly generated.',
+    rationale:
+      'Covers incorrect bottle proportions, label, logo, cap, bottle colour, liquid colour, AI-generated packaging errors, and missing or malformed packaging elements.',
+    allowed: [],
+    prohibited: [
+      'Incorrect bottle proportions',
+      'Incorrect label',
+      'Incorrect cap',
+      'Incorrect bottle colour',
+      'Incorrect liquid colour',
+      'AI-generated packaging errors',
+      'Malformed packaging elements',
+    ],
+    humanReview: false,
+    requirement: 'forbidden',
+    category: 'other',
+  }),
+  G('006', {
+    domain: 'Competitor',
+    ruleType: 'prohibited',
+    severity: 'critical',
+    rule: 'Competitor brand logos must not appear.',
+    rationale: 'Unless explicitly required by an approved campaign or legal context.',
+    allowed: [],
+    prohibited: ['Competitor logos'],
+    humanReview: false,
+    requirement: 'forbidden',
+    category: 'other',
+  }),
+  G('007', {
+    domain: 'Competitor',
+    ruleType: 'human_review',
+    severity: 'major',
+    rule: 'Flag obvious competitor packaging or branding that could create confusion.',
+    rationale:
+      'Do not flag generic shapes merely because they resemble another product. A bottle looking like a bottle is not an imitation.',
+    allowed: ['Generic bottle shapes'],
+    prohibited: [],
+    humanReview: true,
+    requirement: 'forbidden',
+    category: 'other',
+  }),
+  G('008', {
+    domain: 'Alcohol Compliance',
+    ruleType: 'prohibited',
+    severity: 'critical',
+    rule: 'Do not depict underage people consuming or taking part in alcohol consumption.',
+    rationale:
+      'Includes obviously school- or college-looking, or otherwise underage-coded, representation in drinking contexts.',
+    allowed: [],
+    prohibited: ['Underage people', 'School or college-looking people in drinking contexts'],
+    humanReview: false,
+    requirement: 'forbidden',
+    category: 'audience',
+  }),
+  G('009', {
+    domain: 'Alcohol Compliance',
+    ruleType: 'prohibited',
+    severity: 'critical',
+    rule: 'Do not depict or imply drinking and driving.',
+    rationale: null,
+    allowed: [],
+    prohibited: ['Driving after drinking', 'Car keys with alcohol', 'Driving environments'],
+    humanReview: false,
+    requirement: 'forbidden',
+    category: 'claim',
+  }),
+  G('010', {
+    domain: 'Alcohol Compliance',
+    ruleType: 'prohibited',
+    severity: 'critical',
+    rule: 'Do not show intoxication, excessive drinking, drinking contests or games, or encourage heavy consumption.',
+    rationale: null,
+    allowed: [],
+    prohibited: ['Intoxication', 'Drunk behaviour', 'Drinking contests', 'Drinking games'],
+    humanReview: false,
+    requirement: 'forbidden',
+    category: 'claim',
+  }),
+  G('011', {
+    domain: 'Alcohol Compliance',
+    ruleType: 'prohibited',
+    severity: 'critical',
+    rule: 'Do not present alcohol as providing health or medical benefits.',
+    rationale: null,
+    allowed: [],
+    prohibited: ['Health claims', 'Medical benefit claims'],
+    humanReview: false,
+    requirement: 'forbidden',
+    category: 'claim',
+  }),
+  G('012', {
+    domain: 'Alcohol Compliance',
+    ruleType: 'prohibited',
+    severity: 'critical',
+    rule: 'Do not imply that drinking causes professional success, financial success, social status or improved performance.',
+    rationale: 'Unless specifically approved through applicable legal or client guidance.',
+    allowed: [],
+    prohibited: ['Professional success claims', 'Financial success claims', 'Social status claims'],
+    humanReview: false,
+    requirement: 'forbidden',
+    category: 'claim',
+  }),
+  G('013', {
+    domain: 'Cultural',
+    ruleType: 'human_review',
+    severity: 'major',
+    rule: 'Flag politically, religiously or culturally sensitive references for a person to look at.',
+    rationale:
+      'Political references, religious symbolism, figures or places, national symbols and sensitive social issues, unless explicitly approved for the campaign.',
+    allowed: [],
+    prohibited: [],
+    humanReview: true,
+    requirement: 'forbidden',
+    category: 'other',
+  }),
+
+  // ---- §8 8PM Honey ----------------------------------------------------
+  {
+    code: '8PM_HONEY_VIS_001',
+    from: '§8 HARD PROHIBITION',
+    brand: '8PM',
+    product: '8PM Honey',
+    market: null,
+    domain: 'Visual',
+    ruleType: 'prohibited',
+    severity: 'major',
+    rule: 'Bee imagery must not be used on 8PM Honey.',
+    rationale:
+      'Honey is an approved flavour territory; bees specifically are not. The prohibition does not extend to honey itself.',
+    allowed: ['Honey', 'Honeycomb', 'Honey textures', 'Golden tones', 'Warm lighting', 'Golden sunset', 'Sweetness metaphors'],
+    prohibited: ['Bees', 'Bee imagery', 'Bee characters', 'Bee illustrations'],
+    humanReview: true,
+    requirement: 'forbidden',
+    category: 'other',
+  },
+  {
+    code: '8PM_HONEY_FLAV_001',
+    from: '§8 Preferred Communication',
+    brand: '8PM',
+    product: '8PM Honey',
+    market: null,
+    domain: 'Flavour',
+    ruleType: 'preferred',
+    severity: 'informational',
+    rule: 'The honey flavour profile should be promoted or explained, literally or metaphorically.',
+    rationale: null,
+    allowed: [],
+    prohibited: [],
+    humanReview: false,
+    requirement: 'required',
+    category: 'other',
+  },
+
+  // ---- §9 8PM Fire -----------------------------------------------------
+  {
+    code: '8PM_FIRE_FLAV_001',
+    from: '§9 Visual Territory',
+    brand: '8PM',
+    product: '8PM Fire',
+    market: null,
+    domain: 'Flavour',
+    ruleType: 'allowed',
+    severity: 'informational',
+    rule: 'Heat, fire, warmth and cinnamon cues are approved territory for 8PM Fire.',
+    rationale:
+      'The flavour is cinnamon-derived with a fiery finish. Do not invent ingredient or flavour claims beyond that.',
+    allowed: ['Heat', 'Fire', 'Warmth', 'Cinnamon cues', 'Fiery metaphors'],
+    prohibited: ['Unsupported ingredient claims', 'Unsupported flavour claims'],
+    humanReview: false,
+    requirement: 'required',
+    category: 'other',
+  },
+
+  // ---- §10, §11 8PM visual and copy system -----------------------------
+  {
+    code: '8PM_VIS_001',
+    from: '§10 Avoid',
+    brand: '8PM',
+    product: null,
+    market: null,
+    domain: 'Visual',
+    ruleType: 'preferred',
+    severity: 'minor',
+    rule: '8PM should look bold, premium and cinematic — not teen-oriented, cartoonish, cheap or corporate.',
+    rationale: 'A preference, not a requirement: absence alone is not a violation.',
+    allowed: ['Bold', 'Premium', 'Strong typography', 'Cinematic', 'Lifestyle', 'Urban'],
+    prohibited: ['Teen-oriented', 'Cartoonish', 'Cheap or generic', 'Extremely corporate'],
+    humanReview: true,
+    requirement: 'required',
+    category: 'other',
+  },
+  {
+    code: '8PM_PEOPLE_001',
+    from: '§10 Styling',
+    brand: '8PM',
+    product: null,
+    market: null,
+    domain: 'People',
+    ruleType: 'prohibited',
+    severity: 'critical',
+    rule: 'Do not show school- or college-looking, or obviously underage-looking, people.',
+    rationale: null,
+    allowed: ['Young adults', 'Working professionals', 'Friends and groups', 'Couples'],
+    prohibited: ['School or college-looking people', 'Underage-looking people', 'Excessively provocative clothing'],
+    humanReview: false,
+    requirement: 'forbidden',
+    category: 'audience',
+  },
+  {
+    code: '8PM_ENV_001',
+    from: '§10 Locations',
+    brand: '8PM',
+    product: null,
+    market: null,
+    domain: 'Environment',
+    ruleType: 'prohibited',
+    severity: 'major',
+    rule: 'Avoid religious places, hospitals, schools, places associated with children, workplaces, gyms and driving environments.',
+    rationale: null,
+    allowed: ['Home', 'Bar or lounge', 'Restaurant', 'Urban cityscape'],
+    prohibited: ['Religious places', 'Hospitals', 'Schools', 'Places associated with children', 'Workplaces', 'Gyms', 'Driving environments'],
+    humanReview: false,
+    requirement: 'forbidden',
+    category: 'other',
+  },
+  {
+    code: '8PM_COPY_001',
+    from: '§11 Avoid / Slang',
+    brand: '8PM',
+    product: null,
+    market: null,
+    domain: 'Copy',
+    ruleType: 'preferred',
+    severity: 'minor',
+    rule: '8PM copy should read bold, confident and premium — avoid slang, generic motivational lines and overly poetic or corporate writing.',
+    rationale: 'A preference, not a requirement.',
+    allowed: ['Bold', 'Confident', 'Aspirational', 'Witty'],
+    prohibited: ['Slang', 'Generic motivational copy', 'Overly poetic copy', 'Corporate copy'],
+    humanReview: true,
+    requirement: 'required',
+    category: 'other',
+  },
+
+  // ---- §14 Whytehall ---------------------------------------------------
+  {
+    code: 'WHYTEHALL_LOGO_001',
+    from: '§14 WHYTEHALL LOGO',
+    brand: 'Whytehall',
+    product: null,
+    market: null,
+    domain: 'Logo',
+    ruleType: 'mandatory',
+    severity: 'major',
+    rule: 'The Whytehall logo must stay as approved, keep its colour, and sit top-right.',
+    rationale: null,
+    allowed: [],
+    prohibited: ['Recoloured logo'],
+    humanReview: false,
+    requirement: 'required',
+    category: 'placement',
+  },
+  {
+    code: 'WHYTEHALL_HONEY_001',
+    from: '§13 Honey',
+    brand: 'Whytehall',
+    product: 'Whytehall Honey',
+    market: null,
+    domain: 'Visual',
+    ruleType: 'allowed',
+    severity: 'informational',
+    rule: "8PM Honey's bee prohibition does not apply to Whytehall Honey.",
+    rationale:
+      'Stated explicitly in the document so the rule is not carried across by resemblance. Add a Whytehall-specific rule if one is ever wanted.',
+    allowed: ['Honey', 'Sweetness'],
+    prohibited: [],
+    humanReview: false,
+    requirement: 'required',
+    category: 'other',
+  },
+  {
+    code: 'WHYTEHALL_TONE_001',
+    from: '§12 Key Difference from 8PM',
+    brand: 'Whytehall',
+    product: null,
+    market: null,
+    domain: 'Brand Identity',
+    ruleType: 'preferred',
+    severity: 'minor',
+    rule: 'Whytehall should feel like a well-organised, refined celebration rather than a loud party.',
+    rationale: '8PM can own the stronger party vibe; Whytehall is the refined one.',
+    allowed: ['Refined', 'Organised', 'Sophisticated', 'Elevated'],
+    prohibited: ['Loud party treatment'],
+    humanReview: true,
+    requirement: 'required',
+    category: 'other',
+  },
+
+  // ---- §15 AfriBull ----------------------------------------------------
+  {
+    code: 'AFRIBULL_POS_001',
+    from: '§15 Positioning / Avoid',
+    brand: 'Afri Bull',
+    product: null,
+    market: null,
+    domain: 'Brand Identity',
+    ruleType: 'preferred',
+    severity: 'minor',
+    rule: 'AfriBull must not look cheap, and must not be dressed up as ultra-luxury either.',
+    rationale: 'Both directions are wrong for this product.',
+    allowed: ['Café flavour notes', 'African heritage', 'African culture', 'Heritage storytelling'],
+    prohibited: ['Cheap-looking execution', 'Generic low-cost visual language', 'Artificial luxury positioning'],
+    humanReview: true,
+    requirement: 'required',
+    category: 'other',
+  },
+  {
+    code: 'AFRIBULL_LOGO_001',
+    from: '§15 Branding',
+    brand: 'Afri Bull',
+    product: null,
+    market: null,
+    domain: 'Logo',
+    ruleType: 'mandatory',
+    severity: 'major',
+    rule: 'The AfriBull logo stays consistent and sits top-right, and the rum colour stays accurate.',
+    rationale: null,
+    allowed: [],
+    prohibited: [],
+    humanReview: false,
+    requirement: 'required',
+    category: 'placement',
+  },
+
+  // ---- §16 Magic Moments -----------------------------------------------
+  {
+    code: 'MM_LOGO_001',
+    from: '§16 Logo',
+    brand: 'Magic Moments',
+    product: null,
+    market: null,
+    domain: 'Logo',
+    ruleType: 'mandatory',
+    severity: 'major',
+    rule: 'The Magic Moments logo is blue or white, top-right, and must not be recoloured outside those two.',
+    rationale: 'Both blue and white are approved. Neither is more correct than the other.',
+    allowed: ['Blue logo', 'White logo'],
+    prohibited: ['Any other logo colour'],
+    humanReview: false,
+    requirement: 'required',
+    category: 'placement',
+  },
+  {
+    code: 'MM_COPY_001',
+    from: '§16 Brand Copy Territory',
+    brand: 'Magic Moments',
+    product: null,
+    market: null,
+    domain: 'Copy',
+    ruleType: 'preferred',
+    severity: 'informational',
+    rule: '"Magic Moments" is worth working into the copy, but its absence is not a failure.',
+    rationale:
+      'The document says so directly: unless a campaign makes it mandatory, absence should not be treated as a compliance failure.',
+    allowed: ['Magic Moments', 'Flavor of Your Life', 'Make Every Moment a Magic Moment'],
+    prohibited: [],
+    humanReview: false,
+    requirement: 'required',
+    category: 'other',
+  },
+  {
+    code: 'MM_POS_001',
+    from: '§16 Positioning',
+    brand: 'Magic Moments',
+    product: null,
+    market: null,
+    domain: 'Brand Identity',
+    ruleType: 'preferred',
+    severity: 'minor',
+    rule: 'Magic Moments is fun, social and contemporary — not an ultra-luxury product.',
+    rationale: 'It is widely consumed and should not be treated as ultra-luxury.',
+    allowed: ['Fun', 'Party', 'Social', 'Contemporary'],
+    prohibited: ['Ultra-luxury treatment'],
+    humanReview: true,
+    requirement: 'required',
+    category: 'other',
+  },
+
+  // ---- §17 Rampur ------------------------------------------------------
+  {
+    code: 'RAMPUR_LOGO_001',
+    from: '§17 Logo System',
+    brand: 'Rampur',
+    product: null,
+    market: null,
+    domain: 'Logo',
+    ruleType: 'human_review',
+    severity: 'major',
+    rule: 'Two Rampur logo identities are both valid — "Rampur Distillery" and "Rampur Indian Single Malt Whisky". Do not treat either as the only correct one.',
+    rationale:
+      'Which is right depends on the client, campaign and product. Placement stays top-right unless an approved exception exists.',
+    allowed: ['Rampur Distillery logo', 'Rampur Indian Single Malt Whisky logo'],
+    prohibited: [],
+    humanReview: true,
+    requirement: 'required',
+    category: 'placement',
+  },
+  {
+    code: 'RAMPUR_LUX_001',
+    from: '§17 Creative Territory',
+    brand: 'Rampur',
+    product: null,
+    market: null,
+    domain: 'Visual',
+    ruleType: 'preferred',
+    severity: 'minor',
+    rule: 'Luxury must come from the whole execution — copy, composition, light, props, typography — not one visual cue.',
+    rationale: 'Avoid mass-market, cheap, casual or loud treatment where it conflicts with the product.',
+    allowed: [],
+    prohibited: ['Mass-market treatment', 'Cheap treatment', 'Excessively loud treatment'],
+    humanReview: true,
+    requirement: 'required',
+    category: 'other',
+  },
+
+  // ---- §18 Blue Finest, market terminology ------------------------------
+  {
+    code: 'BLUE_FINEST_MARKET_001',
+    from: '§18 Thailand',
+    brand: 'Blue Finest',
+    product: null,
+    market: 'Thailand',
+    domain: 'Market',
+    ruleType: 'conditional',
+    severity: 'major',
+    rule: 'In Thailand the product is "Blue Finest Whisky Spirit".',
+    rationale: 'Terminology is judged against the target market. Neither wording is correct everywhere.',
+    allowed: ['Blue Finest Whisky Spirit'],
+    prohibited: ['Blue Finest Whisky'],
+    humanReview: true,
+    requirement: 'required',
+    category: 'other',
+  },
+  {
+    code: 'BLUE_FINEST_MARKET_002',
+    from: '§18 Africa / Rest of Africa',
+    brand: 'Blue Finest',
+    product: null,
+    market: null,
+    domain: 'Market',
+    ruleType: 'conditional',
+    severity: 'major',
+    rule: 'In Africa the product is "Blue Finest Whisky".',
+    rationale:
+      'Loaded without a market because CIP holds African markets under their own names. Confirm the market before this one is trusted to fail anything.',
+    allowed: ['Blue Finest Whisky'],
+    prohibited: [],
+    humanReview: true,
+    requirement: 'required',
+    category: 'other',
+  },
+
+  // ---- §19 Royal Ranthambore --------------------------------------------
+  {
+    code: 'RR_VIS_001',
+    from: '§19 Tiger Rule',
+    brand: 'Royal Ranthambore',
+    product: null,
+    market: null,
+    domain: 'Visual',
+    ruleType: 'allowed',
+    severity: 'informational',
+    rule: 'Tiger imagery is an approved association for Royal Ranthambore. Do not flag it as stray wildlife.',
+    rationale:
+      'Ranthambore is strongly associated with tigers, royalty and Indian heritage. The tiger is the point, not an error.',
+    allowed: ['Tiger', 'Royal imagery', 'Rajasthan cues', 'Indian heritage'],
+    prohibited: [],
+    humanReview: false,
+    requirement: 'required',
+    category: 'other',
+  },
+  {
+    code: 'RR_VIS_002',
+    from: '§19 Tiger Rule',
+    brand: 'Royal Ranthambore',
+    product: null,
+    market: null,
+    domain: 'Visual',
+    ruleType: 'human_review',
+    severity: 'minor',
+    rule: 'Flag cheap, gimmicky or cartoonish tiger treatment that weakens the premium positioning.',
+    rationale: 'The distinction is subjective, so it goes to a person rather than being decided outright.',
+    allowed: ['Sophisticated tiger representation'],
+    prohibited: ['Cartoonish tiger', 'Gimmicky tiger treatment', 'Generic wildlife treatment'],
+    humanReview: true,
+    requirement: 'forbidden',
+    category: 'other',
+  },
+  {
+    code: 'RR_COPY_001',
+    from: '§19 Tagline',
+    brand: 'Royal Ranthambore',
+    product: null,
+    market: null,
+    domain: 'Copy',
+    ruleType: 'preferred',
+    severity: 'informational',
+    rule: '"India’s Finest Yet" is the established tagline, but it is not required in every execution.',
+    rationale: 'Only force it where the campaign brief requires it.',
+    allowed: ['India’s Finest Yet'],
+    prohibited: [],
+    humanReview: false,
+    requirement: 'required',
+    category: 'other',
+  },
+  {
+    code: 'RR_LOGO_001',
+    from: '§19 Logo',
+    brand: 'Royal Ranthambore',
+    product: null,
+    market: null,
+    domain: 'Logo',
+    ruleType: 'mandatory',
+    severity: 'major',
+    rule: 'The Royal Ranthambore logo sits top-right and its approved form must be preserved.',
+    rationale: null,
+    allowed: [],
+    prohibited: [],
+    humanReview: false,
+    requirement: 'required',
+    category: 'placement',
+  },
+];

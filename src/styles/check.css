@@ -196,3 +196,50 @@
   .check-meters { grid-template-columns: 1fr; }
   .scoreheader { flex-direction: column; align-items: flex-start; }
 }
+
+/* ---- Creative QC ---- */
+/* The verdict, the two lists under it, and what passed. Shares the tone-*
+   vocabulary the Consistency Check already uses, so the same colour means the
+   same thing on both screens. */
+.qc-verdict { font-size: 19px; font-weight: 600; letter-spacing: -0.01em; margin-bottom: 2px; }
+.qc-verdict.tone-ok   { color: var(--ok-700); }
+.qc-verdict.tone-warn { color: var(--warn-700); }
+.qc-verdict.tone-stop { color: var(--stop-700); }
+
+.qc-list-title { font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; margin-bottom: 8px; }
+.qc-list-title.tone-warn { color: var(--warn-700); }
+.qc-list-title.tone-stop { color: var(--stop-700); }
+
+.qc-flags { display: flex; flex-direction: column; gap: 10px; }
+.qc-flags li {
+  border: 1px solid var(--line); border-left-width: 3px; border-radius: 10px;
+  padding: 12px 14px; background: var(--surface);
+}
+.qc-flags li.is-critical { border-left-color: var(--stop-500); }
+.qc-flags li.is-warning  { border-left-color: var(--warn-500); }
+.qc-flags li.is-note     { border-left-color: var(--line-strong); }
+.qc-flag-message { font-size: 13.5px; margin-bottom: 4px; }
+
+.qc-passed { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.qc-passed li { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--ink-500); }
+.qc-passed li svg { color: var(--ok-500); flex: none; }
+
+/* While it runs. A reviewer who cannot tell whether their file was taken will
+   upload it again, so this says the name back to them and counts the pages. */
+.qc-progress {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-top: 14px; padding: 11px 14px; border-radius: 10px;
+  background: var(--surface-2, rgba(255,255,255,.03)); border: 1px solid var(--line);
+  font-size: 12.5px; color: var(--ink-500);
+}
+.qc-spinner {
+  width: 13px; height: 13px; flex: none; border-radius: 50%;
+  border: 2px solid var(--line-strong); border-top-color: var(--brand);
+  animation: qcspin .7s linear infinite;
+}
+@keyframes qcspin { to { transform: rotate(360deg); } }
+.qc-progress-track {
+  flex: 1 1 120px; min-width: 120px; height: 3px; border-radius: 2px;
+  background: var(--line); overflow: hidden;
+}
+.qc-progress-track i { display: block; height: 100%; background: var(--brand); transition: width .3s ease; }

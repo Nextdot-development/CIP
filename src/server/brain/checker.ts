@@ -3,6 +3,7 @@ import { withCompanyScope } from '../db';
 import type { CompanyScope } from '../db';
 import { adminSql } from '../db-admin';
 import { driveStorage } from '../drive/storage';
+import { renderPdfPages } from '../drive/extraction/pdfRender';
 import { readAsset } from '../media/generation';
 import { readBrandDna } from './brandDna';
 import { fitForVision } from './fitImage';
@@ -173,6 +174,8 @@ type RefTarget =
       requirement: 'required' | 'forbidden';
       /** A rule CIP suggested that no person has verified. It can warn; it cannot fail. */
       advisory?: boolean;
+      /** How serious the rule's author said breaking it is. */
+      graded?: CheckFinding['severity'];
     };
 
 /**
@@ -196,8 +199,15 @@ export function groundFindings(
     const message = typeof raw.message === 'string' ? raw.message.trim().slice(0, 400) : '';
     if (message.length === 0) continue;
 
+    // The rule's own grading wins where it has one. The model is answering
+    // "was this broken", not "how bad is it" - that was settled when the rule
+    // was written down.
     let severity: CheckFinding['severity'] =
-      raw.severity === 'critical' || raw.severity === 'warning' ? raw.severity : 'note';
+      target.kind === 'rule' && target.graded
+        ? target.graded
+        : raw.severity === 'critical' || raw.severity === 'warning'
+          ? raw.severity
+          : 'note';
     // What a brand has usually done is not what it must do. Departing from an
     // observed pattern is at most a warning, whatever the model called it.
     if (target.requirement === 'observed' && severity === 'critical') severity = 'warning';
@@ -257,7 +267,13 @@ async function fileBytes(
 /** What is being checked, resolved to bytes and to the brand it is for. */
 async function resolveSubject(
   scope: CompanyScope,
-  input: { fileId?: string | null; generationId?: string | null; assetId?: string | null },
+  input: {
+    fileId?: string | null;
+    generationId?: string | null;
+    assetId?: string | null;
+    /** Which page of a PDF to look at. Ignored for anything else. */
+    page?: number | null;
+  },
 ): Promise<{
   fileId: string | null;
   generationId: string | null;
@@ -285,8 +301,44 @@ async function resolveSubject(
     );
     const file = rows[0];
     if (!file) throw new CheckRejected('That file is not in this workspace.');
-    if (!CHECKABLE_IMAGES.has(file.mime_type.toLowerCase())) {
-      throw new CheckRejected('Only images can be checked for now: PNG, JPEG or WebP.');
+    const mime = file.mime_type.toLowerCase();
+
+    /**
+     * A PDF is checked a page at a time, by looking at it.
+     *
+     * The page is drawn here rather than read from `pdf_page_understanding`,
+     * because that table is filled by the worker and the worker may not have
+     * reached this file - or may not be running at all. A checker that can only
+     * judge what has already been processed cannot judge what somebody just
+     * uploaded, which is the whole point of uploading it.
+     */
+    if (mime === 'application/pdf') {
+      const page = Math.max(1, Math.trunc(input.page ?? 1));
+      const body = await fileBytes(scope, file);
+      const { pages } = await renderPdfPages(body, [page]);
+      const drawn = pages[0];
+      if (!drawn || drawn.bands.length === 0) {
+        throw new CheckRejected(`CIP could not draw page ${page} of that PDF.`);
+      }
+      // The whole page, not a strip of it: a rule about where the logo sits
+      // cannot be judged from the top third of a page.
+      const band = drawn.bands[0]!;
+      return {
+        fileId: file.id,
+        generationId: null,
+        subject: pages.length > 0 ? `${file.name} — page ${page}` : file.name,
+        bytes: band.bytes,
+        mimeType: band.mimeType,
+        brand: file.brand,
+        market: file.market,
+      };
+    }
+
+    if (!CHECKABLE_IMAGES.has(mime)) {
+      throw new CheckRejected(
+        'CIP can look at a picture or a PDF. A Word document or a spreadsheet has ' +
+          'to be exported to one of those first.',
+      );
     }
     return {
       fileId: file.id,
@@ -342,6 +394,8 @@ export async function runCheck(
     assetId?: string | null;
     brand?: string | null;
     market?: string | null;
+    /** Which page of a PDF to check. Defaults to the first. */
+    page?: number | null;
   },
 ): Promise<CreativeCheck> {
   const provider = brain();
@@ -384,6 +438,7 @@ export async function runCheck(
       dimension: 'compliance',
       requirement: rule.requirement,
       advisory: rule.source === 'suggested' && rule.verifiedAt === null,
+      graded: rule.ruleCode && rule.severity ? FROM_RULE[rule.severity] : undefined,
     });
     sent.push({ ref, dimension: 'compliance', requirement: rule.requirement, statement: rule.rule });
   });
@@ -796,6 +851,40 @@ export type BriefRule = {
   category: RuleCategory;
   source: RuleSource;
   verifiedAt: Date | null;
+  /**
+   * The identifier the rule was written under, where it came from a document
+   * that grades its own rules. Null for a rule somebody typed in, and that is
+   * what tells the checker whether the severity below was stated or defaulted.
+   */
+  ruleCode: string | null;
+  severity: RuleSeverity;
+  ruleType: RuleType;
+};
+
+export type RuleSeverity = 'critical' | 'major' | 'minor' | 'informational';
+export type RuleType =
+  | 'mandatory' | 'prohibited' | 'preferred' | 'allowed'
+  | 'conditional' | 'contextual' | 'human_review';
+
+/**
+ * A rule's own severity, in the three the checker scores with.
+ *
+ * A rule says how serious breaking it is; the model says whether it was broken.
+ * Letting the model grade its own finding is letting it mark its own homework,
+ * and it is why "tiger imagery is an approved association" could otherwise come
+ * back as a critical failure for a creative that did exactly the right thing.
+ *
+ * Only rules that actually state a severity are graded this way. A rule typed
+ * straight into CIP has no stated severity - the column has a default, and a
+ * default is not a statement - so the model's own reading still decides. Taking
+ * the default as though somebody had chosen it turned every rule already in the
+ * database into a warning, and a missing statutory warning stopped failing.
+ */
+const FROM_RULE: Record<RuleSeverity, CheckFinding['severity']> = {
+  critical: 'critical',
+  major: 'warning',
+  minor: 'note',
+  informational: 'note',
 };
 
 /**
@@ -818,7 +907,8 @@ export async function rulesForBrief(
 
   return withCompanyScope(scope, (tx) =>
     tx<BriefRule[]>`
-      select id, rule, requirement, category, source, verified_at as "verifiedAt"
+      select id, rule, requirement, category, source, verified_at as "verifiedAt",
+             rule_code as "ruleCode", severity, rule_type as "ruleType"
         from compliance_rules
        where company_id = ${scope.companyId}
          and active

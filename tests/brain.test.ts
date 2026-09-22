@@ -822,6 +822,22 @@ describe('THE CHECKER: a creative judged against the brand, and nothing else', (
     return rows[0]!.id;
   }
 
+  /** A rule that states its own severity, the way a graded document's rules do. */
+  async function gradedRule(
+    severity: 'critical' | 'major' | 'minor' | 'informational',
+    text: string,
+    code = `TEST_${severity.toUpperCase()}_001`,
+  ): Promise<string> {
+    const rows = await adminSql<{ id: string }[]>`
+      insert into compliance_rules
+        (company_id, rule_code, category, requirement, rule, source, severity, rule_type)
+      values (${mm.companyId}, ${code}, 'other', 'forbidden', ${text}, 'manual',
+              ${severity}, 'prohibited')
+      returning id
+    `;
+    return rows[0]!.id;
+  }
+
   async function checkedImage(name = 'banner.png') {
     const { runCheck } = await import('../src/server/brain/checker');
     const file = await uploadImage(mm, name);
@@ -843,6 +859,38 @@ describe('THE CHECKER: a creative judged against the brand, and nothing else', (
     assert.equal(check.flags.length, 1, 'a flag citing an unsent rule reached the reviewer');
     assert.equal(check.flags[0]!.message, 'No responsible drinking message.');
     assert.ok(check.flags[0]!.citedRule, 'the surviving flag does not say which rule it came from');
+  });
+
+  // A rule that grades itself is the whole point of loading a document that
+  // grades its rules. Without this, "tiger imagery is an approved association"
+  // fails a creative for using a tiger.
+  it("takes a graded rule's severity from the rule, not from the model", async () => {
+    await gradedRule('informational', 'Tiger imagery is an approved association.');
+    fake.checkFindings = [
+      { ref: 'R1', dimension: 'compliance', severity: 'critical', message: 'A tiger is present.' },
+    ];
+
+    const check = await checkedImage();
+
+    assert.equal(check.flags.length, 1);
+    // The model said critical. The rule says informational, and the rule wrote
+    // itself down first.
+    assert.equal(check.flags[0]!.severity, 'note');
+    assert.ok(check.score !== null && check.score > 49, `an informational rule failed the creative at ${check.score}`);
+  });
+
+  it('leaves an ungraded rule to the model, because a column default is not a decision', async () => {
+    await rule('required', 'Carry the statutory warning.');
+    fake.checkFindings = [
+      { ref: 'R1', dimension: 'compliance', severity: 'critical', message: 'The warning is missing.' },
+    ];
+
+    const check = await checkedImage();
+
+    // Nobody stated a severity for this rule, so the model's reading stands and
+    // a missing statutory warning still fails.
+    assert.equal(check.flags[0]!.severity, 'critical');
+    assert.ok(check.score !== null && check.score <= 49, `scored ${check.score} while failing compliance`);
   });
 
   it('fails a creative that breaks a compliance requirement, however on-brand it is', async () => {
