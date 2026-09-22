@@ -653,7 +653,19 @@ export type CheckFinding = {
   message: string;
 };
 
+/**
+ * What is actually on the page.
+ *
+ * A deck is mostly not adverts. Title slides, dividers, contents pages and
+ * charts were being failed for lacking a logo in the top-right and not showing
+ * the product, which is true of them and not a fault - the rules are about
+ * advertising. Asked before the findings, so the question is settled before
+ * anything starts looking for faults.
+ */
+export type AssetKind = 'creative' | 'document_page' | 'blank';
+
 export type CheckAnalysis = {
+  assetKind: AssetKind;
   /** One or two sentences on the creative as a whole. */
   summary: string;
   findings: CheckFinding[];

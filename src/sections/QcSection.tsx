@@ -29,7 +29,7 @@ type Report = {
     rulesConsidered: number;
     flags: CheckFlag[];
   };
-  verdict: 'pass' | 'fix' | 'review' | 'nothing_to_check';
+  verdict: 'pass' | 'fix' | 'review' | 'nothing_to_check' | 'not_a_creative';
   passed: { id: string; rule: string; verified: boolean }[];
   mustFix: CheckFlag[];
   toReview: CheckFlag[];
@@ -71,6 +71,11 @@ const VERDICT: Record<Report['verdict'], { text: string; tone: string; line: str
     text: 'CIP had nothing to check against',
     tone: 'tone-stop',
     line: 'No rules and no learned facts apply to this brand yet, so this report means nothing. Add rules first.',
+  },
+  not_a_creative: {
+    text: 'Not a creative',
+    tone: 'tone-neutral',
+    line: 'A title slide, divider, chart or blank page. The advertising rules were not applied to it.',
   },
 };
 
@@ -362,9 +367,13 @@ function Deck({
   showPassed: boolean;
   onTogglePassed: () => void;
 }) {
-  const problems = pages.filter((p) => p.report.mustFix.length > 0);
-  const queries = pages.filter((p) => p.report.mustFix.length === 0 && p.report.toReview.length > 0);
-  const clean = pages.length - problems.length - queries.length;
+  // A page that was never an advert is neither clean nor a problem: it was not
+  // judged. Counting it as clean inflates every deck's score.
+  const skipped = pages.filter((p) => p.report.verdict === 'not_a_creative');
+  const judged = pages.filter((p) => p.report.verdict !== 'not_a_creative');
+  const problems = judged.filter((p) => p.report.mustFix.length > 0);
+  const queries = judged.filter((p) => p.report.mustFix.length === 0 && p.report.toReview.length > 0);
+  const clean = judged.length - problems.length - queries.length;
 
   return (
     <>
@@ -377,9 +386,12 @@ function Deck({
               : 'Nothing to fix'}
         </p>
         <p className="tiny muted">
-          {pages.length} page{pages.length === 1 ? '' : 's'} checked · {clean} clean
+          {judged.length} creative{judged.length === 1 ? '' : 's'} checked · {clean} clean
           {queries.length > 0 ? ` · ${queries.length} to review` : ''}
           {problems.length > 0 ? ` · ${problems.length} to fix` : ''}
+          {skipped.length > 0
+            ? ` · ${skipped.length} page${skipped.length === 1 ? '' : 's'} skipped, not creatives`
+            : ''}
         </p>
       </div>
 

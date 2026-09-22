@@ -869,6 +869,28 @@ describe('THE CHECKER: a creative judged against the brand, and nothing else', (
     assert.ok(check.flags[0]!.citedRule, 'the surviving flag does not say which rule it came from');
   });
 
+  // Fifteen of a nineteen-page deck came back needing fixing, and most of them
+  // were dividers and title slides failing for not being adverts.
+  it('does not judge a page that is not a creative', async () => {
+    await rule('required', 'Carry a responsible drinking message.');
+    fake.checkAssetKind = 'document_page';
+    fake.checkFindings = [
+      { ref: 'R1', dimension: 'compliance', severity: 'critical', message: 'The warning is missing.' },
+    ];
+
+    const check = await checkedImage('contents-slide.png');
+
+    assert.equal(check.assetKind, 'document_page');
+    assert.equal(check.flags.length, 0, 'a divider slide was failed for not being an advert');
+
+    const { reportOn } = await import('../src/server/brain/qc');
+    const report = await reportOn(mm, check);
+    assert.equal(report.verdict, 'not_a_creative');
+    // It passed nothing, because nothing was held up against it.
+    assert.equal(report.passed.length, 0);
+    assert.equal(report.counts.rulesApplied, 0);
+  });
+
   // A rule that grades itself is the whole point of loading a document that
   // grades its rules. Without this, "tiger imagery is an approved association"
   // fails a creative for using a tiger.

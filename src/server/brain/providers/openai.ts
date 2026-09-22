@@ -388,8 +388,12 @@ function brandInstruction(brands: BrandRoster | undefined): string {
 const CHECK_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['summary', 'findings'],
+  required: ['assetKind', 'summary', 'findings'],
   properties: {
+    // Asked first, and listed first, so what is being looked at is settled
+    // before anything starts looking for faults with it. A deck's title slide
+    // is not a creative that forgot its logo.
+    assetKind: { type: 'string', enum: ['creative', 'document_page', 'blank'] },
     summary: { type: 'string' },
     findings: {
       type: 'array',
@@ -889,6 +893,17 @@ export class OpenAIBrainProvider implements BrainProvider {
           (input.brand ? ` for the brand ${input.brand}` : '') +
           (input.market ? ` in ${input.market}` : '') +
           '.\n\n' +
+          'First say what you are looking at.\n' +
+          '- "creative": an advert, post, banner, packshot, or any page meant to promote ' +
+          'the product to a customer.\n' +
+          '- "document_page": part of a document rather than an advert — a title slide, a ' +
+          'section divider, a contents page, a chart, a table, a page of body text, an ' +
+          'agenda, a thank-you slide.\n' +
+          '- "blank": nothing on it worth judging.\n\n' +
+          'If it is not a creative, return no findings at all. The rules below are about ' +
+          'advertising, and a divider slide has not broken one by lacking a logo in the ' +
+          'top-right or by not showing the product. Saying so is the right answer, not a ' +
+          'failure to find anything.\n\n' +
           'Judge it only against the rules listed below. Each has a ref. Report a finding ' +
           'only where the creative visibly breaks a rule or visibly lacks something a rule ' +
           'requires, and cite exactly one ref per finding. Never report a rule that is not ' +
@@ -912,16 +927,23 @@ export class OpenAIBrainProvider implements BrainProvider {
       },
     ];
 
-    const { parsed, usage } = await this.call<{ summary: string; findings: CheckFinding[] }>(
-      content,
-      CHECK_SCHEMA,
-      'creative_check',
-      3_000,
-    );
+    const { parsed, usage } = await this.call<{
+      assetKind: string;
+      summary: string;
+      findings: CheckFinding[];
+    }>(content, CHECK_SCHEMA, 'creative_check', 3_000);
+
+    const assetKind =
+      parsed.assetKind === 'document_page' || parsed.assetKind === 'blank'
+        ? parsed.assetKind
+        : 'creative';
 
     return {
+      assetKind,
       summary: typeof parsed.summary === 'string' ? parsed.summary.trim() : '',
-      findings: Array.isArray(parsed.findings) ? parsed.findings : [],
+      // A page that is not a creative has nothing to answer for, whatever the
+      // model went on to say about it.
+      findings: assetKind === 'creative' && Array.isArray(parsed.findings) ? parsed.findings : [],
       usage,
     };
   }

@@ -243,3 +243,4 @@
   background: var(--line); overflow: hidden;
 }
 .qc-progress-track i { display: block; height: 100%; background: var(--brand); transition: width .3s ease; }
+.qc-verdict.tone-neutral { color: var(--ink-500); }

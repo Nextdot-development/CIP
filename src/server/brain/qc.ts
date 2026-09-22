@@ -29,7 +29,7 @@ import { BRAIN_LIMITS } from './providers/types';
  * reason, and `rulesConsidered` is shown next to them.
  */
 
-export type QcVerdict = 'pass' | 'fix' | 'review' | 'nothing_to_check';
+export type QcVerdict = 'pass' | 'fix' | 'review' | 'nothing_to_check' | 'not_a_creative';
 
 export type QcReport = {
   check: CreativeCheck;
@@ -85,6 +85,19 @@ export async function reportOn(scope: CompanyScope, check: CreativeCheck): Promi
   // waiting on anybody.
   const open = check.flags.filter((flag) => flag.status === 'open');
 
+  // A page that is not a creative passed nothing: it was not judged. Listing
+  // twenty-five rules as passed would be claiming work that never happened.
+  if (check.assetKind !== 'creative') {
+    return {
+      check,
+      verdict: 'not_a_creative',
+      passed: [],
+      mustFix: [],
+      toReview: [],
+      counts: { rulesApplied: 0, factsApplied: 0, passed: 0, flagged: 0 },
+    };
+  }
+
   const advisory = (flag: CheckFlag): boolean => {
     if (!flag.citedRule) return false;
     return flag.citedRule.source === 'suggested' && verifiedById.get(flag.citedRule.id) !== true;
@@ -117,6 +130,10 @@ export async function reportOn(scope: CompanyScope, check: CreativeCheck): Promi
  * nothing at all. Saying so is the difference between a tool and a rubber stamp.
  */
 function verdictFor(check: CreativeCheck, mustFix: CheckFlag[], toReview: CheckFlag[]): QcVerdict {
+  // Said before anything else, because "nothing to fix" on a divider slide is
+  // true and useless: it implies the page was held up against the rules and
+  // survived, when it was never an advert in the first place.
+  if (check.assetKind !== 'creative') return 'not_a_creative';
   if (check.rulesConsidered === 0 && check.factsConsidered === 0) return 'nothing_to_check';
   if (mustFix.length > 0) return 'fix';
   if (toReview.length > 0) return 'review';

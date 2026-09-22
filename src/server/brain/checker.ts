@@ -9,7 +9,7 @@ import { readBrandDna } from './brandDna';
 import { fitForVision } from './fitImage';
 import { brain } from './providers';
 import { BRAIN_LIMITS, BrainFailed } from './providers/types';
-import type { CheckDimension, CheckFinding, CheckRule } from './providers/types';
+import type { AssetKind, CheckDimension, CheckFinding, CheckRule } from './providers/types';
 
 /**
  * The Consistency & Compliance Checker.
@@ -88,6 +88,8 @@ export type CreativeCheck = {
   id: string;
   fileId: string | null;
   generationId: string | null;
+  /** What was on the page. Only a creative is judged against advertising rules. */
+  assetKind: AssetKind;
   /** The display name of what was checked. */
   subject: string;
   brand: string | null;
@@ -495,6 +497,14 @@ export async function runCheck(
   if (sent.length === 0) {
     summary = 'Nothing to check against yet: CIP holds no established patterns or rules for this brand and market.';
   }
+  // A page that is not an advert was not judged against advertising rules, and
+  // the summary should not imply it was.
+  if (analysis.assetKind !== 'creative') {
+    summary =
+      analysis.assetKind === 'blank'
+        ? 'This page is blank. Nothing here to check.'
+        : 'This is a page of a document rather than a creative, so the advertising rules were not applied to it.';
+  }
 
   await withCompanyScope(scope, async (tx) => {
     for (const finding of grounded) {
@@ -509,7 +519,7 @@ export async function runCheck(
     }
     await tx`
       update creative_checks
-         set status = 'ready', summary = ${summary},
+         set status = 'ready', summary = ${summary}, asset_kind = ${analysis.assetKind},
              score = ${scores.score}, visual_score = ${scores.visual},
              verbal_score = ${scores.verbal}, compliance_score = ${scores.compliance},
              completed_at = now()
@@ -531,10 +541,12 @@ export async function getCheck(scope: CompanyScope, checkId: string): Promise<Cr
       score: number | null; visual_score: number | null; verbal_score: number | null;
       compliance_score: number | null; summary: string | null; facts_considered: number;
       rules_considered: number; error_message: string | null; created_at: Date;
+      asset_kind: AssetKind;
     }[]>`
       select c.id, c.file_id, c.generation_id, f.name as subject, c.brand, c.market, c.status,
              c.score, c.visual_score, c.verbal_score, c.compliance_score, c.summary,
-             c.facts_considered, c.rules_considered, c.error_message, c.created_at
+             c.facts_considered, c.rules_considered, c.error_message, c.created_at,
+             c.asset_kind
         from creative_checks c
         left join drive_files f on f.id = c.file_id and f.company_id = c.company_id
        where c.id = ${checkId} and c.company_id = ${scope.companyId}
@@ -565,6 +577,7 @@ export async function getCheck(scope: CompanyScope, checkId: string): Promise<Cr
       fileId: check.file_id,
       generationId: check.generation_id,
       subject: check.subject ?? (check.generation_id ? `Generated creative ${check.generation_id.slice(0, 8)}` : 'Creative'),
+      assetKind: check.asset_kind,
       brand: check.brand,
       market: check.market,
       status: check.status,
@@ -608,10 +621,12 @@ export async function listChecks(
       score: number | null; visual_score: number | null; verbal_score: number | null;
       compliance_score: number | null; summary: string | null; facts_considered: number;
       rules_considered: number; error_message: string | null; created_at: Date;
+      asset_kind: AssetKind;
     }[]>`
       select c.id, c.file_id, c.generation_id, f.name as subject, c.brand, c.market, c.status,
              c.score, c.visual_score, c.verbal_score, c.compliance_score, c.summary,
-             c.facts_considered, c.rules_considered, c.error_message, c.created_at
+             c.facts_considered, c.rules_considered, c.error_message, c.created_at,
+             c.asset_kind
         from creative_checks c
         left join drive_files f on f.id = c.file_id and f.company_id = c.company_id
        where c.company_id = ${scope.companyId}
@@ -623,6 +638,7 @@ export async function listChecks(
       fileId: c.file_id,
       generationId: c.generation_id,
       subject: c.subject ?? (c.generation_id ? `Generated creative ${c.generation_id.slice(0, 8)}` : 'Creative'),
+      assetKind: c.asset_kind,
       brand: c.brand,
       market: c.market,
       status: c.status,

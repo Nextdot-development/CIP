@@ -6,6 +6,7 @@ import type {
   AssetFact,
   BrainProvider,
   BriefInput,
+  AssetKind,
   CheckAnalysis,
   CheckFinding,
   CheckInput,
@@ -63,6 +64,8 @@ export class FakeBrainProvider implements BrainProvider {
    * and it can only be tested against findings chosen on purpose.
    */
   checkFindings: CheckFinding[] | null = null;
+  /** What the page is, when a test needs it to be something else. */
+  checkAssetKind: AssetKind | null = null;
 
   /**
    * What the next market readings report. Null means: every sentence in the
@@ -101,6 +104,7 @@ export class FakeBrainProvider implements BrainProvider {
     this.lastIdeationInput = null;
     this.failWith = null;
     this.checkFindings = null;
+    this.checkAssetKind = null;
     this.marketSignals = null;
     this.chatAnswer = null;
     this.lastChatInput = null;
@@ -386,9 +390,17 @@ export class FakeBrainProvider implements BrainProvider {
     this.calls.check += 1;
     this.check();
 
+    // A creative unless a test says otherwise: almost every test is about what
+    // happens to a creative, and making each one say so would be noise.
+    const assetKind = this.checkAssetKind ?? 'creative';
+
     return {
+      assetKind,
       summary: `Checked "${input.filename}" against ${input.rules.length} rule(s).`,
-      findings: this.checkFindings ? this.checkFindings.map((f) => ({ ...f })) : [],
+      findings:
+        assetKind === 'creative' && this.checkFindings
+          ? this.checkFindings.map((f) => ({ ...f }))
+          : [],
       usage: { durationMs: 1 },
     };
   }
