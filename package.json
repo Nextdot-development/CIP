@@ -18,6 +18,7 @@
     "prove:drive": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/prove-drive.ts",
     "storage:migrate": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/migrate-storage.ts",
     "storage:gc": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/storage-gc.ts",
+    "embed:assets": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/embed-assets.ts",
     "rules:load": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/load-qc-rules.ts",
     "export:training": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/export-training.ts",
     "storage:relocate": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/relocate-storage.ts",

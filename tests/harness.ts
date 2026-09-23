@@ -56,7 +56,13 @@ export type TestDb = {
  * Phase 4 suites skip with a reason rather than failing on a missing
  * extension deep inside a migration.
  */
-export const MIGRATIONS_NEEDING_VECTOR = ['0007_embeddings.sql'] as const;
+export const MIGRATIONS_NEEDING_VECTOR = [
+  '0007_embeddings.sql',
+  // Vectors for what CIP saw in a picture, so Creative Search can find one.
+  // Same reason as 0007: it declares a vector column and a vector index, and
+  // neither exists without the extension.
+  '0033_asset_embeddings.sql',
+] as const;
 
 /**
  * Replaces the hostname in a connection URL with a literal address.

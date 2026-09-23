@@ -5,7 +5,7 @@ import { EmptyState } from '../components/ui/Bits';
 import { Icon } from '../components/ui/Icon';
 import type { IconName } from '../components/ui/Icon';
 import { useToast } from '@/context/toast';
-import type { DriveSearchResultDTO, SemanticSearchDTO } from '@/types/drive';
+import type { FoundFile } from '@/server/drive/findEverything';
 
 /**
  * Creative Search.
@@ -50,11 +50,18 @@ export function SearchSection({ recent, brand }: { recent: SearchCard[]; brand: 
   const [query, setQuery] = useState('');
   const [kind, setKind] = useState<KindFilter>(null);
   const [busy, setBusy] = useState<'words' | 'meaning' | null>(null);
-  const [files, setFiles] = useState<SearchCard[] | null>(null);
-  const [hits, setHits] = useState<SemanticSearchDTO['hits'] | null>(null);
+  const [found, setFound] = useState<FoundFile[] | null>(null);
   const [asked, setAsked] = useState('');
 
-  const byName = async (filter: KindFilter = kind) => {
+  /**
+   * One search, three ways of looking, merged.
+   *
+   * There used to be two buttons and the person had to choose. Nobody knows
+   * which of them will find the thing they are looking for - that is the whole
+   * reason they are searching - and choosing wrong came back empty and read
+   * like an empty Drive.
+   */
+  const look = async () => {
     const q = query.trim();
     if (q.length < 2) {
       note('Search for at least two characters.');
@@ -62,23 +69,10 @@ export function SearchSection({ recent, brand }: { recent: SearchCard[]; brand: 
     }
     setBusy('words');
     try {
-      const params = new URLSearchParams({ q });
-      if (filter) params.set('kind', filter);
-      const res = await fetch(`/api/drive/search?${params}`);
+      const res = await fetch(`/api/drive/search/everything?q=${encodeURIComponent(q)}`);
       if (!res.ok) throw new Error('search failed');
-      const data = (await res.json()) as DriveSearchResultDTO;
-      setFiles(
-        data.files.map((file) => ({
-          id: file.id,
-          name: file.name,
-          kind: file.kind,
-          fileType: file.fileType,
-          market: file.market ?? null,
-          folderName: file.folderName,
-          createdAt: file.createdAt,
-        })),
-      );
-      setHits(null);
+      const data = (await res.json()) as { files: FoundFile[] };
+      setFound(data.files);
       setAsked(q);
     } catch {
       note('Search is unavailable right now.');
@@ -87,44 +81,14 @@ export function SearchSection({ recent, brand }: { recent: SearchCard[]; brand: 
     }
   };
 
-  const byMeaning = async () => {
-    const q = query.trim();
-    if (q.length < 2) {
-      note('Search for at least two characters.');
-      return;
-    }
-    setBusy('meaning');
-    try {
-      const res = await fetch('/api/drive/search/semantic', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ query: q, limit: 24 }),
-      });
-      if (!res.ok) {
-        const body: { message?: string } = await res.json().catch(() => ({}));
-        note(body.message ?? 'Search by meaning is unavailable right now.');
-        return;
-      }
-      const data = (await res.json()) as SemanticSearchDTO;
-      setHits(data.hits);
-      setFiles(null);
-      setAsked(q);
-    } catch {
-      note('Search by meaning is unavailable right now.');
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const chooseKind = (value: KindFilter) => {
-    setKind(value);
-    if (files) void byName(value);
-  };
+  // The kind chips filter what is on screen before anything is searched. Once
+  // a search has run, its results are what they are - narrowing them by kind
+  // would quietly hide the picture somebody was looking for.
+  const chooseKind = (value: KindFilter) => setKind(value);
 
   const clear = () => {
     setQuery('');
-    setFiles(null);
-    setHits(null);
+    setFound(null);
     setAsked('');
   };
 
@@ -136,8 +100,9 @@ export function SearchSection({ recent, brand }: { recent: SearchCard[]; brand: 
         <p className="eyebrow">Creative Search</p>
         <h1>Creative Search</h1>
         <p className="lede">
-          Find anything this brand has made before - by the name of the file, or by what it is about.
-          Search runs across every file CIP has, for this company only.
+          Search once and CIP looks three ways at the same time: the names of the files, the
+          words inside the documents, and what it saw when it looked at the pictures. Every
+          file this company has, and nobody else&apos;s.
         </p>
       </header>
 
@@ -146,7 +111,7 @@ export function SearchSection({ recent, brand }: { recent: SearchCard[]; brand: 
         role="search"
         onSubmit={(event) => {
           event.preventDefault();
-          void byName();
+          void look();
         }}
       >
         <Icon name="search" size={18} />
@@ -155,22 +120,19 @@ export function SearchSection({ recent, brand }: { recent: SearchCard[]; brand: 
           aria-label="Search creative"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Try “Diwali”, “bottle shot”, or “everything mentioning heritage”"
+          placeholder="Try “festive celebration”, “friends toasting”, or “tiger at sunrise”"
         />
-        {(files || hits) && (
+        {found && (
           <button type="button" className="searchbtn is-quiet" onClick={clear}>
             Clear
           </button>
         )}
-        <button type="button" className="searchbtn is-quiet" onClick={() => void byMeaning()} disabled={busy !== null}>
-          {busy === 'meaning' ? 'Searching…' : 'Search by meaning'}
-        </button>
         <button type="submit" className="searchbtn" disabled={busy !== null}>
-          {busy === 'words' ? 'Searching…' : 'Search'}
+          {busy ? 'Searching…' : 'Search'}
         </button>
       </form>
 
-      {!hits && (
+      {!found && (
         <div className="chiprow" role="group" aria-label="Kind of file">
           {KINDS.map((option) => (
             <button
@@ -186,42 +148,40 @@ export function SearchSection({ recent, brand }: { recent: SearchCard[]; brand: 
         </div>
       )}
 
-      {files && (
+      {found && (
         <>
           <p className="searchnote">
-            {files.length === 0
-              ? `No file is named like “${asked}”. Search by meaning looks inside them instead.`
-              : `${files.length} file${files.length === 1 ? '' : 's'} named like “${asked}”.`}
+            {found.length === 0
+              ? `Nothing here is about “${asked}” — not by name, not inside a document, not in a picture.`
+              : `${found.length} file${found.length === 1 ? '' : 's'} about “${asked}”, closest first.`}
           </p>
           <div className="resultgrid">
-            {files.map((card) => (
-              <FileCard key={card.id} card={card} />
-            ))}
-          </div>
-        </>
-      )}
-
-      {hits && (
-        <>
-          <p className="searchnote">
-            {hits.length === 0
-              ? `Nothing CIP has read is about “${asked}”.`
-              : `${hits.length} passage${hits.length === 1 ? '' : 's'} about “${asked}”, closest first.`}
-          </p>
-          <div className="resultgrid">
-            {hits.map((hit) => (
+            {found.map((card) => (
               <a
-                key={hit.chunkId}
+                key={card.id}
                 className="resultcard"
-                href={contentUrl(hit.fileId)}
+                href={contentUrl(card.id)}
                 target="_blank"
                 rel="noreferrer noopener"
               >
                 <div className="body">
-                  <span className="tag">{hit.fileType}</span>
-                  <p className="title">{hit.fileName}</p>
-                  <p className="meta">{[hit.heading, hit.folderName].filter(Boolean).join(' · ') || 'Passage'}</p>
-                  <p className="snippet">{hit.snippet}</p>
+                  <span className="tag">{card.fileType}</span>
+                  <p className="title">{card.name}</p>
+                  {/* Why it is here. A result nobody expected is only useful if
+                      it can be understood, and "it matched" is not a reason. */}
+                  <p className="meta">
+                    {[
+                      card.why.byName ? 'name' : null,
+                      card.why.inText ? 'in the text' : null,
+                      card.why.inPicture ? 'in the picture' : null,
+                    ]
+                      .filter(Boolean)
+                      .join(' · ')}
+                    {card.folderName ? ` · ${card.folderName}` : ''}
+                  </p>
+                  {(card.why.inPicture || card.why.inText) && (
+                    <p className="snippet">{card.why.inPicture ?? card.why.inText}</p>
+                  )}
                 </div>
               </a>
             ))}
@@ -229,7 +189,7 @@ export function SearchSection({ recent, brand }: { recent: SearchCard[]; brand: 
         </>
       )}
 
-      {!files && !hits && (
+      {!found && (
         <>
           <p className="searchnote">Newest for {brand ?? 'all brands'}.</p>
           {shownRecent.length === 0 ? (
