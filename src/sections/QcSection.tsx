@@ -124,6 +124,29 @@ async function whyUploadFailed(res: Response | null, file: File): Promise<string
   return `The upload failed (${res.status}). The file is ${mb} MB.`;
 }
 
+/**
+ * Why the check did not run, in terms somebody can act on.
+ *
+ * "That creative could not be checked" is what was said while a 2.8 MB PDF
+ * failed on the deployment and worked locally, and it said nothing at all. A
+ * request killed for running too long comes back as 504 with no JSON in it, so
+ * the status has to be read rather than the body.
+ */
+async function whyCheckFailed(res: Response | null): Promise<string> {
+  if (!res) return 'The check did not reach CIP. Check the connection and try again.';
+
+  if (res.status === 504 || res.status === 408) {
+    return (
+      'The check ran out of time on the server. A page with a lot on it can take ' +
+      'minutes; try that page on its own, or a smaller export.'
+    );
+  }
+
+  const body = (await res.json().catch(() => null)) as { message?: string } | null;
+  if (body?.message) return body.message;
+  return `The check failed (${res.status}). Nothing was recorded, so nothing was judged.`;
+}
+
 export function QcSection({
   configured,
   brands,
@@ -192,26 +215,31 @@ export function QcSection({
     // takes minutes; waiting until the last page to show the first finding
     // would leave the screen silent for all of them.
     const collected: PageReport[] = [];
+    // Once the first page has told us the brand, the rest are told rather than
+    // asked. Working it out costs a vision call, and doing that on all fourteen
+    // pages of a deck is thirteen calls to answer a question already answered.
+    let known: string | null = brand || null;
+
     for (let page = 1; page <= total; page += 1) {
       setPhase({ at: 'checking', name: label, page, of: total });
 
       const res = await fetch('/api/brain/qc', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ fileId, brand: brand || null, market: market || null, page }),
+        body: JSON.stringify({ fileId, brand: known, market: market || null, page }),
       }).catch(() => null);
 
       if (!res?.ok) {
         // One page that cannot be drawn does not stop the other thirteen.
         if (page === 1) {
-          const body: { message?: string } = res ? await res.json().catch(() => ({})) : {};
-          setPhase({ at: 'failed', message: body.message ?? 'That creative could not be checked.' });
+          setPhase({ at: 'failed', message: await whyCheckFailed(res) });
           return;
         }
         continue;
       }
 
       const { report } = (await res.json()) as { report: Report };
+      known = known ?? report.check.brand;
       collected.push({ page, report });
       setPages([...collected]);
       // Once, when the first page lands. Scrolling on every page would fight

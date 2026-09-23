@@ -13,6 +13,16 @@ import { coverageFor, runQc } from '@/server/brain/qc';
  * back to is not worth printing.
  */
 export const dynamic = 'force-dynamic';
+/**
+ * Long enough for a check.
+ *
+ * A check draws a PDF page, reads the brand off it, fetches the approved
+ * packshots and then sends four high-detail images to a vision model. That is
+ * minutes, not seconds, and the platform's default is far shorter - a request
+ * that runs out of time is killed with no error anybody can read, which is
+ * exactly what a 2.8 MB PDF did on the deployment while working locally.
+ */
+export const maxDuration = 300;
 
 /**
  * GET what a check would be judged against, for one brand and market.

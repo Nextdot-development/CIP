@@ -12,6 +12,14 @@ import { pageCountFor } from '@/server/brain/qc';
  * could mean anything.
  */
 export const dynamic = 'force-dynamic';
+/**
+ * Long enough to fetch a document and count its pages.
+ *
+ * No model is called here, but a deck is downloaded out of the object store and
+ * parsed, and the platform's default allows far less than that takes. A request
+ * that runs out of time is killed with no error anybody can read.
+ */
+export const maxDuration = 60;
 
 export async function GET(request: Request) {
   return withBrainScope(async (scope) => {
