@@ -1,0 +1,60 @@
+name: Keep CIP reading
+
+# Something has to turn the pipeline.
+#
+# Everything CIP does to a new file — extraction, chunks, vectors,
+# understanding, Brand DNA, market reports — runs in one pass, and that pass
+# only ran when an upload happened to nudge it. Files sat unread for weeks.
+#
+# The worker (`npm run cip:worker -- --watch`) is the proper answer and needs a
+# machine that stays on. Vercel's own cron is the other, and on the Hobby plan
+# it will not run more than once a day. This is the free middle: GitHub calls
+# the endpoint, and the endpoint runs one pass.
+#
+# WHY EVERY THIRTY MINUTES
+#
+# A private repository gets 2,000 Actions minutes a month on the free plan, and
+# every job is billed as a whole minute however briefly it runs. Every thirty
+# minutes is 1,440 a month, which fits with room to spare. Every twenty would
+# be 2,160, and would stop working partway through the month.
+#
+# TWO THINGS WORTH KNOWING
+#
+# GitHub disables a scheduled workflow after sixty days without a commit to the
+# repository, and says so by email. And a schedule is a request, not a promise:
+# runs are delayed when GitHub is busy, sometimes by a lot. Neither matters much
+# for work that is catching up rather than racing.
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  # So it can be run by hand after adding a lot of files at once, rather than
+  # waiting out the half hour.
+  workflow_dispatch:
+
+# One at a time. A pass takes minutes, and two of them racing would have both
+# claiming the same files.
+concurrency:
+  group: cip-pump
+  cancel-in-progress: false
+
+jobs:
+  pump:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run one pass
+        env:
+          CIP_URL: ${{ secrets.CIP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$CIP_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "CIP_URL and CRON_SECRET must both be set as repository secrets."
+            exit 1
+          fi
+
+          # --fail-with-body so a refusal is an error the run reports, with
+          # whatever the endpoint said about why, rather than a green tick over
+          # a 404. Five minutes, because a pass reads assets with a vision model.
+          curl --silent --show-error --fail-with-body --max-time 300 \
+            -H "authorization: Bearer $CRON_SECRET" \
+            "$CIP_URL/api/cron/pump"
