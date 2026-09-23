@@ -68,6 +68,8 @@ export class FakeBrainProvider implements BrainProvider {
   checkFindings: CheckFinding[] | null = null;
   /** What the page is, when a test needs it to be something else. */
   checkAssetKind: AssetKind | null = null;
+  /** The last check's input, so a test can see what the Brain was given. */
+  lastCheckInput: CheckInput | null = null;
 
   /**
    * What the next market readings report. Null means: every sentence in the
@@ -107,6 +109,7 @@ export class FakeBrainProvider implements BrainProvider {
     this.failWith = null;
     this.checkFindings = null;
     this.checkAssetKind = null;
+    this.lastCheckInput = null;
     this.identified = null;
     this.marketSignals = null;
     this.chatAnswer = null;
@@ -411,6 +414,7 @@ export class FakeBrainProvider implements BrainProvider {
   async checkCreative(input: CheckInput): Promise<CheckAnalysis> {
     this.calls.check += 1;
     this.check();
+    this.lastCheckInput = input;
 
     // A creative unless a test says otherwise: almost every test is about what
     // happens to a creative, and making each one say so would be noise.

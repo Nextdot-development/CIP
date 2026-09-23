@@ -954,6 +954,41 @@ describe('THE CHECKER: a creative judged against the brand, and nothing else', (
     assert.equal(brandForText('RampurAsava_Tilted.png', roster), 'Rampur');
   });
 
+  // The checker was judging a bottle it had never seen. "The pack is
+  // distorted" and "the logo has been recoloured" are comparisons, and it had
+  // only sentences describing a brand to compare against.
+  it('shows the checker the approved pack, and says it is not a rule', async () => {
+    await adminSql`
+      insert into company_brands (company_id, name) values (${mm.companyId}, '8PM')
+      on conflict do nothing
+    `;
+    // A packshot the Brain has already looked at and called a product photo.
+    // Filed under the brand, as a real packshot is: a bottle must never come
+    // from a sibling brand, so unattributed photographs are not offered.
+    const shot = await uploadImage(mm, '8PM Honey packshot.png');
+    await adminSql`
+      update drive_files set brand = '8PM' where id = ${shot.id} and company_id = ${mm.companyId}
+    `;
+    await adminSql`
+      insert into asset_understanding
+        (company_id, file_id, kind, provider, model, content_hash, status, summary, structured)
+      values (${mm.companyId}, ${shot.id}, 'image', 'fake', 'fake-brain-1', 'hash-packshot',
+              'ready', 'A bottle of 8PM Honey.',
+              ${adminSql.json({ contentType: 'product shot', products: ['8PM Honey'] })})
+    `;
+
+    const { runCheck } = await import('../src/server/brain/checker');
+    const creative = await uploadImage(mm, '8PM Honey banner.png');
+    await runCheck(mm, { fileId: creative.id, brand: '8PM' });
+
+    const sent = fake.lastCheckInput;
+    assert.ok(sent, 'the checker never reached the Brain');
+    assert.ok(sent.references.length >= 1, 'the approved pack was not shown to the checker');
+    // The roster travels with it, so a rule about competitor logos cannot be
+    // turned against one of the company's own brands.
+    assert.ok(sent.houseBrands.includes('8PM'));
+  });
+
   it('throws away a flag that cites a rule nobody sent', async () => {
     await rule('required', 'Carry a responsible drinking message.');
     // R1 exists. R9 does not: that is a rule the model made up, and a flag

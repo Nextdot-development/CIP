@@ -1000,6 +1000,39 @@ export class OpenAIBrainProvider implements BrainProvider {
       },
     ];
 
+    /**
+     * The approved pack, after the creative and clearly labelled as such.
+     *
+     * "The packaging is distorted", "the logo has been recoloured", "that is
+     * not the approved pack" are comparisons, and without these there was
+     * nothing to compare against.
+     *
+     * The warning below is not decoration. A model shown approved work will
+     * otherwise treat everything in it as required and fail any creative that
+     * looks different - which is the exact mistake Radico's document spends a
+     * section on: a reference demonstrates what has been approved, not what is
+     * mandatory.
+     */
+    if (input.references.length > 0) {
+      content.push({
+        type: 'text',
+        text:
+          `\nThe ${input.references.length} image(s) that follow are approved photographs of ` +
+          'this brand, for comparison only. Use them to judge whether the pack and the logo ' +
+          'in the creative are the approved ones and have not been distorted, recoloured or ' +
+          'redrawn.\n\n' +
+          'They are not rules. A creative that looks nothing like them can still be entirely ' +
+          'correct. Never report a finding because the creative differs from these — only ' +
+          'because it breaks one of the rules listed above.',
+      });
+      for (const reference of input.references) {
+        content.push({
+          type: 'image_url',
+          image_url: { url: dataUri(reference.mimeType, reference.bytes), detail: 'high' },
+        });
+      }
+    }
+
     const { parsed, usage } = await this.call<{
       assetKind: string;
       summary: string;

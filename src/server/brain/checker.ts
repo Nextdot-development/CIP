@@ -7,6 +7,7 @@ import { renderPdfPages } from '../drive/extraction/pdfRender';
 import { readAsset } from '../media/generation';
 import { readBrandDna } from './brandDna';
 import { companyBrands } from './brands';
+import { productShots } from './retrieval';
 import { fitForVision } from './fitImage';
 import { brain } from './providers';
 import { BRAIN_LIMITS, BrainFailed } from './providers/types';
@@ -276,6 +277,62 @@ async function fileBytes(
 }
 
 /** What is being checked, resolved to bytes and to the brand it is for. */
+/**
+ * Photographs of the approved pack, for the checker to compare against.
+ *
+ * Until now the checker judged a bottle it had never seen. Asked whether the
+ * packaging was distorted, whether the logo had been recoloured, whether this
+ * was even the approved pack, it had nothing but sentences describing a brand -
+ * and every one of those questions is a comparison.
+ *
+ * The same retrieval the generator uses, and for the same reason: a photograph
+ * of the product is what tells a real bottle from an invented one. Similarity
+ * search answers "what resembles this creative", which for a Diwali banner is
+ * every Diwali banner; these are found by what the Brain called them while it
+ * looked, so what comes back is packshots.
+ *
+ * Failing a check because a reference will not load would be the wrong trade:
+ * the check can still be run without them, only less well.
+ */
+async function packReferences(
+  scope: CompanyScope,
+  brand: string | null,
+): Promise<{ bytes: Buffer; mimeType: string; name: string }[]> {
+  if (!brand) return [];
+
+  const shots = await productShots(scope, {
+    brand,
+    requestText: 'the approved pack and logo',
+    limit: 3,
+  }).catch(() => []);
+  if (shots.length === 0) return [];
+
+  const rows = await withCompanyScope(scope, (tx) =>
+    tx<{ id: string; name: string; mime_type: string; storage_path: string | null }[]>`
+      select id, name, mime_type, storage_path
+        from drive_files
+       where company_id = ${scope.companyId}
+         and id = any(${shots.map((s) => s.fileId)}::uuid[])
+         and archived_at is null
+    `,
+  );
+
+  const store = driveStorage();
+  const references: { bytes: Buffer; mimeType: string; name: string }[] = [];
+  for (const row of rows) {
+    if (!row.storage_path) continue;
+    if (!CHECKABLE_IMAGES.has(row.mime_type.toLowerCase())) continue;
+    try {
+      const raw = await store.get(row.storage_path);
+      const fitted = await fitForVision(raw, row.mime_type);
+      references.push({ bytes: fitted.bytes, mimeType: fitted.mimeType, name: row.name });
+    } catch {
+      // One unreadable reference is not worth failing a check over.
+    }
+  }
+  return references;
+}
+
 async function resolveSubject(
   scope: CompanyScope,
   input: {
@@ -543,6 +600,7 @@ export async function runCheck(
       market,
       rules: sent,
       houseBrands: (await companyBrands(scope)).map((b) => b.name),
+      references: await packReferences(scope, brand),
       fromDocument: subject.fromDocument,
     });
   } catch (error) {

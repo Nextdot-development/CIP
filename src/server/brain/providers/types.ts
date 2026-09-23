@@ -667,6 +667,19 @@ export type CheckInput = {
    */
   houseBrands: string[];
   /**
+   * Photographs of the approved pack, and anything carrying the approved logo.
+   *
+   * Without these the checker was judging a bottle it had never seen. "The
+   * packaging is distorted", "the logo has been recoloured", "this is not the
+   * approved pack" are all comparisons, and it had nothing to compare against -
+   * only sentences describing a brand.
+   *
+   * They are references, not rules. Radico's document is firm about this: a
+   * recurring pattern across approved work is not a requirement, and a creative
+   * that looks unlike them can still be perfectly correct.
+   */
+  references: { bytes: Buffer; mimeType: string; name: string }[];
+  /**
    * Whether this is one page of a document rather than a creative on its own.
    *
    * A deck is mostly not adverts, so its pages have to be allowed to say they
