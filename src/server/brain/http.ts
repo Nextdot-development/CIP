@@ -66,12 +66,37 @@ export function brainErrorResponse(error: unknown): Response {
     );
   }
 
-  // Never echo the error: it can carry a prompt or a document's contents.
-  console.error('[brain] a request failed');
+  // Never echo the error's message: it can carry a prompt or a document's
+  // contents. Its class name carries neither, and without it an unexpected
+  // failure on the deployment is indistinguishable from every other one —
+  // "Something went wrong" was all a PDF check said for a week while the same
+  // PDF checked cleanly on a laptop. The stack is logged for the same reason
+  // and stays on the server.
+  const kind = classOf(error);
+  console.error(`[brain] a request failed unexpectedly: ${kind}`);
+  if (error instanceof Error && error.stack) console.error(error.stack);
+
   return Response.json(
-    { error: 'brain_error', message: 'Something went wrong. Try again in a moment.' },
+    {
+      error: 'brain_error',
+      message: `Something went wrong (${kind}). Try again in a moment.`,
+    },
     { status: 500, headers: noStore },
   );
+}
+
+/**
+ * What kind of thing was thrown, and nothing about what it said.
+ *
+ * Our own class names and the built-in ones — TypeError, ExtractionFailed,
+ * GoogleDriveError. None of them is derived from a document, a prompt or a
+ * file name, so this is safe to show; the message is not, so it is left behind.
+ */
+function classOf(error: unknown): string {
+  if (error instanceof Error && typeof error.name === 'string' && error.name.trim()) {
+    return error.name.slice(0, 40);
+  }
+  return 'unknown';
 }
 
 export { noStore };

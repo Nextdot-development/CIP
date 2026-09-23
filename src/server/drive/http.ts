@@ -31,8 +31,16 @@ export async function withDriveScope(
       return Response.json({ error: 'rejected', message: error.message }, { status: 422 });
     }
     console.error('Drive request failed:', error);
+    // Named, and named differently from the Brain's version of this message.
+    // A dropped creative is uploaded here and then checked there, and when both
+    // layers answered with the same sentence there was no way to tell which of
+    // the two had actually failed.
+    const kind = error instanceof Error && error.name.trim() ? error.name.slice(0, 40) : 'unknown';
     return Response.json(
-      { error: 'drive_error', message: 'Something went wrong. Try again in a moment.' },
+      {
+        error: 'drive_error',
+        message: `The upload went wrong (${kind}). Try again in a moment.`,
+      },
       { status: 500 },
     );
   }
