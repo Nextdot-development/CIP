@@ -1,5 +1,6 @@
 import 'server-only';
 import { withCompanyScope } from '../db';
+import { adminSql } from '../db-admin';
 import type { CompanyScope } from '../db';
 import { embedder, toVectorLiteral } from './embedding';
 
@@ -230,4 +231,107 @@ export async function embedAssets(
   }
 
   return { embedded, skipped };
+}
+
+/**
+ * Posts CIP read off the pages of a deck.
+ *
+ * Three hundred and seventy-five of them, each already embedded when the page
+ * was read, and none of them reachable from the search box. They are the most
+ * specific thing CIP holds about past work - a caption, a headline, the country
+ * it ran in, the product it was for - and "a raspberry post from Nigeria" could
+ * not find one.
+ *
+ * A post is not a file, so what comes back is the deck it is on and which page.
+ */
+export type PostHit = {
+  fileId: string;
+  fileName: string;
+  pageNumber: number;
+  snippet: string;
+  country: string | null;
+  score: number;
+};
+
+export async function searchPosts(
+  scope: CompanyScope,
+  query: string,
+  limit = 12,
+): Promise<PostHit[]> {
+  const text = query.trim();
+  if (text.length < 2) return [];
+
+  const active = embedder();
+  const [vector] = await active.embed([text]);
+  if (!vector) return [];
+
+  const literal = toVectorLiteral(vector);
+  const maxDistance = 1 - Math.min(Math.max(active.minRelevanceScore, 0), 1);
+
+  const rows = await withCompanyScope(scope, async (tx) => {
+    await tx`set local hnsw.iterative_scan = 'relaxed_order'`;
+    return tx<
+      {
+        file_id: string; file_name: string; page_number: number; country: string | null;
+        caption: string | null; headline: string | null; summary: string; score: string;
+      }[]
+    >`
+      select p.file_id, f.name as file_name, p.page_number, p.country,
+             p.caption, p.headline, p.summary,
+             (1 - (p.embedding <=> ${literal}::extensions.vector))::text as score
+        from pdf_post p
+        join drive_files f on f.id = p.file_id and f.company_id = p.company_id
+       where p.company_id = ${scope.companyId}
+         and p.embedding is not null
+         and f.archived_at is null
+         and (p.embedding <=> ${literal}::extensions.vector) <= ${maxDistance}
+       order by p.embedding <=> ${literal}::extensions.vector
+       limit ${Math.min(Math.max(limit, 1), 40)}
+    `;
+  });
+
+  return rows.map((row) => ({
+    fileId: row.file_id,
+    fileName: row.file_name,
+    pageNumber: row.page_number,
+    country: row.country,
+    snippet: [row.headline, row.caption, row.summary].filter(Boolean).join(' — ').slice(0, 260),
+    score: Number(row.score),
+  }));
+}
+
+/**
+ * Embeds the new readings for every company, a few at a time.
+ *
+ * Run from the pass that does the reading, so a picture becomes findable in the
+ * same sweep that CIP first looks at it. Before this it became findable when
+ * somebody remembered to run a script, which is to say: sometimes.
+ *
+ * Bounded, because this shares a pass with extraction, understanding and the
+ * checker, and a hundred new pictures must not starve the rest of it.
+ */
+export async function embedUnderstandingsEverywhere(
+  perCompany = 40,
+): Promise<{ embedded: number }> {
+  const sql = adminSql();
+  let companies: { id: string }[];
+  try {
+    companies = await sql<{ id: string }[]>`select id from companies`;
+  } finally {
+    await sql.end();
+  }
+
+  let embedded = 0;
+  for (const company of companies) {
+    const outcome = await embedAssets(
+      {
+        companyId: company.id,
+        userId: '00000000-0000-0000-0000-000000000000',
+        role: 'owner',
+      },
+      { limit: perCompany },
+    ).catch(() => ({ embedded: 0, skipped: 0 }));
+    embedded += outcome.embedded;
+  }
+  return { embedded };
 }

@@ -1,6 +1,7 @@
 import 'server-only';
 import { claimNextFile, processClaimedFile, recoverStuckFiles } from '../drive/processing';
 import { claimChunksNeedingEmbedding, embedClaimedChunks } from '../drive/embeddingQueue';
+import { embedUnderstandingsEverywhere } from '../drive/assetSearch';
 import {
   claimAssetForUnderstanding,
   enqueueEverywhere,
@@ -245,6 +246,19 @@ async function runPass(): Promise<PumpTally> {
       if (i === PER_STAGE - 1) tally.moreWaiting = true;
     }
   });
+
+  // 3.5 What was just read about a picture, turned into a vector.
+  //
+  //     Without this a creative is invisible to Creative Search until somebody
+  //     remembers to run a script. It is put here rather than in the embedding
+  //     stage above because it depends on the reading that stage does not do:
+  //     there is nothing to embed about a picture until CIP has looked at it.
+  if (tally.understood > 0) {
+    await stage(async () => {
+      const { embedded } = await embedUnderstandingsEverywhere();
+      tally.embedded += embedded;
+    });
+  }
 
   // 4. What they add up to, but only when something new was actually learned.
   if (tally.understood > 0) await recomputeEverywhere().catch(() => {});

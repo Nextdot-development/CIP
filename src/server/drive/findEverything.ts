@@ -1,7 +1,8 @@
 import 'server-only';
+import { withCompanyScope } from '../db';
 import { search } from './service';
 import { semanticSearch } from './semanticSearch';
-import { searchAssets } from './assetSearch';
+import { searchAssets, searchPosts } from './assetSearch';
 import type { CompanyScope } from '../db';
 
 /**
@@ -33,6 +34,7 @@ export type FoundFile = {
   name: string;
   kind: string;
   fileType: string;
+  brand: string | null;
   market: string | null;
   folderName: string | null;
   createdAt: string;
@@ -44,9 +46,60 @@ export type FoundFile = {
     inText: string | null;
     /** What CIP saw when it looked at the picture. */
     inPicture: string | null;
+    /** A post CIP read off one of this deck's pages, and which page. */
+    inPost: { page: number; text: string } | null;
   };
   score: number;
 };
+
+/**
+ * Everything on a card, read from the file's own row.
+ *
+ * The three searches each know a little about a file and none of them knows all
+ * of it: a chunk hit carries no market, an asset hit carries no folder, and
+ * neither carries the date. Filling the gaps with plausible values put today's
+ * date on every result that was not found by name - which is to say, on most of
+ * them - and a date that is simply wrong is worse than no date.
+ *
+ * So the merge decides which files and why, and one query says what they are.
+ */
+async function hydrate(
+  scope: CompanyScope,
+  ids: string[],
+): Promise<Map<string, Omit<FoundFile, 'why' | 'score'>>> {
+  if (ids.length === 0) return new Map();
+
+  const rows = await withCompanyScope(scope, (tx) =>
+    tx<{
+      id: string; name: string; file_type: string; mime_type: string;
+      brand: string | null; market: string | null; created_at: Date; folder_name: string | null;
+    }[]>`
+      select f.id, f.name, f.file_type, f.mime_type, f.brand, f.market, f.created_at,
+             d.name as folder_name
+        from drive_files f
+        left join drive_folders d on d.id = f.folder_id
+       where f.company_id = ${scope.companyId}
+         and f.archived_at is null
+         and f.id = any(${ids}::uuid[])
+    `,
+  );
+
+  return new Map(
+    rows.map((row) => [
+      row.id,
+      {
+        id: row.id,
+        name: row.name,
+        kind: kindOf(row.mime_type, row.file_type),
+        fileType: row.file_type,
+        brand: row.brand,
+        market: row.market,
+        folderName: row.folder_name,
+        createdAt: row.created_at.toISOString(),
+      },
+    ]),
+  );
+}
 
 const PRESENTATION = new Set(['ppt', 'pptx', 'key', 'odp']);
 const SPREADSHEET = new Set(['xls', 'xlsx', 'csv', 'ods']);
@@ -71,6 +124,15 @@ function kindOf(mimeType: string, fileType: string): string {
 const NAME_WEIGHT = 0.6;
 const MEANING_WEIGHT = 1;
 
+/** What each way of looking found about one file, before it is dressed up. */
+type Evidence = {
+  byName: boolean;
+  inText: string | null;
+  inPicture: string | null;
+  inPost: { page: number; text: string } | null;
+  score: number;
+};
+
 export async function findEverything(
   scope: CompanyScope,
   query: string,
@@ -82,74 +144,80 @@ export async function findEverything(
   // Independently, and none of them fatal: a Drive with no embeddings should
   // still find things by name, and an embedder that is down should not make the
   // search page useless.
-  const [byName, inText, inPictures] = await Promise.all([
+  const [byName, inText, inPictures, inPosts] = await Promise.all([
     search(scope, text).catch(() => null),
     semanticSearch(scope, { query: text, limit }).catch(() => null),
     searchAssets(scope, text, limit).catch(() => []),
+    // Posts CIP read off the pages of a deck. Already embedded when the page
+    // was read, and never once reachable from the search box.
+    searchPosts(scope, text, limit).catch(() => []),
   ]);
 
-  const found = new Map<string, FoundFile>();
-
-  const take = (
-    id: string,
-    base: { name: string; kind: string; fileType: string; market: string | null; folderName: string | null; createdAt: string },
-  ): FoundFile => {
-    const existing = found.get(id);
+  const evidence = new Map<string, Evidence>();
+  const take = (id: string): Evidence => {
+    const existing = evidence.get(id);
     if (existing) return existing;
-    const fresh: FoundFile = {
-      id,
-      ...base,
-      why: { byName: false, inText: null, inPicture: null },
-      score: 0,
+    const fresh: Evidence = {
+      byName: false, inText: null, inPicture: null, inPost: null, score: 0,
     };
-    found.set(id, fresh);
+    evidence.set(id, fresh);
     return fresh;
   };
 
   for (const file of byName?.files ?? []) {
-    const row = take(file.id, {
-      name: file.name,
-      kind: file.kind,
-      fileType: file.fileType,
-      market: file.market ?? null,
-      folderName: file.folderName,
-      createdAt: file.createdAt,
-    });
-    row.why.byName = true;
+    const row = take(file.id);
+    row.byName = true;
     row.score += NAME_WEIGHT;
   }
 
   for (const hit of inText?.hits ?? []) {
-    const row = take(hit.fileId, {
-      name: hit.fileName,
-      kind: kindOf('', hit.fileType),
-      fileType: hit.fileType,
-      market: null,
-      folderName: hit.folderName,
-      createdAt: new Date().toISOString(),
-    });
+    const row = take(hit.fileId);
     // The best passage, not the sum of them: a long document mentioning
     // something five times is not five times the answer.
-    if (!row.why.inText) {
-      row.why.inText = hit.snippet.slice(0, 220);
+    if (!row.inText) {
+      row.inText = hit.snippet.slice(0, 220);
       row.score += hit.score * MEANING_WEIGHT;
     }
   }
 
   for (const hit of inPictures) {
-    const row = take(hit.fileId, {
-      name: hit.fileName,
-      kind: kindOf(hit.mimeType, hit.fileType),
-      fileType: hit.fileType,
-      market: hit.market,
-      folderName: null,
-      createdAt: new Date().toISOString(),
-    });
-    if (!row.why.inPicture) {
-      row.why.inPicture = hit.snippet.slice(0, 220);
+    const row = take(hit.fileId);
+    if (!row.inPicture) {
+      row.inPicture = hit.snippet.slice(0, 220);
       row.score += hit.score * MEANING_WEIGHT;
     }
   }
 
-  return [...found.values()].sort((a, b) => b.score - a.score).slice(0, limit);
+  for (const hit of inPosts) {
+    const row = take(hit.fileId);
+    // The best post on the deck, not every one of them: a deck with forty
+    // Nigerian posts is not forty times the answer to "Nigeria".
+    if (!row.inPost) {
+      row.inPost = { page: hit.pageNumber, text: hit.snippet };
+      row.score += hit.score * MEANING_WEIGHT;
+    }
+  }
+
+  // One query for what these files actually are. A file that has been archived
+  // since it was indexed simply does not come back, which is the right answer.
+  const facts = await hydrate(scope, [...evidence.keys()]);
+
+  return [...evidence.entries()]
+    .map(([id, why]) => {
+      const fact = facts.get(id);
+      if (!fact) return null;
+      return {
+        ...fact,
+        why: {
+          byName: why.byName,
+          inText: why.inText,
+          inPicture: why.inPicture,
+          inPost: why.inPost,
+        },
+        score: why.score,
+      } satisfies FoundFile;
+    })
+    .filter((file): file is FoundFile => file !== null)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
 }

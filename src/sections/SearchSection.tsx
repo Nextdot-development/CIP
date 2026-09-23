@@ -45,7 +45,16 @@ const KIND_ICON: Record<string, IconName> = {
 
 const contentUrl = (id: string) => `/api/drive/files/${id}/content?disposition=inline`;
 
-export function SearchSection({ recent, brand }: { recent: SearchCard[]; brand: string | null }) {
+export function SearchSection({
+  recent,
+  brand,
+  unread,
+}: {
+  recent: SearchCard[];
+  brand: string | null;
+  /** Files CIP has never read. No search can return them. */
+  unread: number;
+}) {
   const { note } = useToast();
   const [query, setQuery] = useState('');
   const [kind, setKind] = useState<KindFilter>(null);
@@ -81,9 +90,9 @@ export function SearchSection({ recent, brand }: { recent: SearchCard[]; brand: 
     }
   };
 
-  // The kind chips filter what is on screen before anything is searched. Once
-  // a search has run, its results are what they are - narrowing them by kind
-  // would quietly hide the picture somebody was looking for.
+  // The chips narrow whatever is on screen: the newest work before a search,
+  // the results after one. They used to do nothing at all to results, which is
+  // worse than either - a control that is visible and inert.
   const chooseKind = (value: KindFilter) => setKind(value);
 
   const clear = () => {
@@ -93,6 +102,7 @@ export function SearchSection({ recent, brand }: { recent: SearchCard[]; brand: 
   };
 
   const shownRecent = recent.filter((card) => !kind || card.kind === kind);
+  const shownFound = found?.filter((card) => !kind || card.kind === kind) ?? null;
 
   return (
     <div className="rise">
@@ -132,58 +142,40 @@ export function SearchSection({ recent, brand }: { recent: SearchCard[]; brand: 
         </button>
       </form>
 
-      {!found && (
-        <div className="chiprow" role="group" aria-label="Kind of file">
-          {KINDS.map((option) => (
-            <button
-              key={option.label}
-              type="button"
-              className={`chip ${kind === option.value ? 'is-on' : ''}`}
-              aria-pressed={kind === option.value}
-              onClick={() => chooseKind(option.value)}
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
-      )}
+      <div className="chiprow" role="group" aria-label="Kind of file">
+        {KINDS.map((option) => (
+          <button
+            key={option.label}
+            type="button"
+            className={`chip ${kind === option.value ? 'is-on' : ''}`}
+            aria-pressed={kind === option.value}
+            onClick={() => chooseKind(option.value)}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
 
-      {found && (
+      {shownFound && (
         <>
           <p className="searchnote">
-            {found.length === 0
+            {shownFound.length === 0
               ? `Nothing here is about “${asked}” — not by name, not inside a document, not in a picture.`
-              : `${found.length} file${found.length === 1 ? '' : 's'} about “${asked}”, closest first.`}
+              : `${shownFound.length} file${shownFound.length === 1 ? '' : 's'} about “${asked}”, closest first.`}
           </p>
+          {/* Said with the results rather than instead of them: no search can
+              return a file CIP has never read, and typing something else will
+              not change that. */}
+          {unread > 0 && (
+            <p className="searchnote">
+              {unread} file{unread === 1 ? '' : 's'} in the Drive {unread === 1 ? 'has' : 'have'} not
+              been read yet, so nothing can find {unread === 1 ? 'it' : 'them'} by what
+              {unread === 1 ? ' it is' : ' they are'} about.
+            </p>
+          )}
           <div className="resultgrid">
-            {found.map((card) => (
-              <a
-                key={card.id}
-                className="resultcard"
-                href={contentUrl(card.id)}
-                target="_blank"
-                rel="noreferrer noopener"
-              >
-                <div className="body">
-                  <span className="tag">{card.fileType}</span>
-                  <p className="title">{card.name}</p>
-                  {/* Why it is here. A result nobody expected is only useful if
-                      it can be understood, and "it matched" is not a reason. */}
-                  <p className="meta">
-                    {[
-                      card.why.byName ? 'name' : null,
-                      card.why.inText ? 'in the text' : null,
-                      card.why.inPicture ? 'in the picture' : null,
-                    ]
-                      .filter(Boolean)
-                      .join(' · ')}
-                    {card.folderName ? ` · ${card.folderName}` : ''}
-                  </p>
-                  {(card.why.inPicture || card.why.inText) && (
-                    <p className="snippet">{card.why.inPicture ?? card.why.inText}</p>
-                  )}
-                </div>
-              </a>
+            {shownFound.map((card) => (
+              <FileCard key={card.id} card={card} why={card.why} />
             ))}
           </div>
         </>
@@ -211,9 +203,31 @@ export function SearchSection({ recent, brand }: { recent: SearchCard[]; brand: 
   );
 }
 
-function FileCard({ card }: { card: SearchCard }) {
+function FileCard({
+  card,
+  why,
+}: {
+  card: SearchCard;
+  /** Why the search returned it. Absent in the newest-first list. */
+  why?: FoundFile['why'];
+}) {
+  const reasons = why
+    ? [
+        why.byName && 'name',
+        why.inText && 'in the text',
+        why.inPicture && 'in the picture',
+        why.inPost && `a post on page ${why.inPost.page}`,
+      ]
+        .filter(Boolean)
+        .join(' · ')
+    : '';
+  const passage = why?.inPicture ?? why?.inPost?.text ?? why?.inText ?? null;
+
   return (
     <a className="resultcard" href={contentUrl(card.id)} target="_blank" rel="noreferrer noopener">
+      {/* The picture, because this is a search for pictures. A list of file
+          names is what it looked like without this, and a creative nobody can
+          see is a creative nobody recognises. */}
       <div className="thumb">
         {card.kind === 'image' ? (
           <img src={`${contentUrl(card.id)}&size=640`} alt="" loading="lazy" decoding="async" />
@@ -227,6 +241,10 @@ function FileCard({ card }: { card: SearchCard }) {
         <p className="meta">
           {[card.folderName, card.market, card.createdAt.slice(0, 10)].filter(Boolean).join(' · ')}
         </p>
+        {/* A result nobody expected is only useful if it can be understood,
+            and "it matched" is not a reason. */}
+        {reasons && <p className="meta">Found by {reasons}</p>}
+        {passage && <p className="snippet">{passage}</p>}
       </div>
     </a>
   );

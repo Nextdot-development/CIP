@@ -58,5 +58,28 @@ export default async function SearchPage() {
     createdAt: row.created_at.toISOString(),
   }));
 
-  return <SearchSection recent={recent} brand={active} />;
+  /**
+   * Files CIP has never read a word of.
+   *
+   * No reading and no chunk, so no search will ever return them however
+   * exactly they are described. That is not a search fault and cannot be fixed
+   * by typing something else, so the number is shown rather than left to be
+   * discovered by looking for something that is right there in the Drive.
+   */
+  const [unread] = await withCompanyScope(scope, (tx) =>
+    tx<{ n: number }[]>`
+      select count(*)::int as n
+        from drive_files f
+       where f.company_id = ${scope.companyId}
+         and f.archived_at is null
+         and not exists (
+           select 1 from asset_understanding u
+            where u.file_id = f.id and u.company_id = f.company_id and u.status = 'ready')
+         and not exists (
+           select 1 from drive_file_chunks k
+            where k.file_id = f.id and k.company_id = f.company_id)
+    `,
+  );
+
+  return <SearchSection recent={recent} brand={active} unread={unread?.n ?? 0} />;
 }
