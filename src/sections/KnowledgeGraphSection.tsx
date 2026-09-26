@@ -78,6 +78,10 @@ type ForceGraphProps = {
   linkWidth?: (link: SimLink) => number;
   linkDirectionalParticles?: (link: SimLink) => number;
   linkDirectionalParticleWidth?: number;
+  linkDirectionalParticleSpeed?: number;
+  linkDirectionalParticleColor?: (link: SimLink) => string;
+  linkCurvature?: number;
+  autoPauseRedraw?: boolean;
   onEngineStop?: () => void;
   nodeCanvasObject?: (node: SimNode, ctx: CanvasRenderingContext2D, scale: number) => void;
   nodePointerAreaPaint?: (node: SimNode, color: string, ctx: CanvasRenderingContext2D) => void;
@@ -171,6 +175,14 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
    * a graph anybody can read.
    */
   const [view, setView] = useState<'brands' | 'files' | 'all'>('brands');
+  /**
+   * Each brand's logo or bottle, once it has loaded.
+   *
+   * Loaded by the page rather than drawn from a URL, because a canvas can only
+   * draw a picture it already has. A thumbnail, not the original: a badge is a
+   * few dozen pixels across and a logo file can be several megabytes.
+   */
+  const [images, setImages] = useState<Map<string, NodeImage>>(() => new Map());
   const [busy, setBusy] = useState(false);
   const [size, setSize] = useState({ width: 800, height: 600 });
 
@@ -199,9 +211,30 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
     handle.d3Force('collide', collide());
     // And a gentle pull to the middle, so a brand that shares nothing with
     // the others stays on screen instead of dragging the whole view out.
-    handle.d3Force('gravity', gravity());
+    handle.d3Force('gravity', gravity(size.width / Math.max(1, size.height)));
     handle.d3ReheatSimulation();
-  }, [nodes.length, view]);
+  }, [nodes.length, view, size.width, size.height]);
+
+  useEffect(() => {
+    const wanted = nodes
+      .map((n) => n.imageFileId)
+      .filter((id): id is string => Boolean(id) && !images.has(id!));
+    if (wanted.length === 0) return;
+    let cancelled = false;
+    for (const id of new Set(wanted)) {
+      const image = new Image();
+      image.decoding = 'async';
+      image.onload = () => {
+        if (cancelled) return;
+        setImages((current) => new Map(current).set(id, image));
+      };
+      // A brand whose picture will not load keeps its initials; nothing to say.
+      image.src = `/api/drive/files/${id}/content?disposition=inline&size=320`;
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [nodes, images]);
 
   // The canvas is sized from its container rather than the viewport, so the
   // sidebar and any future chrome are accounted for automatically.
@@ -605,6 +638,19 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
               graphRef.current?.zoomToFit(700, 90);
             }}
             d3VelocityDecay={0.32}
+            // Slightly bowed, as a hand would draw them; straight lines
+            // between thirty nodes read as a wiring diagram.
+            linkCurvature={0.12}
+            // The portfolio is a few dozen nodes, so it is cheap to keep
+            // painting - which lets the logos appear as they load and the
+            // light run along the lines of whatever is being pointed at.
+            autoPauseRedraw={view !== 'brands'}
+            linkDirectionalParticles={(edge) =>
+              focusId !== null && (endId(edge.source) === focusId || endId(edge.target) === focusId) ? 2 : 0
+            }
+            linkDirectionalParticleWidth={2.4}
+            linkDirectionalParticleSpeed={0.006}
+            linkDirectionalParticleColor={() => focusColor ?? '#ffffff'}
             nodeRelSize={5}
             onNodeClick={(node) => setSelected(node)}
             onNodeHover={(node) => setHovered(node?.id ?? null)}
@@ -643,6 +689,7 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
                 lit,
                 matches,
                 expanded,
+                images,
               });
             }}
             nodePointerAreaPaint={(node, color, ctx) => {
@@ -837,8 +884,17 @@ function endId(end: string | { id: string }): string {
   return typeof end === 'string' ? end : end.id;
 }
 
-/** How big a node draws. Weight comes from the server, from real counts. */
+/** A picture that has finished loading, ready to be drawn into a node. */
+type NodeImage = CanvasImageSource & { width: number; height: number };
+
+/**
+ * How big a node draws. Weight comes from the server, from real counts.
+ *
+ * A brand is a badge with its logo in it, so it is drawn a good deal larger
+ * than a dot has to be: a logo at the size of a dot is not a logo.
+ */
 function radiusFor(node: SimNode): number {
+  if (node.type === 'brand') return Math.min(18 + Math.sqrt(node.weight) * 2.5, 28);
   if (node.type === 'trait' && !node.dimension) return Math.min(2.5 + Math.sqrt(node.weight) * 1.1, 6);
   return Math.min(3 + Math.sqrt(node.weight) * 1.9, 13);
 }
@@ -849,7 +905,8 @@ function radiusFor(node: SimNode): number {
  * labels settled on top of one another in a knot in the middle of the canvas.
  */
 function roomFor(node: SimNode): number {
-  const named = node.type === 'brand' || (node.type === 'trait' && node.dimension);
+  if (node.type === 'brand') return radiusFor(node) + 20;
+  const named = node.type === 'trait' && node.dimension;
   return radiusFor(node) + (named ? 16 : 6);
 }
 
@@ -902,13 +959,19 @@ function collide(strength = 0.7) {
  * It drifted hundreds of units out, and fitting the view to include it shrank
  * the rest of the portfolio to a knot in one corner. Obsidian has the same
  * force, and calls it exactly that.
+ *
+ * Pulled harder up and down than side to side, by the shape of the canvas: the
+ * graph then settles as wide as the screen it is on rather than as a round
+ * clump in the middle of a wide one, and fitting it draws everything larger.
  */
-function gravity(strength = 0.07) {
+function gravity(aspect = 2, strength = 0.07) {
   let nodes: SimNode[] = [];
+  const along = strength / Math.sqrt(Math.max(1, aspect));
+  const across = strength * Math.sqrt(Math.max(1, aspect));
   const force = (alpha: number) => {
     for (const node of nodes) {
-      node.vx = (node.vx ?? 0) - (node.x ?? 0) * strength * alpha;
-      node.vy = (node.vy ?? 0) - (node.y ?? 0) * strength * alpha;
+      node.vx = (node.vx ?? 0) - (node.x ?? 0) * along * alpha;
+      node.vy = (node.vy ?? 0) - (node.y ?? 0) * across * alpha;
     }
   };
   force.initialize = (given: SimNode[]) => {
@@ -948,6 +1011,103 @@ function labelOpacity(node: SimNode, scale: number): number {
   }
 }
 
+/** Up to two letters for a brand with no picture: "Blue Finest" is "BF". */
+function initialsOf(name: string): string {
+  const words = name.split(/\s+/).filter(Boolean);
+  const letters = words.length > 1 ? words[0]![0]! + words[1]![0]! : name.slice(0, 2);
+  return letters.toUpperCase();
+}
+
+/**
+ * A brand, drawn as a badge: its logo or its bottle on a dark plate inside a
+ * ring of its colour, glowing. The picture is fitted inside the circle rather
+ * than cropped to fill it - a wordmark cropped to a circle loses its ends, and
+ * a bottle cropped loses its neck.
+ */
+function drawBrand(
+  node: SimNode,
+  ctx: CanvasRenderingContext2D,
+  scale: number,
+  radius: number,
+  color: string,
+  glow: number,
+  image: NodeImage | undefined,
+): void {
+  const x = node.x ?? 0;
+  const y = node.y ?? 0;
+
+  ctx.shadowColor = color;
+  ctx.shadowBlur = glow;
+  const plate = ctx.createRadialGradient(x, y - radius * 0.4, radius * 0.1, x, y, radius);
+  plate.addColorStop(0, image ? '#2a2733' : hexWithAlpha(color, 0.55));
+  plate.addColorStop(1, image ? '#141219' : hexWithAlpha(color, 0.22));
+  ctx.beginPath();
+  ctx.arc(x, y, radius, 0, 2 * Math.PI);
+  ctx.fillStyle = plate;
+  ctx.fill();
+  ctx.shadowBlur = 0;
+
+  if (image && image.width > 0 && image.height > 0) {
+    const inner = radius * 0.78;
+    const fit = Math.min((inner * 2) / image.width, (inner * 2) / image.height);
+    const w = image.width * fit;
+    const h = image.height * fit;
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(x, y, radius - 1.2, 0, 2 * Math.PI);
+    ctx.clip();
+    ctx.drawImage(image, x - w / 2, y - h / 2, w, h);
+    ctx.restore();
+  } else {
+    ctx.fillStyle = 'rgba(255,255,255,0.92)';
+    ctx.font = `700 ${(radius * 0.8).toFixed(2)}px Inter, system-ui, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(initialsOf(node.label ?? node.id), x, y + radius * 0.04);
+  }
+
+  // The ring, in the brand's colour, a fixed width on screen at any zoom.
+  ctx.beginPath();
+  ctx.arc(x, y, radius, 0, 2 * Math.PI);
+  ctx.lineWidth = Math.max(1.6 / scale, radius * 0.1);
+  ctx.strokeStyle = color;
+  ctx.stroke();
+}
+
+/**
+ * A trait drawn as a small planet: a soft disc of its colour, a ring, and a
+ * bright core. It reads as a different kind of thing from a brand at a glance,
+ * which a second size of plain dot never did.
+ */
+function drawTrait(
+  node: SimNode,
+  ctx: CanvasRenderingContext2D,
+  scale: number,
+  radius: number,
+  color: string,
+  glow: number,
+): void {
+  const x = node.x ?? 0;
+  const y = node.y ?? 0;
+
+  ctx.shadowColor = color;
+  ctx.shadowBlur = glow;
+  ctx.beginPath();
+  ctx.arc(x, y, radius, 0, 2 * Math.PI);
+  ctx.fillStyle = hexWithAlpha(color, 0.2);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+
+  ctx.lineWidth = Math.max(1 / scale, radius * 0.14);
+  ctx.strokeStyle = hexWithAlpha(color, 0.9);
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.arc(x, y, radius * 0.38, 0, 2 * Math.PI);
+  ctx.fillStyle = color;
+  ctx.fill();
+}
+
 /**
  * Draws one node.
  *
@@ -966,6 +1126,7 @@ function drawNode(
     lit: Set<string>;
     matches: Set<string>;
     expanded: Set<string>;
+    images: Map<string, NodeImage>;
   },
 ): void {
   const x = node.x ?? 0;
@@ -977,7 +1138,7 @@ function drawNode(
   const isSelected = state.selectedId === node.id;
   const isMatch = state.matches.has(node.id);
   const inLight = !focused || state.lit.has(node.id);
-  const radius = radiusFor(node) * (isFocus ? 1.3 : 1);
+  const radius = radiusFor(node) * (isFocus ? 1.25 : 1);
 
   ctx.globalAlpha = inLight || isMatch ? 1 : 0.1;
 
@@ -989,28 +1150,36 @@ function drawNode(
     ctx.fill();
   }
 
-  // The glow. Brands always carry a little of it, so the portfolio reads as
-  // the lit points it is; whatever is under the pointer carries more.
-  if (isFocus || (focused && inLight) || node.type === 'brand') {
-    ctx.shadowColor = color;
-    ctx.shadowBlur = isFocus ? 28 : focused ? 14 : 10;
+  // Brands always carry a little glow, so the portfolio reads as the lit
+  // points it is; whatever is under the pointer carries more.
+  const glow = isFocus ? 30 : focused && inLight ? 16 : node.type === 'brand' ? 14 : node.type === 'trait' && node.dimension ? 6 : 0;
+
+  if (node.type === 'brand') {
+    drawBrand(node, ctx, scale, radius, color, glow, node.imageFileId ? state.images.get(node.imageFileId) : undefined);
+  } else if (node.type === 'trait' && node.dimension) {
+    drawTrait(node, ctx, scale, radius, color, glow);
+  } else {
+    if (glow > 0) {
+      ctx.shadowColor = color;
+      ctx.shadowBlur = glow;
+    }
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, 2 * Math.PI);
+    ctx.fillStyle = color;
+    ctx.fill();
+    ctx.shadowBlur = 0;
   }
-  ctx.beginPath();
-  ctx.arc(x, y, radius, 0, 2 * Math.PI);
-  ctx.fillStyle = color;
-  ctx.fill();
-  ctx.shadowBlur = 0;
 
   if (isSelected) {
     ctx.beginPath();
-    ctx.arc(x, y, radius + 2.5, 0, 2 * Math.PI);
+    ctx.arc(x, y, radius + 3, 0, 2 * Math.PI);
     ctx.lineWidth = 1.5 / scale;
     ctx.strokeStyle = 'rgba(255,255,255,0.9)';
     ctx.stroke();
   }
 
   // A ring marks something with more inside it that has not been opened.
-  if (node.expandable && !state.expanded.has(node.id)) {
+  if (node.expandable && node.type !== 'brand' && !state.expanded.has(node.id)) {
     ctx.beginPath();
     ctx.arc(x, y, radius + 2.5, 0, 2 * Math.PI);
     ctx.lineWidth = 1 / scale;
@@ -1037,7 +1206,7 @@ function drawNode(
     // a thing to draw, and one missing must never take down a page.
     const name = node.label ?? node.id;
     const label = name.length > 30 ? `${name.slice(0, 29)}…` : name;
-    const top = y + radius + 3 / scale;
+    const top = y + radius + 4 / scale;
 
     ctx.globalAlpha = (inLight || isMatch ? 1 : 0.1) * opacity;
     // A dark halo behind the text, so a label crossing a line stays readable.

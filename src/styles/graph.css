@@ -76,6 +76,7 @@
 .graph-canvas {
   position: relative; flex: 1; min-width: 0;
   background:
+    radial-gradient(circle, rgba(255, 255, 255, 0.045) 0.8px, transparent 1.2px) 0 0 / 22px 22px,
     radial-gradient(ellipse 70% 60% at 50% 45%, rgba(92, 70, 140, 0.16), transparent 70%),
     radial-gradient(ellipse at center, #17161c 0%, #111015 55%, #0b0a0e 100%);
 }

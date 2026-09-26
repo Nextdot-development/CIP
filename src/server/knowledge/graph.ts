@@ -68,6 +68,8 @@ export type GraphNode = {
   dimension?: TraitDimension;
   /** Trait-only: how many brands hang off it. */
   brandCount?: number;
+  /** Brand-only: its logo or a clean photograph of its pack, to draw in its node. */
+  imageFileId?: string;
   /** Whether this node has neighbours that are not loaded yet. */
   expandable: boolean;
 };
@@ -239,11 +241,36 @@ async function overview(
     // The roster, and how CIP worked out its brands relate to each other.
     // Both are cheap: a roster is a handful of rows and the relations are
     // already computed, so drawing them costs a page load nothing.
-    const brandRows = await tx<{ name: string; file_count: number }[]>`
+    // And for each, the picture to draw it with: its logo, or failing that its
+    // bottle on a plain ground. Never a poster or a lifestyle shot - shrunk to
+    // a node those are a smear of colour that says nothing about whose it is,
+    // and "product" alone let three of them through, because a static ad with
+    // a bottle in it is read as a product shot too. A file called "logo" counts
+    // even when CIP read it as a "graphic", which is what 8PM's logo was.
+    // PNG first, since cut-out packshots and logos with no background are PNGs.
+    const brandRows = await tx<{ name: string; file_count: number; image_file_id: string | null }[]>`
       select b.name,
              (select count(*)::int from drive_files df
                where df.company_id = b.company_id and df.brand = b.name
-                 and df.archived_at is null) as file_count
+                 and df.archived_at is null) as file_count,
+             (select df.id from drive_files df
+                join asset_understanding u
+                  on u.file_id = df.id and u.company_id = df.company_id and u.status = 'ready'
+               where df.company_id = b.company_id and df.brand = b.name
+                 and df.archived_at is null
+                 and lower(df.mime_type) in ('image/png', 'image/jpeg', 'image/webp')
+                 and (
+                   u.structured->>'contentType' ilike '%logo%'
+                   or df.name ~* 'logo'
+                   or (u.structured->>'contentType' ~* '(pack|product|photo|render)'
+                       and u.structured->>'contentType' !~* '(poster|advert|static|lifestyle|hero|creative|in situ)'
+                       and coalesce(u.structured->>'background', '') ~* '(white|transparent|plain|solid|isolated|cut)')
+                 )
+               order by case when u.structured->>'contentType' ilike '%logo%' or df.name ~* 'logo'
+                             then 0 else 1 end,
+                        case when lower(df.mime_type) = 'image/png' then 0 else 1 end,
+                        df.created_at desc
+               limit 1) as image_file_id
         from company_brands b
        where b.company_id = ${scope.companyId}
        order by b.position, b.name
@@ -357,6 +384,7 @@ async function overview(
       source: null,
       weight: 4 + Math.min(brand.file_count, 12),
       expandable: brand.file_count > 0,
+      ...(brand.image_file_id ? { imageFileId: brand.image_file_id } : {}),
     });
   }
 

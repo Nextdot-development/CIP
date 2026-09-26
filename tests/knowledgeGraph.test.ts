@@ -368,6 +368,44 @@ describe('two graphs, drawn one at a time', () => {
     await recomputeRelations(mm);
   }
 
+  // A brand is drawn with its logo, or a clean photograph of its bottle -
+  // never a poster, which at the size of a node is a smear of colour. Three
+  // brands were drawn with posters when "product" alone was the test, because
+  // a static ad with a bottle in it is read as a product shot too.
+  it('draws each brand with its logo or its bottle, never a poster', async () => {
+    await portfolio();
+
+    async function picture(brand: string, filename: string, contentType: string, background: string) {
+      const file = await drive.uploadFile(mm, {
+        folderId: null, filename, mimeType: 'image/png', body: Buffer.from(filename),
+      });
+      await adminSql`update drive_files set brand = ${brand} where id = ${file.id}`;
+      await adminSql`
+        insert into asset_understanding
+          (company_id, file_id, kind, provider, model, content_hash, status, summary, structured)
+        values (${mm.companyId}, ${file.id}, 'image', 'fake', 'fake-brain-1', ${'hash-' + filename},
+                'ready', ${filename}, ${adminSql.json({ contentType, background })})
+      `;
+      return file.id;
+    }
+
+    await picture('Rampur', 'Rampur beach poster.png', 'advertising poster', 'blurred beach at sunset');
+    const rampurLogo = await picture('Rampur', 'Rampur mark.png', 'logo', 'transparent');
+    await picture('8PM', '8PM static.png', 'static ad / product shot', 'plain white');
+    const bottle = await picture('8PM', '8PM bottle.png', 'product shot', 'plain white / cut-out');
+    // Read as a "graphic", but called a logo by whoever saved it.
+    const named = await picture('Jaisalmer', 'Jaisalmer logo.png', 'graphic', 'white');
+    await picture('Sangam', 'Sangam lounge.png', 'static lifestyle product photograph', 'warm bar interior');
+
+    const built = await graph.knowledgeGraph(mm);
+    const imageOf = (name: string) => built.nodes.find((n) => n.type === 'brand' && n.label === name)?.imageFileId;
+
+    assert.equal(imageOf('Rampur'), rampurLogo, 'a logo beats a poster');
+    assert.equal(imageOf('8PM'), bottle, 'a clean bottle, not an ad with a bottle in it');
+    assert.equal(imageOf('Jaisalmer'), named, 'a file called a logo is a logo');
+    assert.equal(imageOf('Sangam'), undefined, 'a brand with only posters is drawn with its initials');
+  });
+
   it('opens on the portfolio, not on every file at once', async () => {
     await portfolio();
     const result = await graph.knowledgeGraph(mm);

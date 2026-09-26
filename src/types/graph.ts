@@ -30,6 +30,12 @@ export type GraphNodeDTO = {
   dimension?: GraphTraitDimension;
   /** Trait-only: how many brands hang off it. */
   brandCount?: number;
+  /**
+   * Brand-only: a picture of it to draw in its node - its logo, or failing
+   * that a photograph of the pack. Absent when CIP holds neither, and the node
+   * then carries the brand's initials instead.
+   */
+  imageFileId?: string;
   expandable: boolean;
 };
 
