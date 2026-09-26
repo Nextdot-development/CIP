@@ -705,6 +705,16 @@ export type VideoSequence = {
   at: number[];
   /** Frames per row, so "frame 4" can be found on the sheet. */
   columns: number;
+  /** How many shots the video was cut into. */
+  shots: number;
+  /** False when some short shots did not fit on the sheet. */
+  complete: boolean;
+  /** The soundtrack, in words, or why there are none. */
+  heard:
+    | { status: 'heard'; text: string }
+    | { status: 'nothing_said' }
+    | { status: 'no_audio' }
+    | { status: 'failed' };
 };
 
 export type IdentifyInput = {
@@ -796,6 +806,15 @@ export const BRAIN_LIMITS = {
   /** Frames sampled from a video. More costs more and says little extra. */
   get maxVideoFrames(): number {
     return fromEnv('CIP_BRAIN_MAX_VIDEO_FRAMES', 6);
+  },
+  /**
+   * Frames on the sheet a video is checked from. One per shot at least, so
+   * more than the understanding sample: a check that skips a shot can pass
+   * the one shot that breaks a rule. Past a dozen each frame is too small to
+   * read a warning off.
+   */
+  get maxCheckFrames(): number {
+    return fromEnv('CIP_BRAIN_MAX_CHECK_FRAMES', 12);
   },
   get maxVideoSeconds(): number {
     return fromEnv('CIP_BRAIN_MAX_VIDEO_SECONDS', 600);

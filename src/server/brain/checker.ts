@@ -116,7 +116,23 @@ export type CreativeCheck = {
   rulesConsidered: number;
   errorMessage: string | null;
   createdAt: string;
+  /**
+   * For a video: which frames it was judged on and what its soundtrack was
+   * taken to say. Shown so a reviewer can tell a clean verdict on the whole
+   * film from one on a sample that missed a shot or misheard a line.
+   */
+  video: VideoCheck | null;
   flags: CheckFlag[];
+};
+
+export type VideoCheck = {
+  durationSeconds: number;
+  shots: number;
+  framesAt: number[];
+  /** False when some short shots did not fit on the sheet. */
+  complete: boolean;
+  heardStatus: 'heard' | 'nothing_said' | 'no_audio' | 'failed';
+  heard: string | null;
 };
 
 /**
@@ -423,7 +439,11 @@ async function resolveSubject(
      * failed for lacking it. See contactSheet.ts.
      */
     if ((ANALYSABLE_VIDEO_TYPES as readonly string[]).includes(mime)) {
-      const sheet = await videoContactSheet(await fileBytes(scope, file), VIDEO_EXTENSIONS[mime] ?? 'mp4');
+      const sheet = await videoContactSheet(
+        await fileBytes(scope, file),
+        VIDEO_EXTENSIONS[mime] ?? 'mp4',
+        file.name,
+      );
       return {
         fileId: file.id,
         generationId: null,
@@ -621,6 +641,8 @@ export async function runCheck(
   );
   const checkId = created[0]!.id;
 
+  const video = subject.sequence ?? null;
+
   let analysis;
   try {
     const fitted = await fitForVision(subject.bytes, subject.mimeType);
@@ -685,6 +707,12 @@ export async function runCheck(
              detected_evidence = ${identified?.evidence ?? null},
              score = ${scores.score}, visual_score = ${scores.visual},
              verbal_score = ${scores.verbal}, compliance_score = ${scores.compliance},
+             video_seconds = ${video?.durationSeconds ?? null}::real,
+             video_shots = ${video?.shots ?? null}::int,
+             video_frames = ${video ? video.at : null}::real[],
+             video_complete = ${video ? video.complete : null}::boolean,
+             heard = ${video?.heard.status === 'heard' ? video.heard.text : null}::text,
+             heard_status = ${video?.heard.status ?? null}::text,
              completed_at = now()
        where id = ${checkId} and company_id = ${scope.companyId}
     `;
@@ -693,12 +721,33 @@ export async function runCheck(
   return (await getCheck(scope, checkId))!;
 }
 
+type VideoColumns = {
+  video_seconds: number | null;
+  video_shots: number | null;
+  video_frames: number[] | null;
+  video_complete: boolean | null;
+  heard: string | null;
+  heard_status: VideoCheck['heardStatus'] | null;
+};
+
+function videoOf(row: VideoColumns): VideoCheck | null {
+  if (row.video_seconds === null || row.heard_status === null) return null;
+  return {
+    durationSeconds: row.video_seconds,
+    shots: row.video_shots ?? 0,
+    framesAt: (row.video_frames ?? []).map(Number),
+    complete: row.video_complete ?? true,
+    heardStatus: row.heard_status,
+    heard: row.heard,
+  };
+}
+
 /** One check with its flags, and what each flag was judged against. */
 export async function getCheck(scope: CompanyScope, checkId: string): Promise<CreativeCheck | null> {
   if (!UUID.test(checkId)) return null;
 
   return withCompanyScope(scope, async (tx) => {
-    const checks = await tx<{
+    const checks = await tx<({
       id: string; file_id: string | null; generation_id: string | null; subject: string | null;
       brand: string | null; market: string | null; status: CreativeCheck['status'];
       score: number | null; visual_score: number | null; verbal_score: number | null;
@@ -706,11 +755,12 @@ export async function getCheck(scope: CompanyScope, checkId: string): Promise<Cr
       rules_considered: number; error_message: string | null; created_at: Date;
       asset_kind: AssetKind; detected_product: string | null;
       detected_confidence: number | null; detected_evidence: string | null;
-    }[]>`
+    } & VideoColumns)[]>`
       select c.id, c.file_id, c.generation_id, f.name as subject, c.brand, c.market, c.status,
              c.score, c.visual_score, c.verbal_score, c.compliance_score, c.summary,
              c.facts_considered, c.rules_considered, c.error_message, c.created_at,
-             c.asset_kind, c.detected_product, c.detected_confidence, c.detected_evidence
+             c.asset_kind, c.detected_product, c.detected_confidence, c.detected_evidence,
+             c.video_seconds, c.video_shots, c.video_frames, c.video_complete, c.heard, c.heard_status
         from creative_checks c
         left join drive_files f on f.id = c.file_id and f.company_id = c.company_id
        where c.id = ${checkId} and c.company_id = ${scope.companyId}
@@ -762,6 +812,7 @@ export async function getCheck(scope: CompanyScope, checkId: string): Promise<Cr
       rulesConsidered: check.rules_considered,
       errorMessage: check.error_message,
       createdAt: check.created_at.toISOString(),
+      video: videoOf(check),
       flags: flags.map((g) => ({
         id: g.id,
         dimension: g.dimension,
@@ -787,7 +838,7 @@ export async function listChecks(
   limit = 30,
 ): Promise<Omit<CreativeCheck, 'flags'>[]> {
   return withCompanyScope(scope, async (tx) => {
-    const rows = await tx<{
+    const rows = await tx<({
       id: string; file_id: string | null; generation_id: string | null; subject: string | null;
       brand: string | null; market: string | null; status: CreativeCheck['status'];
       score: number | null; visual_score: number | null; verbal_score: number | null;
@@ -795,11 +846,12 @@ export async function listChecks(
       rules_considered: number; error_message: string | null; created_at: Date;
       asset_kind: AssetKind; detected_product: string | null;
       detected_confidence: number | null; detected_evidence: string | null;
-    }[]>`
+    } & VideoColumns)[]>`
       select c.id, c.file_id, c.generation_id, f.name as subject, c.brand, c.market, c.status,
              c.score, c.visual_score, c.verbal_score, c.compliance_score, c.summary,
              c.facts_considered, c.rules_considered, c.error_message, c.created_at,
-             c.asset_kind, c.detected_product, c.detected_confidence, c.detected_evidence
+             c.asset_kind, c.detected_product, c.detected_confidence, c.detected_evidence,
+             c.video_seconds, c.video_shots, c.video_frames, c.video_complete, c.heard, c.heard_status
         from creative_checks c
         left join drive_files f on f.id = c.file_id and f.company_id = c.company_id
        where c.company_id = ${scope.companyId}
@@ -832,6 +884,7 @@ export async function listChecks(
       rulesConsidered: c.rules_considered,
       errorMessage: c.error_message,
       createdAt: c.created_at.toISOString(),
+      video: videoOf(c),
     }));
   });
 }

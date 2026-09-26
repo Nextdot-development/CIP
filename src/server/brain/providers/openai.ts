@@ -1484,19 +1484,69 @@ function videoSheetNote(sequence: VideoSequence): string {
     return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`;
   };
   const rows = Math.ceil(sequence.at.length / sequence.columns);
-  const moments = sequence.at.map((at, i) => `frame ${i + 1} at ${clock(at)}`).join(', ');
+  // Tenths of a second, not whole ones: two frames from a fast cut a moment
+  // apart would otherwise both be "0:04", and a finding could not say which.
+  const moments = sequence.at.map((at, i) => `frame ${i + 1} at ${at.toFixed(1)}s`).join(', ');
+
+  const coverage = sequence.complete
+    ? `The video has ${sequence.shots} shot${sequence.shots === 1 ? '' : 's'}, and every one ` +
+      'of them is on this sheet: each frame is from the middle of its shot, and a long ' +
+      'shot has more than one.'
+    : `The video has ${sequence.shots} shots, more than fit here, so some short shots ` +
+      'are not on this sheet. Do not report anything as absent from the whole video ' +
+      'when it could have been in a shot you were not shown; say it was not seen in ' +
+      'these frames instead.';
 
   return (
     `This image is not one picture. It is ${sequence.at.length} frames from a ` +
     `${clock(sequence.durationSeconds)} video, laid out ${sequence.columns} across and ` +
-    `${rows} down, in order left to right and then top to bottom: ${moments}. The ` +
-    'last frame is taken just before the end, so an end card will be on it.\n\n' +
+    `${rows} down, in order left to right and then top to bottom: ${moments}. ` +
+    `${coverage} The last frame is taken just before the end, so an end card will ` +
+    'be on it.\n\n' +
     'Judge the video as a whole, not each frame alone. Something a rule requires is ' +
     'present if it is visible in any frame - a statutory warning shown only on the end ' +
     'card is present, not missing. Something a rule forbids is present if it is visible ' +
     'in any frame. When a finding depends on particular frames, say which ones, by ' +
     'number or time. The dark lines between frames and the grid itself are how the ' +
     'video was laid out for you; they are not part of the creative and are never a ' +
-    'fault.\n\n'
+    'fault. A frame is a still from moving footage, and text caught while it animates ' +
+    'on can look misspelt. Do not ignore it - it may be a real error - but report it as ' +
+    'a note that names the frame and says it may be mid-animation, so a person watches ' +
+    'that moment rather than rejecting the film for it.\n\n' +
+    heardNote(sequence.heard)
   );
+}
+
+/**
+ * What the video says, as far as anybody could hear.
+ *
+ * Each case is told apart because each licenses something different. Words
+ * that were heard can break a rule. Silence means the voiceover rules have
+ * nothing to act on. A failed transcription means nobody knows, and the model
+ * must not fill that gap with "the disclaimer is not spoken".
+ */
+function heardNote(heard: VideoSequence['heard']): string {
+  switch (heard.status) {
+    case 'heard':
+      return (
+        'What is said in the video, transcribed automatically from its soundtrack. It ' +
+        'can contain transcription mistakes and, over music, song lyrics:\n' +
+        `"""\n${heard.text}\n"""\n` +
+        'Rules about what an advert claims or says apply to these words as much as to ' +
+        'on-screen text. A line that is only spoken does not satisfy a rule that ' +
+        'requires something to be shown on screen. Only report a spoken problem when ' +
+        'the words plainly say it; a phrase that could be a mishearing or a lyric is not ' +
+        'evidence.\n\n'
+      );
+    case 'nothing_said':
+      return 'The video has sound but no speech could be made out in it. Judge what is shown.\n\n';
+    case 'no_audio':
+      return 'The video has no sound at all. Judge what is shown.\n\n';
+    case 'failed':
+      return (
+        'The soundtrack could not be transcribed, so what is said in this video is ' +
+        'unknown. Do not report anything as missing from the voiceover or as spoken; ' +
+        'judge only what is shown.\n\n'
+      );
+  }
 }

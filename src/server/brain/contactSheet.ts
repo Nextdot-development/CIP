@@ -1,7 +1,7 @@
 import 'server-only';
 import { BRAIN_LIMITS, BrainFailed } from './providers/types';
 import type { VideoSequence } from './providers/types';
-import { checkpointsFor, frameAt, readVideoMetadata, withTempFile } from './media';
+import { frameAt, framesForShots, hear, readVideoMetadata, sceneCuts, withTempFile } from './media';
 import type { SampledFrame } from './media';
 
 /**
@@ -17,6 +17,13 @@ import type { SampledFrame } from './media';
  * that is what it is looking at and when each frame was taken. It can then say
  * "the warning is on the last frame only", which is a real finding, instead of
  * "there is no warning", which is not.
+ *
+ * Which frames: one from every shot, found by where the picture cuts, rather
+ * than one every few seconds. A clock-driven sample drops whatever falls
+ * between its ticks, and the shot that breaks a rule is so often the short
+ * one. And the soundtrack is transcribed alongside, because an advert says
+ * things as well as showing them - a voiceover claim is as much the advert as
+ * a headline is.
  */
 
 /** Between frames, so two adjacent shots cannot be read as one wide one. */
@@ -28,7 +35,11 @@ export type ContactSheet = {
   sequence: VideoSequence;
 };
 
-export async function videoContactSheet(bytes: Buffer, extension: string): Promise<ContactSheet> {
+export async function videoContactSheet(
+  bytes: Buffer,
+  extension: string,
+  filename = 'video',
+): Promise<ContactSheet> {
   if (bytes.byteLength > BRAIN_LIMITS.maxVideoBytes) {
     throw new BrainFailed('UNSUPPORTED_ASSET', 'permanent', 'That video is too large to check.');
   }
@@ -43,8 +54,16 @@ export async function videoContactSheet(bytes: Buffer, extension: string): Promi
       );
     }
 
+    // Listening and cutting are independent, so they run side by side: the
+    // transcription is a network call and the cut detection is a decode.
+    const [heard, cuts] = await Promise.all([
+      hear(path, metadata, filename),
+      sceneCuts(path),
+    ]);
+    const plan = framesForShots(metadata.durationSeconds, cuts);
+
     const frames: SampledFrame[] = [];
-    for (const at of checkpointsFor(metadata.durationSeconds)) {
+    for (const at of plan.at) {
       // The last moment can land past the final keyframe and decode to
       // nothing. A second earlier is still the end card.
       const frame = (await frameAt(path, at, 1280)) ?? (await frameAt(path, Math.max(0, at - 1), 1280));
@@ -54,22 +73,32 @@ export async function videoContactSheet(bytes: Buffer, extension: string): Promi
       throw new BrainFailed('UNSUPPORTED_ASSET', 'permanent', 'CIP could not take any frames from that video.');
     }
 
-    return layOut(frames, metadata.durationSeconds);
+    return layOut(frames, {
+      durationSeconds: metadata.durationSeconds,
+      shots: plan.shots,
+      complete: plan.complete,
+      heard,
+    });
   });
 }
 
-async function layOut(frames: SampledFrame[], durationSeconds: number): Promise<ContactSheet> {
+async function layOut(
+  frames: SampledFrame[],
+  video: Omit<VideoSequence, 'at' | 'columns'>,
+): Promise<ContactSheet> {
   const { createCanvas, loadImage } = await import('@napi-rs/canvas');
   const images = await Promise.all(frames.map((f) => loadImage(f.bytes)));
   const width = images[0]!.width;
   const height = images[0]!.height;
 
-  // Upright video (a reel, a story) reads well three across; a wide one
-  // shrinks too far that way and goes two across. Four upright frames go two
-  // by two rather than leaving half a row empty.
+  // Upright video (a reel, a story) is laid out wider than it is tall, and a
+  // wide one taller than it is wide, so the sheet stays near square and no
+  // frame is shrunk further than it has to be. Between the two widths that
+  // suit it, the one that leaves fewer empty places wins: nine frames four
+  // across left three blank cells and made every frame smaller for nothing.
   const n = images.length;
   const upright = height > width;
-  const columns = upright ? (n === 4 ? 2 : Math.min(n, 3)) : Math.min(n, 2);
+  const columns = n <= (upright ? 3 : 2) ? n : n === 4 ? 2 : fewestGaps(n, upright ? [3, 4] : [2, 3]);
   const rows = Math.ceil(n / columns);
 
   // As large as the vision model will look at, and never larger than the
@@ -102,9 +131,15 @@ async function layOut(frames: SampledFrame[], durationSeconds: number): Promise<
     bytes: canvas.toBuffer('image/jpeg', 88),
     mimeType: 'image/jpeg',
     sequence: {
-      durationSeconds,
+      ...video,
       at: frames.map((f) => f.atSeconds),
       columns,
     },
   };
+}
+
+/** The width that leaves the fewest empty places, the wider on a tie. */
+function fewestGaps(n: number, widths: [number, number]): number {
+  const gaps = (w: number) => Math.ceil(n / w) * w - n;
+  return gaps(widths[0]) < gaps(widths[1]) ? widths[0] : widths[1];
 }

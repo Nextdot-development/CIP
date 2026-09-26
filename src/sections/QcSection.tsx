@@ -42,6 +42,15 @@ type Report = {
     flags: CheckFlag[];
     /** What CIP worked out when nobody said which brand it was. */
     detected: { product: string | null; confidence: number; evidence: string | null } | null;
+    /** For a video: which moments it was judged on and what it was heard to say. */
+    video: {
+      durationSeconds: number;
+      shots: number;
+      framesAt: number[];
+      complete: boolean;
+      heardStatus: 'heard' | 'nothing_said' | 'no_audio' | 'failed';
+      heard: string | null;
+    } | null;
   };
   verdict: 'pass' | 'fix' | 'review' | 'nothing_to_check' | 'not_a_creative';
   passed: { id: string; rule: string; verified: boolean }[];
@@ -504,6 +513,44 @@ export function QcSection({
 }
 
 /**
+ * What a video's verdict rests on: the moments looked at, and the words heard.
+ *
+ * A clean verdict on every shot and a clean verdict on a sample that skipped
+ * three of them look identical otherwise, and so do "nothing was said" and
+ * "nobody could hear it". The transcript is shown in full because it is the
+ * part most likely to be wrong, and a reviewer can only catch a mishearing by
+ * reading it.
+ */
+function VideoNote({ video }: { video: NonNullable<Report['check']['video']> }) {
+  const heard =
+    video.heardStatus === 'heard'
+      ? null
+      : video.heardStatus === 'nothing_said'
+        ? 'It has sound, but no speech CIP could make out.'
+        : video.heardStatus === 'no_audio'
+          ? 'It has no sound.'
+          : 'Its sound could not be transcribed, so the voiceover was not checked. Listen to it yourself.';
+
+  return (
+    <div className="tiny muted" style={{ marginTop: 8 }}>
+      <p>
+        Watched {video.framesAt.length} moments from {video.shots} shot{video.shots === 1 ? '' : 's'}
+        {' '}({video.framesAt.map((t) => `${t.toFixed(1)}s`).join(', ')}).
+        {video.complete ? ' Every shot was looked at.' : ' Some short shots did not fit and were not looked at.'}
+      </p>
+      {heard ? (
+        <p style={{ marginTop: 4 }}>{heard}</p>
+      ) : (
+        <details style={{ marginTop: 4 }}>
+          <summary>What CIP heard (automatic, can mishear)</summary>
+          <p style={{ marginTop: 4, whiteSpace: 'pre-wrap' }}>{video.heard}</p>
+        </details>
+      )}
+    </div>
+  );
+}
+
+/**
  * The whole document's verdict, and then each page's.
  *
  * The summary at the top is worked out from the pages, not asked of anything:
@@ -608,6 +655,8 @@ function QcReport({
           {!report.check.brand ? ' — pick the brand above to apply its own rules' : ''}
         </p>
       )}
+
+      {report.check.video && <VideoNote video={report.check.video} />}
 
       {report.check.summary && (
         <p style={{ marginTop: 12 }}>{report.check.summary}</p>

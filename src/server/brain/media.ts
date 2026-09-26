@@ -178,28 +178,157 @@ export async function frameAt(
 }
 
 /**
- * The moments to look at when checking a video before it goes out.
+ * Where the shots change, in seconds.
  *
- * Not the same as the understanding sample, which skips the last few seconds
- * because videos so often close on black. A check cannot skip them: the end
- * card is where the packshot, the logo and very often the statutory warning
- * are, and a check that never looked at it would call a compliant film
- * non-compliant. So the last moment is half a second from the end.
+ * ffmpeg scores how different each frame is from the one before, and a score
+ * past the threshold is a cut. That is a full decode, so it is done at a
+ * thumbnail's size: a cut is as visible at 320 pixels as at 1920, and the
+ * difference in time is the difference between seconds and a minute.
  *
- * One frame per three seconds, up to the limit, so a five-second bumper is not
- * sampled six times over.
+ * Twice, because there are two kinds of change. A hard cut - and a one-second
+ * flash between two shots - shows between one frame and the next. A dissolve,
+ * a push-in or a morph does not: each frame is nearly its neighbour, so no
+ * threshold that ignores noise ever fires. On a real 20-second Whytehall film
+ * frame-to-frame found one change where there were six. Comparing frames half
+ * a second apart turns a slow change into a step and found all six.
+ *
+ * An empty list is a real answer - one continuous shot - not a failure.
  */
-export function checkpointsFor(
-  durationSeconds: number,
-  most = BRAIN_LIMITS.maxVideoFrames,
-): number[] {
-  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) return [];
-  const count = Math.max(1, Math.min(most, Math.ceil(durationSeconds / 3)));
-  if (count === 1) return [durationSeconds / 2];
+export async function sceneCuts(path: string, threshold = 0.3): Promise<number[]> {
+  const [hard, gradual] = await Promise.all([
+    changesAt(path, `scale=320:-2,select='gt(scene,${threshold})',showinfo`),
+    changesAt(path, `fps=2,scale=320:-2,select='gt(scene,${threshold})',showinfo`),
+  ]);
 
-  const first = Math.min(1, durationSeconds * 0.05);
-  const last = Math.max(first, durationSeconds - Math.min(0.5, durationSeconds * 0.05));
-  return Array.from({ length: count }, (_, i) => first + ((last - first) * i) / (count - 1));
+  // Both passes see a hard cut, a moment apart. One change is one change.
+  return [...hard, ...gradual]
+    .sort((a, b) => a - b)
+    .filter((at, i, all) => i === 0 || at - all[i - 1]! >= 0.4);
+}
+
+async function changesAt(path: string, filter: string): Promise<number[]> {
+  let stderr = '';
+  try {
+    ({ stderr } = await run(
+      ffmpegPath(),
+      ['-hide_banner', '-nostats', '-i', path, '-an', '-vf', filter, '-f', 'null', '-'],
+      { timeout: 180_000, maxBuffer: 16 * 1024 * 1024 },
+    ));
+  } catch (error) {
+    stderr = String((error as { stderr?: unknown }).stderr ?? '');
+  }
+
+  const found: number[] = [];
+  for (const match of stderr.matchAll(/pts_time:\s*([0-9.]+)/g)) {
+    const at = Number(match[1]);
+    if (Number.isFinite(at)) found.push(at);
+  }
+  return found;
+}
+
+/** Which frames go on a check's sheet, and whether every shot made it. */
+export type ShotPlan = {
+  at: number[];
+  shots: number;
+  /** False when there were more shots than room, and some short ones are not shown. */
+  complete: boolean;
+};
+
+/** Seconds of one shot that a single frame is taken to stand for. */
+const SECONDS_PER_FRAME = 4;
+
+/**
+ * The moments to look at when checking a video, one shot at a time.
+ *
+ * Every shot gets a frame, however short, because the shot that breaks a rule
+ * is often the short one: a second of a bottle nobody approved between two long
+ * lifestyle shots. Each frame is from the middle of its shot rather than its
+ * start, so it is not a half-dissolved transition or a line of text still being
+ * typed on. A long shot gets more than one, since things change inside a shot
+ * too - a line of copy appears, a warning fades in.
+ *
+ * The end card is always there, half a second from the end: the packshot, the
+ * logo and very often the statutory warning are on it.
+ *
+ * When there are more frames than room, the first and last are kept and the
+ * rest are thinned evenly, and the plan says so.
+ */
+export function framesForShots(
+  durationSeconds: number,
+  cuts: number[],
+  most = BRAIN_LIMITS.maxCheckFrames,
+): ShotPlan {
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+    return { at: [], shots: 0, complete: true };
+  }
+
+  // Cuts in the first or last fraction of a second are fades from and to
+  // black, and two cuts closer than that are one transition scored twice.
+  const inside = [...cuts]
+    .filter((c) => Number.isFinite(c) && c > 0.2 && c < durationSeconds - 0.2)
+    .sort((a, b) => a - b)
+    .filter((c, i, all) => i === 0 || c - all[i - 1]! >= 0.4);
+
+  const bounds = [0, ...inside, durationSeconds];
+  const perShot: number[][] = [];
+  for (let i = 0; i < bounds.length - 1; i += 1) {
+    const start = bounds[i]!;
+    const length = bounds[i + 1]! - start;
+    const count = Math.max(1, Math.round(length / SECONDS_PER_FRAME));
+    perShot.push(Array.from({ length: count }, (_, k) => start + (length * (k + 0.5)) / count));
+  }
+
+  // Not when the last shot is short enough that its own frame is already the
+  // end card - two copies of the same logo waste a place on the sheet.
+  const endCard = durationSeconds - Math.min(0.5, durationSeconds * 0.05);
+  let at = perShot.flat();
+  if (!at.some((t) => Math.abs(t - endCard) < 1.25)) at.push(endCard);
+  at = at.sort((a, b) => a - b).filter((t, i, all) => i === 0 || t - all[i - 1]! >= 0.4);
+
+  let complete = true;
+  if (at.length > most) {
+    const first = at[0]!;
+    const last = at.at(-1)!;
+    const middle = at.slice(1, -1);
+    const room = Math.max(0, most - 2);
+    const kept = Array.from({ length: room }, (_, i) =>
+      middle[Math.floor(((i + 0.5) * middle.length) / room)]!,
+    );
+    at = [first, ...kept, last];
+    // Every shot is still shown only if each one kept at least one frame.
+    complete = perShot.every((frames) => frames.some((t) => at.includes(t)));
+  }
+
+  return { at, shots: perShot.length, complete };
+}
+
+/** What was heard on a video's soundtrack, or why nothing was. */
+export type Heard =
+  | { status: 'heard'; text: string }
+  | { status: 'nothing_said' }
+  | { status: 'no_audio' }
+  | { status: 'failed' };
+
+/** The longest transcript kept. An advert's voiceover is far shorter. */
+const MAX_HEARD_CHARS = 4_000;
+
+/**
+ * The soundtrack, in words, keeping "nothing was said" apart from "could not
+ * be heard".
+ *
+ * `transcribe` answers null for both, which is fine for describing an asset
+ * and wrong for checking one: a reviewer told "nothing is said in this video"
+ * will stop listening for the disclaimer that the transcription simply failed
+ * to catch.
+ */
+export async function hear(path: string, metadata: VideoMetadata, filename: string): Promise<Heard> {
+  if (!metadata.hasAudio) return { status: 'no_audio' };
+  const audio = await extractAudio(path, metadata);
+  if (!audio) return { status: 'failed' };
+  const outcome = await transcribeOutcome(audio, filename);
+  if (outcome === 'failed') return { status: 'failed' };
+  if (outcome === null) return { status: 'nothing_said' };
+  return { status: 'heard', text: outcome.slice(0, MAX_HEARD_CHARS) };
 }
 
 /**
@@ -281,8 +410,14 @@ export async function extractAudio(path: string, metadata: VideoMetadata): Promi
  * still worth understanding from its frames alone.
  */
 export async function transcribe(audio: Buffer, filename: string): Promise<string | null> {
+  const outcome = await transcribeOutcome(audio, filename);
+  return outcome === 'failed' ? null : outcome;
+}
+
+/** The words, null when there were none, or 'failed' when nobody could tell. */
+async function transcribeOutcome(audio: Buffer, filename: string): Promise<string | null | 'failed'> {
   const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) return null;
+  if (!apiKey) return 'failed';
 
   const form = new FormData();
   form.append('file', new Blob([new Uint8Array(audio)], { type: 'audio/mpeg' }), `${filename}.mp3`);
@@ -296,11 +431,11 @@ export async function transcribe(audio: Buffer, filename: string): Promise<strin
       body: form,
       signal: AbortSignal.timeout(BRAIN_LIMITS.requestTimeoutMs),
     });
-    if (!response.ok) return null;
+    if (!response.ok) return 'failed';
     const text = (await response.text()).trim();
     return text.length > 0 ? text : null;
   } catch {
-    return null;
+    return 'failed';
   }
 }
 
