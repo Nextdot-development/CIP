@@ -70,6 +70,13 @@ export type GraphNode = {
   brandCount?: number;
   /** Brand-only: its logo or a clean photograph of its pack, to draw in its node. */
   imageFileId?: string;
+  /** Brand-only: how many files are about it. */
+  fileCount?: number;
+  /**
+   * Brand-only: its most recent files, so the inspector can show what the
+   * brand is made of without a second trip. A handful, newest first.
+   */
+  files?: { id: string; name: string; fileType: string; bytes: number }[];
   /** Whether this node has neighbours that are not loaded yet. */
   expandable: boolean;
 };
@@ -216,7 +223,7 @@ async function overview(
 ): Promise<KnowledgeGraphDTO> {
   const showFiles = options.view !== 'brands';
   const showBrands = options.view !== 'files';
-  const { folders, files, brands, relations, totals } = await withCompanyScope(scope, async (tx) => {
+  const { folders, files, brands, relations, brandFiles, totals } = await withCompanyScope(scope, async (tx) => {
     const folderRows = await tx<FolderRow[]>`
       select f.id, f.name, f.parent_id,
              (select count(*)::int from drive_files df
@@ -296,7 +303,27 @@ async function overview(
         (select count(*)::int from drive_file_chunks)                       as chunks
     `;
 
-    return { folders: folderRows, files: fileRows, brands: brandRows, relations: relationRows, totals: counts[0]! };
+    // Each brand's latest few files, for the inspector. One query for all of
+    // them rather than one per brand.
+    const brandFileRows = await tx<
+      { brand: string; id: string; name: string; file_type: string; file_size: string }[]
+    >`
+      select brand, id, name, file_type, file_size
+        from (
+          select f.brand, f.id, f.name, f.file_type, f.file_size,
+                 row_number() over (partition by f.brand order by f.created_at desc) as rank
+            from drive_files f
+           where f.company_id = ${scope.companyId}
+             and f.archived_at is null
+             and f.brand is not null
+        ) latest
+       where rank <= 4
+    `;
+
+    return {
+      folders: folderRows, files: fileRows, brands: brandRows, relations: relationRows,
+      brandFiles: brandFileRows, totals: counts[0]!,
+    };
   });
 
   // Fetched outside the block above because it scopes itself, and a company
@@ -385,6 +412,10 @@ async function overview(
       weight: 4 + Math.min(brand.file_count, 12),
       expandable: brand.file_count > 0,
       ...(brand.image_file_id ? { imageFileId: brand.image_file_id } : {}),
+      fileCount: brand.file_count,
+      files: brandFiles
+        .filter((f) => f.brand === brand.name)
+        .map((f) => ({ id: f.id, name: f.name, fileType: f.file_type, bytes: Number(f.file_size) })),
     });
   }
 

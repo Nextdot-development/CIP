@@ -36,6 +36,13 @@ export type GraphNodeDTO = {
    * then carries the brand's initials instead.
    */
   imageFileId?: string;
+  /** Brand-only: how many files are about it. */
+  fileCount?: number;
+  /**
+   * Brand-only: its most recent files, so the inspector can show what the
+   * brand is made of without a second trip. A handful, newest first.
+   */
+  files?: { id: string; name: string; fileType: string; bytes: number }[];
   expandable: boolean;
 };
 

@@ -406,6 +406,30 @@ describe('two graphs, drawn one at a time', () => {
     assert.equal(imageOf('Sangam'), undefined, 'a brand with only posters is drawn with its initials');
   });
 
+  // The inspector lists a brand's latest files from the graph itself, without
+  // a second request - so the graph carries them, a handful and no more.
+  it("carries each brand's file count and its latest few files", async () => {
+    await portfolio();
+    for (let i = 1; i <= 6; i += 1) {
+      const file = await upload(mm, null, `Rampur note ${i}.txt`, `Rampur note number ${i}.`);
+      await adminSql`
+        update drive_files set brand = 'Rampur', created_at = now() + ${`${i} seconds`}::interval
+         where id = ${file.id}
+      `;
+    }
+
+    const built = await graph.knowledgeGraph(mm);
+    const rampur = built.nodes.find((n) => n.type === 'brand' && n.label === 'Rampur');
+    assert.equal(rampur?.fileCount, 6);
+    assert.equal(rampur?.files?.length, 4, 'a handful, not every file');
+    assert.equal(rampur?.files?.[0]?.name, 'Rampur note 6.txt', 'newest first');
+    assert.ok(rampur?.files?.every((f) => f.bytes > 0 && f.fileType === 'txt'));
+
+    const sangam = built.nodes.find((n) => n.type === 'brand' && n.label === 'Sangam');
+    assert.equal(sangam?.fileCount, 0);
+    assert.deepEqual(sangam?.files, []);
+  });
+
   it('opens on the portfolio, not on every file at once', async () => {
     await portfolio();
     const result = await graph.knowledgeGraph(mm);

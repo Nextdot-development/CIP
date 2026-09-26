@@ -1,6 +1,7 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useTransition } from 'react';
+import { setActiveBrand } from '@/app/actions';
 import Link from 'next/link';
 import { KnowledgeGraphSection } from './KnowledgeGraphSection';
 import { BrainSection } from './BrainSection';
@@ -47,6 +48,19 @@ export function TrustSection({
   const workspace = useWorkspace();
   const [mode, setMode] = useState<Mode>('product');
   const [tab, setTab] = useState<Tab>('learned');
+  const [, startTransition] = useTransition();
+
+  /**
+   * From a brand in the Company Brain to that brand's own brain: choose it in
+   * the sidebar, as the switcher would, and show the Product Brain.
+   */
+  const openBrand = (brand: string) => {
+    startTransition(async () => {
+      await setActiveBrand(brand);
+      setMode('product');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+  };
 
   if (overview.empty) {
     return (
@@ -137,7 +151,7 @@ export function TrustSection({
             </div>
           </header>
 
-          <KnowledgeGraphSection initial={graph} />
+          <KnowledgeGraphSection initial={graph} onOpenBrand={openBrand} />
           <CompanyInsights traits={company.traits} />
         </>
       )}

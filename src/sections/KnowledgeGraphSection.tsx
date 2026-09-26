@@ -42,6 +42,8 @@ type GraphHandle = {
   zoom: (level?: number, ms?: number) => number | void;
   centerAt: (x?: number, y?: number, ms?: number) => void;
   d3ReheatSimulation: () => void;
+  /** Where a point in the graph is on screen, for placing the hover card. */
+  graph2ScreenCoords: (x: number, y: number) => { x: number; y: number };
   /**
    * The underlying d3 forces, so the layout can be spread out to taste. Given
    * a force as well, it sets one - which is how collision is added.
@@ -73,6 +75,7 @@ type ForceGraphProps = {
   onNodeClick?: (node: SimNode) => void;
   onNodeHover?: (node: SimNode | null) => void;
   onBackgroundClick?: () => void;
+  onZoom?: () => void;
   onNodeDragEnd?: (node: SimNode) => void;
   linkColor?: (link: SimLink) => string;
   linkWidth?: (link: SimLink) => number;
@@ -187,7 +190,92 @@ function withPins(view: string, fresh: SimNode[]): SimNode[] {
   });
 }
 
-export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO }) {
+/**
+ * Which filter chip a node belongs to: a brand, a trait by its kind, or the
+ * shared tail that has no kind. Files and folders keep their own type.
+ */
+function groupOf(node: GraphNodeDTO): string {
+  if (node.type === 'trait') return node.dimension ?? 'shared';
+  return node.type;
+}
+
+/** The ids within `depth` steps of a node, along the lines that are drawn. */
+function neighbourhood(start: string, links: SimLink[], depth: number): Set<string> {
+  const reached = new Set<string>([start]);
+  let frontier = [start];
+  for (let step = 0; step < depth && frontier.length > 0; step += 1) {
+    const next: string[] = [];
+    for (const link of links) {
+      const a = endId(link.source);
+      const b = endId(link.target);
+      for (const [from, to] of [[a, b], [b, a]] as const) {
+        if (frontier.includes(from) && !reached.has(to)) {
+          reached.add(to);
+          next.push(to);
+        }
+      }
+    }
+    frontier = next;
+  }
+  return reached;
+}
+
+/**
+ * The brands most like one brand, closest first, with what they share.
+ *
+ * Read off the brand-to-brand edges already on the page, which carry both the
+ * score and the reason, so showing them costs nothing.
+ */
+function mostAlike(
+  brandId: string,
+  edges: GraphEdgeDTO[],
+  limit = 5,
+): { other: string; score: number; shared: string[] }[] {
+  return edges
+    .filter((e) => e.kind === 'resembles')
+    .filter((e) => endId(e.source as string) === brandId || endId(e.target as string) === brandId)
+    .map((e) => ({
+      other: (endId(e.source as string) === brandId ? endId(e.target as string) : endId(e.source as string))
+        .replace(/^brand:/, ''),
+      score: e.score ?? 0,
+      shared: e.shared ?? [],
+    }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+}
+
+/** A file size a person reads, not a byte count. */
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '';
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+const FILE_ICON: Record<string, IconName> = {
+  png: 'image', jpg: 'image', jpeg: 'image', webp: 'image', gif: 'image',
+  mp4: 'video', mov: 'video', webm: 'video',
+  xlsx: 'sheet', xls: 'sheet', csv: 'sheet',
+  pptx: 'slides', ppt: 'slides', key: 'slides',
+};
+
+/** The chips along the top of the portfolio, in the order a reader wants them. */
+const GROUPS: { key: string; label: string; color: string }[] = [
+  { key: 'brand', label: 'Brands', color: TYPE_COLOR.brand },
+  { key: 'category', label: 'Category', color: DIMENSION_COLOR.category! },
+  { key: 'flavour', label: 'Flavour', color: DIMENSION_COLOR.flavour! },
+  { key: 'tier', label: 'Tier', color: DIMENSION_COLOR.tier! },
+  { key: 'country', label: 'Country', color: DIMENSION_COLOR.country! },
+  { key: 'shared', label: 'Also shared', color: UNNAMED_HUB },
+];
+
+export function KnowledgeGraphSection({
+  initial,
+  onOpenBrand,
+}: {
+  initial: KnowledgeGraphDTO;
+  /** Opens one brand's own brain. Absent where there is nowhere to open it. */
+  onOpenBrand?: (brand: string) => void;
+}) {
   const { note } = useToast();
   const graphRef = useRef<GraphHandle | null>(null);
   /**
@@ -250,10 +338,51 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
   const [images, setImages] = useState<Map<string, NodeImage>>(() => new Map());
 
   const savePin = useCallback((node: SimNode) => rememberPin(view, node), [view]);
+
+  /** How far the light spreads from what is pointed at: its neighbours, or theirs too. */
+  const [depth, setDepth] = useState<1 | 2>(1);
+  /** How far apart the graph is laid out. 1 is the tuned default. */
+  const [spacing, setSpacing] = useState(1);
+  /** Chips switched off: kinds of node not drawn at all. */
+  const [hiddenGroups, setHiddenGroups] = useState<Set<string>>(() => new Set());
+  /** A node whose neighbourhood is all that is drawn, when somebody isolates one. */
+  const [isolated, setIsolated] = useState<string | null>(null);
+  /** The hover card, and where on screen the node it describes is. */
+  const [tip, setTip] = useState<{ node: SimNode; x: number; y: number } | null>(null);
+  const searchRef = useRef<HTMLInputElement | null>(null);
+
+  // Ctrl+K (or Cmd+K) goes to the search box, as it does everywhere else now.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        searchRef.current?.focus();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
   const [busy, setBusy] = useState(false);
   const [size, setSize] = useState({ width: 800, height: 600 });
 
   const hasFitted = useRef(false);
+
+  /**
+   * Frames the graph, and never closer than a comfortable zoom.
+   *
+   * Fitting eight nodes of an isolated cluster to the screen blew each one up
+   * to the size of a saucer and pushed the bottom row under the banner. The
+   * margin leaves room for the overlays along the top and bottom edges.
+   */
+  const fitView = useCallback((ms = 600) => {
+    const handle = graphRef.current;
+    if (!handle) return;
+    handle.zoomToFit(ms, 110);
+    window.setTimeout(() => {
+      const zoom = handle.zoom();
+      if (typeof zoom === 'number' && zoom > 1.6) handle.zoom(1.6, 300);
+    }, ms + 40);
+  }, []);
 
   /**
    * Pushes the nodes apart.
@@ -271,8 +400,8 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
     // file tree is hundreds of nodes and the same spacing would fling them
     // off the canvas.
     const roomy = view === 'brands';
-    handle.d3Force('charge')?.strength?.(roomy ? -520 : -260);
-    handle.d3Force('link')?.distance?.(roomy ? 110 : 70);
+    handle.d3Force('charge')?.strength?.((roomy ? -520 : -260) * spacing);
+    handle.d3Force('link')?.distance?.((roomy ? 110 : 70) * spacing);
     // Repulsion alone let thirty labelled nodes settle in a knot with every
     // name on top of the next. Collision gives each one room for its name.
     handle.d3Force('collide', collide());
@@ -283,7 +412,7 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
     // settles rather than left framed for the one it replaced.
     hasFitted.current = false;
     handle.d3ReheatSimulation();
-  }, [graphReady, nodes.length, view, size.width, size.height]);
+  }, [graphReady, nodes.length, view, size.width, size.height, spacing]);
 
   useEffect(() => {
     const wanted = nodes
@@ -491,21 +620,6 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
    * answers a click makes you click every node to learn anything.
    */
   const focusId = hovered ?? selected?.id ?? null;
-  const lit = useMemo(() => {
-    if (!focusId) return new Set<string>();
-    const near = new Set<string>([focusId]);
-    for (const edge of edges as unknown as SimLink[]) {
-      const source = endId(edge.source);
-      const target = endId(edge.target);
-      if (source === focusId) near.add(target);
-      if (target === focusId) near.add(source);
-    }
-    return near;
-  }, [edges, focusId]);
-  const focusColor = useMemo(() => {
-    const node = focusId ? nodes.find((n) => n.id === focusId) : undefined;
-    return node ? colorFor(node) : null;
-  }, [focusId, nodes]);
 
   /**
    * The brands the selected one is most like, closest first.
@@ -513,22 +627,23 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
    * Read off the edges already drawn rather than fetched: the reason is
    * carried on the edge precisely so that showing it costs nothing.
    */
-  const resemblances = useMemo(() => {
-    if (!selected || selected.type !== 'brand') return [];
-    const endId = (end: string | { id: string }): string =>
-      typeof end === 'string' ? end : end.id;
+  const resemblances = useMemo(
+    () => (selected?.type === 'brand' ? mostAlike(selected.id, edges) : []),
+    [edges, selected],
+  );
 
-    return edges
-      .filter((e) => e.kind === 'resembles')
-      .filter((e) => endId(e.source) === selected.id || endId(e.target) === selected.id)
-      .map((e) => ({
-        other: (endId(e.source) === selected.id ? endId(e.target) : endId(e.source)).replace(/^brand:/, ''),
-        score: e.score ?? 0,
-        shared: e.shared ?? [],
-      }))
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 5);
-  }, [edges, selected]);
+  /** What the selected brand is, in the traits it shares, coloured by kind. */
+  const brandTraits = useMemo(() => {
+    if (!selected || selected.type !== 'brand') return [];
+    const ids = new Set(
+      edges
+        .filter((e) => e.kind === 'shares' && endId(e.source as string) === selected.id)
+        .map((e) => endId(e.target as string)),
+    );
+    return nodes
+      .filter((n) => ids.has(n.id))
+      .sort((a, b) => (a.dimension ? 0 : 1) - (b.dimension ? 0 : 1) || a.label.localeCompare(b.label));
+  }, [edges, nodes, selected]);
 
   /**
    * The brands hanging off the selected hub.
@@ -565,12 +680,83 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
    * here rather than guessed at further in.
    */
   const graphData = useMemo(() => {
-    const present = new Set(nodes.map((n) => n.id));
-    const links = (visibleEdges as unknown as SimLink[]).filter(
+    let shown = nodes.filter((n) => !hiddenGroups.has(groupOf(n)));
+    let present = new Set(shown.map((n) => n.id));
+    let links = (visibleEdges as unknown as SimLink[]).filter(
       (edge) => present.has(endId(edge.source)) && present.has(endId(edge.target)),
     );
-    return { nodes, links };
-  }, [nodes, visibleEdges]);
+    // Isolating a node draws its neighbourhood and nothing else, to the depth
+    // the light reaches - the same set a hover would light.
+    if (isolated && present.has(isolated)) {
+      present = neighbourhood(isolated, links, depth);
+      shown = shown.filter((n) => present.has(n.id));
+      links = links.filter((edge) => present.has(endId(edge.source)) && present.has(endId(edge.target)));
+    }
+    return { nodes: shown, links };
+  }, [nodes, visibleEdges, hiddenGroups, isolated, depth]);
+
+  // Isolating a cluster or switching a kind off changes what is drawn, and the
+  // view is fitted to the new shape once it settles - an isolated cluster left
+  // framed for the whole portfolio is a small knot in one corner.
+  // The nodes that remain already have their places, so the view moves to them
+  // at once rather than after the layout has finished settling seconds later.
+  useEffect(() => {
+    hasFitted.current = false;
+    const timer = window.setTimeout(() => fitView(), 120);
+    return () => window.clearTimeout(timer);
+  }, [isolated, hiddenGroups, fitView]);
+
+  const lit = useMemo(
+    () => (focusId ? neighbourhood(focusId, graphData.links, depth) : new Set<string>()),
+    [focusId, graphData.links, depth],
+  );
+  const nodeById = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);
+  const focusColor = focusId && nodeById.get(focusId) ? colorFor(nodeById.get(focusId)!) : null;
+
+  /** The colour a lit line takes: the node at its far end from what is lit. */
+  const farColor = (edge: SimLink): string => {
+    const a = endId(edge.source);
+    const far = a === focusId ? edge.target : edge.source;
+    const node = typeof far === 'string' ? nodeById.get(far) : far;
+    return node ? colorFor(node) : focusColor ?? '#ffffff';
+  };
+
+  /** How many of each kind are on the page, for the chips. */
+  const groupCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const node of nodes) counts.set(groupOf(node), (counts.get(groupOf(node)) ?? 0) + 1);
+    return counts;
+  }, [nodes]);
+
+  /** Brands by how much they share, for the portfolio summary. */
+  const mostConnected = useMemo(() => {
+    const degree = new Map<string, number>();
+    for (const edge of edges) {
+      if (edge.kind !== 'shares') continue;
+      const brand = endId(edge.source as string);
+      degree.set(brand, (degree.get(brand) ?? 0) + 1);
+    }
+    return nodes
+      .filter((n) => n.type === 'brand')
+      .map((n) => ({ node: n, degree: degree.get(n.id) ?? 0 }))
+      .sort((a, b) => b.degree - a.degree)
+      .slice(0, 4);
+  }, [edges, nodes]);
+
+  const widestTraits = useMemo(
+    () => nodes
+      .filter((n) => n.type === 'trait' && n.dimension)
+      .sort((a, b) => (b.brandCount ?? 0) - (a.brandCount ?? 0))
+      .slice(0, 6),
+    [nodes],
+  );
+
+  /** Selects a node and brings it to the middle of the screen. */
+  const goTo = useCallback((node: SimNode | undefined) => {
+    if (!node) return;
+    setSelected(node);
+    if (node.x !== undefined && node.y !== undefined) graphRef.current?.centerAt(node.x, node.y, 600);
+  }, []);
 
   const liveStats = useMemo(
     () => ({ ...stats, nodes: nodes.length, edges: visibleEdges.length }),
@@ -600,8 +786,9 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
         <div className="graph-search">
           <Icon name="search" size={15} />
           <input
+            ref={searchRef}
             value={query}
-            placeholder="Search your knowledge…"
+            placeholder="Search brands, traits and files…"
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter') void runSearch();
@@ -609,6 +796,7 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
             }}
           />
           {matches.size > 0 && <span className="graph-hits">{matches.size}</span>}
+          <kbd className="graph-kbd">Ctrl K</kbd>
         </div>
 
         {/* Which graph. First control on the bar, because it decides what
@@ -640,6 +828,9 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
               }}
             >
               {label}
+              {view === value && value === 'brands' && (
+                <span className="graph-count">{groupCounts.get('brand') ?? 0}</span>
+              )}
             </button>
           ))}
         </div>
@@ -682,7 +873,7 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
         <div className="graph-zoom">
           <button type="button" title="Zoom in" onClick={() => graphRef.current?.zoom((graphRef.current.zoom() as number) * 1.4, 250)}>+</button>
           <button type="button" title="Zoom out" onClick={() => graphRef.current?.zoom((graphRef.current.zoom() as number) / 1.4, 250)}>−</button>
-          <button type="button" onClick={() => graphRef.current?.zoomToFit(600, 60)}>Fit</button>
+          <button type="button" onClick={() => fitView()}>Fit</button>
           <button
             type="button"
             title="Forget where nodes were moved to, and lay the graph out again"
@@ -714,7 +905,7 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
             onEngineStop={() => {
               if (hasFitted.current) return;
               hasFitted.current = true;
-              graphRef.current?.zoomToFit(700, 90);
+              fitView(700);
             }}
             d3VelocityDecay={0.32}
             // Slightly bowed, as a hand would draw them; straight lines
@@ -729,10 +920,21 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
             }
             linkDirectionalParticleWidth={2.4}
             linkDirectionalParticleSpeed={0.006}
-            linkDirectionalParticleColor={() => focusColor ?? '#ffffff'}
+            linkDirectionalParticleColor={farColor}
             nodeRelSize={5}
             onNodeClick={(node) => setSelected(node)}
-            onNodeHover={(node) => setHovered(node?.id ?? null)}
+            onNodeHover={(node) => {
+              setHovered(node?.id ?? null);
+              const handle = graphRef.current;
+              if (!node || !handle?.graph2ScreenCoords) {
+                setTip(null);
+                return;
+              }
+              const at = handle.graph2ScreenCoords(node.x ?? 0, node.y ?? 0);
+              setTip({ node, x: at.x, y: at.y });
+            }}
+            // A card left where a node used to be is worse than none.
+            onZoom={() => setTip(null)}
             onBackgroundClick={() => setSelected(null)}
             onNodeDragEnd={(node) => {
               // Pin where it was dropped. Obsidian does the same, and a node
@@ -744,9 +946,14 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
             linkColor={(edge) => {
               // Lit: the lines out of whatever is under the pointer take its
               // colour. Everything else sinks almost out of sight.
+              // Each lit line takes the colour of what it leads to, so the kinds
+              // of thing a brand is made of read at a glance.
               if (focusId !== null) {
-                const on = endId(edge.source) === focusId || endId(edge.target) === focusId;
-                return on && focusColor ? hexWithAlpha(focusColor, 0.85) : 'rgba(200,200,215,0.035)';
+                const a = endId(edge.source);
+                const b = endId(edge.target);
+                if (!lit.has(a) || !lit.has(b)) return 'rgba(200,200,215,0.035)';
+                const direct = a === focusId || b === focusId;
+                return hexWithAlpha(farColor(edge), direct ? 0.85 : 0.35);
               }
               if (edge.kind === 'resembles') {
                 // Stronger resemblance draws stronger, so the shape of the
@@ -780,169 +987,435 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
             }}
           />
 
+          {/* The portfolio's overlays: chips that are both legend and filter,
+              the controls for how the graph is laid out and lit, and a card
+              for whatever is under the pointer. */}
+          {view === 'brands' && (
+            <div className="graph-chips" role="group" aria-label="Show or hide">
+              {GROUPS.filter((g) => (groupCounts.get(g.key) ?? 0) > 0).map((g) => {
+                const off = hiddenGroups.has(g.key);
+                return (
+                  <button
+                    key={g.key}
+                    type="button"
+                    className={`graph-chip${off ? ' is-off' : ''}`}
+                    aria-pressed={!off}
+                    title={off ? `Show ${g.label.toLowerCase()}` : `Hide ${g.label.toLowerCase()}`}
+                    onClick={() => setHiddenGroups((current) => {
+                      const next = new Set(current);
+                      if (next.has(g.key)) next.delete(g.key); else next.add(g.key);
+                      return next;
+                    })}
+                  >
+                    <i style={{ background: g.color, color: g.color }} />
+                    {g.label}
+                    <b>{groupCounts.get(g.key)}</b>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {view === 'brands' && (
+            <div className="graph-controls">
+              <span className="graph-control-label">Depth</span>
+              {([1, 2] as const).map((d) => (
+                <button key={d} type="button" className={depth === d ? 'is-on' : ''}
+                  title={d === 1 ? 'Light what is directly connected' : 'Light what those connect to as well'}
+                  onClick={() => setDepth(d)}>
+                  {d}
+                </button>
+              ))}
+              <span className="graph-control-sep" />
+              <span className="graph-control-label">Spacing</span>
+              <button type="button" title="Closer together" disabled={spacing <= 0.6}
+                onClick={() => setSpacing((v) => Math.max(0.6, +(v - 0.2).toFixed(1)))}>−</button>
+              <span className="graph-control-value">{Math.round(spacing * 100)}%</span>
+              <button type="button" title="Further apart" disabled={spacing >= 2}
+                onClick={() => setSpacing((v) => Math.min(2, +(v + 0.2).toFixed(1)))}>+</button>
+            </div>
+          )}
+
+          {isolated && nodeById.get(isolated) && (
+            <div className="graph-isolated">
+              Showing <b>{nodeById.get(isolated)!.label}</b> and what it connects to
+              <button type="button" onClick={() => setIsolated(null)}>Show everything</button>
+            </div>
+          )}
+
+          {tip && hovered === tip.node.id && (
+            <div
+              className="graph-tip"
+              style={{ left: tip.x, top: tip.y, ['--tip' as string]: colorFor(tip.node) }}
+            >
+              <p className="graph-tip-title">
+                <i />
+                {tip.node.label}
+                <span>{tip.node.type === 'trait' ? (tip.node.dimension ?? 'shared') : tip.node.type}</span>
+              </p>
+              {tip.node.type === 'brand' ? (
+                <p className="graph-tip-body">
+                  {lit.size - 1} connected here
+                  {tip.node.fileCount !== undefined && <> · {tip.node.fileCount} files</>}
+                  {(() => {
+                    const alike = mostAlike(tip.node.id, edges, 2);
+                    return alike.length > 0 ? <> · most like {alike.map((a) => a.other).join(' & ')}</> : null;
+                  })()}
+                </p>
+              ) : tip.node.type === 'trait' ? (
+                <p className="graph-tip-body">
+                  Shared by {tip.node.brandCount ?? lit.size - 1} brands
+                </p>
+              ) : null}
+            </div>
+          )}
+
           {/* What is on screen, counted in the words of whichever graph this
               is. Folder and passage counts under the portfolio told somebody
-              about a picture they were not looking at. */}
-          <div className="graph-stats">
-            {view === 'brands' ? (
-              <>
-                <b>{nodes.filter((n) => n.type === 'brand').length}</b> Brands
-                <b>{nodes.filter((n) => n.type === 'trait').length}</b> Things in common
-                <b>{liveStats.edges}</b> Connections
-                <b>{liveStats.files}</b> Files read
-              </>
-            ) : (
-              <>
-                <b>{liveStats.nodes}</b> Nodes
-                <b>{liveStats.edges}</b> Connections
-                <b>{liveStats.files}</b> Files
-                <b>{liveStats.folders}</b> Folders
-                <b>{liveStats.chunks}</b> Passages
-              </>
-            )}
-          </div>
+              about a picture they were not looking at. In the portfolio the
+              chips and the inspector say it instead. */}
+          {view !== 'brands' && (
+            <div className="graph-stats">
+              <b>{liveStats.nodes}</b> Nodes
+              <b>{liveStats.edges}</b> Connections
+              <b>{liveStats.files}</b> Files
+              <b>{liveStats.folders}</b> Folders
+              <b>{liveStats.chunks}</b> Passages
+            </div>
+          )}
 
           {/* The legend names what is on screen, not the full vocabulary.
               Listing folders and passages under the portfolio was a legend
-              for a different picture. */}
-          <div className="graph-legend">
-            {view === 'brands'
-              ? (
-                <>
-                  <span><i style={{ background: TYPE_COLOR.brand, color: TYPE_COLOR.brand }} />brand</span>
-                  {(['category', 'flavour', 'tier', 'country'] as const)
-                    .filter((d) => nodes.some((n) => n.type === 'trait' && n.dimension === d))
-                    .map((d) => (
-                      <span key={d}><i style={{ background: DIMENSION_COLOR[d], color: DIMENSION_COLOR[d] }} />{d}</span>
-                    ))}
-                  {nodes.some((n) => n.type === 'trait' && !n.dimension) && (
-                    <span><i style={{ background: UNNAMED_HUB, color: UNNAMED_HUB }} />also shared</span>
-                  )}
-                </>
-              )
-              : (['source', 'folder', 'file', 'chunk'] as GraphNodeType[]).map((type) => (
+              for a different picture. The portfolio's chips are its legend. */}
+          {view !== 'brands' && (
+            <div className="graph-legend">
+              {(['source', 'folder', 'file', 'chunk'] as GraphNodeType[]).map((type) => (
                 <span key={type}>
                   <i style={{ background: TYPE_COLOR[type], color: TYPE_COLOR[type] }} />
                   {type === 'chunk' ? 'passage' : type}
                 </span>
               ))}
-          </div>
+            </div>
+          )}
 
           {busy && <div className="graph-busy">Working…</div>}
         </div>
 
-        {selected && (
+        {(selected || view === 'brands') && (
           <aside className="graph-inspector">
             <div className="row-between">
-              <span className="insp-kind">
-                <Icon name={TYPE_ICON[selected.type]} size={14} />
-                {selected.type === 'chunk' ? 'Passage' : selected.type === 'trait' ? (selected.dimension ?? 'Shared') : selected.type}
-              </span>
-              <button type="button" className="insp-close" onClick={() => setSelected(null)}>
-                <Icon name="close" size={14} />
-              </button>
+              <span className="insp-eyebrow">Knowledge inspector</span>
+              {selected && (
+                <button type="button" className="insp-close" title="Back to the portfolio" onClick={() => setSelected(null)}>
+                  <Icon name="close" size={14} />
+                </button>
+              )}
             </div>
 
-            <h3>{selected.label}</h3>
-
-            <dl className="insp-facts">
-              {selected.fileType && (
-                <div><dt>Type</dt><dd>{selected.fileType.toUpperCase()}</dd></div>
-              )}
-              {selected.source && (
-                <div>
-                  <dt>Source</dt>
-                  <dd>{selected.source === 'google_drive' ? 'Google Drive' : 'CIP Drive'}</dd>
+            {!selected ? (
+              /* Nothing chosen: the portfolio in numbers, and where to start. */
+              <>
+                <h3 className="insp-title">The portfolio</h3>
+                <div className="insp-grid">
+                  <div><span>Brands</span><b>{groupCounts.get('brand') ?? 0}</b></div>
+                  <div><span>Things in common</span><b>{nodes.filter((n) => n.type === 'trait').length}</b></div>
+                  <div><span>Connections</span><b>{liveStats.edges}</b></div>
+                  <div><span>Files read</span><b>{liveStats.files}</b></div>
                 </div>
-              )}
-              {selected.processingStatus && (
-                <div><dt>Processing</dt><dd>{selected.processingStatus}</dd></div>
-              )}
-              {selected.chunkCount !== undefined && (
-                <div><dt>Passages</dt><dd>{selected.chunkCount}</dd></div>
-              )}
-              {selected.ordinal !== undefined && (
-                <div><dt>Position</dt><dd>#{selected.ordinal + 1}</dd></div>
-              )}
-              <div>
-                <dt>Connections</dt>
-                <dd>{neighbours.size > 0 ? neighbours.size - 1 : 0}</dd>
-              </div>
-            </dl>
 
-            {selected.snippet && <p className="insp-snippet">{selected.snippet}…</p>}
+                {mostConnected.length > 0 && (
+                  <section className="insp-section">
+                    <p className="insp-label">Most connected</p>
+                    <div className="insp-brandlist">
+                      {mostConnected.map(({ node, degree }) => (
+                        <button key={node.id} type="button" onClick={() => goTo(node)}>
+                          <BrandBadge node={node} size={28} />
+                          <span className="grow truncate">{node.label}</span>
+                          <span className="muted">{degree} shared</span>
+                        </button>
+                      ))}
+                    </div>
+                  </section>
+                )}
 
-            {/* Why this brand is joined to the others. A line drawn between
-                two brands is a claim, and a claim nobody can check is worse
-                than no claim — so the words both were described with are
-                listed rather than the number behind them. */}
-            {selected.type === 'trait' && onThisHub.length > 0 && (
-              <div className="insp-resemblance">
-                <p className="insp-label">
-                  {selected.dimension
-                    ? `${selected.dimension} · ${onThisHub.length} brands`
-                    : `${onThisHub.length} brands share this`}
+                {widestTraits.length > 0 && (
+                  <section className="insp-section">
+                    <p className="insp-label">Shared most widely</p>
+                    <div className="insp-tags">
+                      {widestTraits.map((t) => (
+                        <button key={t.id} type="button" className="insp-tag"
+                          style={{ ['--tag' as string]: colorFor(t) }} onClick={() => goTo(t)}>
+                          {t.label}<b>{t.brandCount}</b>
+                        </button>
+                      ))}
+                    </div>
+                  </section>
+                )}
+
+                <p className="insp-hint">
+                  Point at anything to light what it connects to. Click a brand to open it here.
                 </p>
-                <div className="insp-hub-brands">
-                  {onThisHub.map((name) => (
-                    <span key={name} className="insp-chip">{name}</span>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {selected.type === 'brand' && resemblances.length > 0 && (
-              <div className="insp-resemblance">
-                <p className="insp-label">Most like</p>
-                {resemblances.map((r) => (
-                  <div key={r.other} className="insp-resembles">
-                    <span className="strong">{r.other}</span>
-                    <span className="muted"> · both: {r.shared.join(', ')}</span>
+              </>
+            ) : selected.type === 'brand' ? (
+              /* A brand: what it is made of, what it holds, and who it is like. */
+              <>
+                <div className="insp-hero">
+                  <BrandBadge node={selected} size={52} />
+                  <div className="stack">
+                    <h3 className="insp-title">{selected.label}</h3>
+                    <span className="insp-pill" style={{ ['--tag' as string]: colorFor(selected) }}>
+                      Brand{isolated === selected.id ? ' · isolated' : ''}
+                    </span>
                   </div>
-                ))}
-              </div>
-            )}
+                </div>
 
-            <div className="insp-actions">
-              {selected.expandable && !expanded.has(selected.id) && (
-                <button type="button" className="btn btn-primary btn-sm" disabled={busy}
-                  onClick={() => void expand(selected)}>
-                  Expand knowledge
-                </button>
-              )}
-              {expanded.has(selected.id) && (
-                <button type="button" className="btn btn-sm" onClick={() => collapse(selected)}>
-                  Collapse
-                </button>
-              )}
-              {selected.type === 'file' && (
-                <>
-                  <a className="btn btn-sm" href={`/api/drive/files/${selected.id}/content`} download>
-                    Open file
-                  </a>
-                  <a className="btn btn-sm" href={`/api/drive/files/${selected.id}/extraction`}>
-                    View extraction
-                  </a>
-                </>
-              )}
-              {selected.type === 'chunk' && selected.fileId && (
-                <button type="button" className="btn btn-sm"
-                  onClick={() => {
-                    const file = nodes.find((n) => n.id === selected.fileId);
-                    if (file) { setSelected(file); if (file.x !== undefined) graphRef.current?.centerAt(file.x, file.y, 500); }
-                    else note('That passage came from a file that is not on the canvas yet.');
-                  }}>
-                  Open source
-                </button>
-              )}
-              {selected.type === 'folder' && (
-                <a className="btn btn-sm" href={`/drive?folder=${selected.id}`}>Open in Drive</a>
-              )}
-            </div>
+                <div className="insp-grid">
+                  <div><span>Files</span><b>{selected.fileCount ?? 0}</b></div>
+                  <div><span>Things in common</span><b>{brandTraits.length}</b></div>
+                  {/* "Described as", not "is": this is what CIP read in the
+                      brand's files, and files can be wrong - Magic Moments
+                      came out as whisky. */}
+                  <div className="span-2">
+                    <span>Described as</span>
+                    <b className="truncate">
+                      {brandTraits.filter((t) => t.dimension === 'category').map((t) => t.label).join(', ') || '—'}
+                    </b>
+                  </div>
+                </div>
+
+                {brandTraits.length > 0 && (
+                  <section className="insp-section">
+                    <p className="insp-label">Connected knowledge ({brandTraits.length})</p>
+                    <div className="insp-tags">
+                      {brandTraits.map((t) => (
+                        <button key={t.id} type="button" className="insp-tag"
+                          style={{ ['--tag' as string]: colorFor(t) }} onClick={() => goTo(t)}>
+                          {t.label}
+                        </button>
+                      ))}
+                    </div>
+                  </section>
+                )}
+
+                {(selected.files?.length ?? 0) > 0 && (
+                  <section className="insp-section">
+                    <p className="insp-label row-between">
+                      Latest files <span className="muted">{selected.fileCount} in all</span>
+                    </p>
+                    <ul className="insp-files">
+                      {selected.files!.map((f) => (
+                        <li key={f.id}>
+                          <Icon name={FILE_ICON[f.fileType.toLowerCase()] ?? 'doc'} size={15} />
+                          <span className="grow stack">
+                            <span className="truncate">{f.name}</span>
+                            <span className="muted">
+                              {f.fileType.toUpperCase()}{formatBytes(f.bytes) ? ` · ${formatBytes(f.bytes)}` : ''}
+                            </span>
+                          </span>
+                          <a href={`/api/drive/files/${f.id}/content?disposition=inline`} target="_blank"
+                            rel="noreferrer" title="Open this file">
+                            <Icon name="arrow-right" size={14} />
+                          </a>
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                )}
+
+                {/* A line drawn between two brands is a claim, and a claim
+                    nobody can check is worse than no claim - so what both were
+                    described as is listed under every score. */}
+                {resemblances.length > 0 && (
+                  <section className="insp-section">
+                    <p className="insp-label">Most alike in the portfolio</p>
+                    {resemblances.slice(0, 3).map((r) => (
+                      <div key={r.other} className="insp-alike">
+                        <div className="row-between">
+                          <button type="button" onClick={() => goTo(nodeById.get(`brand:${r.other}`))}>
+                            {r.other}
+                          </button>
+                          <b>{Math.round(r.score * 100)}% alike</b>
+                        </div>
+                        <i><span style={{ width: `${Math.max(4, Math.round(r.score * 100))}%` }} /></i>
+                        {r.shared.length > 0 && <p>Both: {r.shared.join(', ')}</p>}
+                      </div>
+                    ))}
+                  </section>
+                )}
+
+                <div className="insp-actions">
+                  {onOpenBrand && (
+                    <button type="button" className="btn btn-primary btn-sm insp-cta"
+                      onClick={() => onOpenBrand(selected.label)}>
+                      Open {selected.label}&apos;s full brain <Icon name="arrow-right" size={14} />
+                    </button>
+                  )}
+                  <button type="button" className="btn btn-sm"
+                    onClick={() => setIsolated(isolated === selected.id ? null : selected.id)}>
+                    {isolated === selected.id ? 'Show everything' : 'Isolate its cluster'}
+                  </button>
+                  {selected.expandable && !expanded.has(selected.id) && (
+                    <button type="button" className="btn btn-sm" disabled={busy}
+                      onClick={() => void expand(selected)}>
+                      Show its files on the graph
+                    </button>
+                  )}
+                  {expanded.has(selected.id) && (
+                    <button type="button" className="btn btn-sm" onClick={() => collapse(selected)}>
+                      Hide its files
+                    </button>
+                  )}
+                </div>
+              </>
+            ) : selected.type === 'trait' ? (
+              /* A trait: which brands share it. */
+              <>
+                <div className="insp-hero">
+                  <span className="insp-planet" style={{ ['--tag' as string]: colorFor(selected) }} />
+                  <div className="stack">
+                    <h3 className="insp-title">{selected.label}</h3>
+                    <span className="insp-pill" style={{ ['--tag' as string]: colorFor(selected) }}>
+                      {selected.dimension ?? 'shared trait'}
+                    </span>
+                  </div>
+                </div>
+
+                <section className="insp-section">
+                  <p className="insp-label">Shared by {onThisHub.length} brands</p>
+                  <div className="insp-brandlist">
+                    {onThisHub.map((name) => {
+                      const node = nodeById.get(`brand:${name}`);
+                      return (
+                        <button key={name} type="button" onClick={() => goTo(node)}>
+                          {node && <BrandBadge node={node} size={28} />}
+                          <span className="grow truncate">{name}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </section>
+
+                <div className="insp-actions">
+                  <button type="button" className="btn btn-sm"
+                    onClick={() => setIsolated(isolated === selected.id ? null : selected.id)}>
+                    {isolated === selected.id ? 'Show everything' : 'Isolate its brands'}
+                  </button>
+                </div>
+              </>
+            ) : (
+              /* Files, folders, sources and passages: what they are, and where to go. */
+              <>
+                <span className="insp-kind">
+                  <Icon name={TYPE_ICON[selected.type]} size={14} />
+                  {selected.type === 'chunk' ? 'Passage' : selected.type}
+                </span>
+                <h3>{selected.label}</h3>
+
+                <dl className="insp-facts">
+                  {selected.fileType && (
+                    <div><dt>Type</dt><dd>{selected.fileType.toUpperCase()}</dd></div>
+                  )}
+                  {selected.source && (
+                    <div>
+                      <dt>Source</dt>
+                      <dd>{selected.source === 'google_drive' ? 'Google Drive' : 'CIP Drive'}</dd>
+                    </div>
+                  )}
+                  {selected.processingStatus && (
+                    <div><dt>Processing</dt><dd>{selected.processingStatus}</dd></div>
+                  )}
+                  {selected.chunkCount !== undefined && (
+                    <div><dt>Passages</dt><dd>{selected.chunkCount}</dd></div>
+                  )}
+                  {selected.ordinal !== undefined && (
+                    <div><dt>Position</dt><dd>#{selected.ordinal + 1}</dd></div>
+                  )}
+                  <div>
+                    <dt>Connections</dt>
+                    <dd>{neighbours.size > 0 ? neighbours.size - 1 : 0}</dd>
+                  </div>
+                </dl>
+
+                {selected.snippet && <p className="insp-snippet">{selected.snippet}…</p>}
+
+                <div className="insp-actions">
+                  {selected.expandable && !expanded.has(selected.id) && (
+                    <button type="button" className="btn btn-primary btn-sm" disabled={busy}
+                      onClick={() => void expand(selected)}>
+                      Expand knowledge
+                    </button>
+                  )}
+                  {expanded.has(selected.id) && (
+                    <button type="button" className="btn btn-sm" onClick={() => collapse(selected)}>
+                      Collapse
+                    </button>
+                  )}
+                  {selected.type === 'file' && (
+                    <>
+                      <a className="btn btn-sm" href={`/api/drive/files/${selected.id}/content`} download>
+                        Open file
+                      </a>
+                      <a className="btn btn-sm" href={`/api/drive/files/${selected.id}/extraction`}>
+                        View extraction
+                      </a>
+                    </>
+                  )}
+                  {selected.type === 'chunk' && selected.fileId && (
+                    <button type="button" className="btn btn-sm"
+                      onClick={() => {
+                        const file = nodes.find((n) => n.id === selected.fileId);
+                        if (file) goTo(file);
+                        else note('That passage came from a file that is not on the canvas yet.');
+                      }}>
+                      Open source
+                    </button>
+                  )}
+                  {selected.type === 'folder' && (
+                    <a className="btn btn-sm" href={`/drive?folder=${selected.id}`}>Open in Drive</a>
+                  )}
+                </div>
+              </>
+            )}
           </aside>
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * A brand as a badge, for the inspector: the same picture its node carries,
+ * or its initials where there is none.
+ */
+function BrandBadge({ node, size }: { node: GraphNodeDTO; size: number }) {
+  // A picture that will not load falls back to the initials rather than the
+  // browser's broken-image mark, which says nothing about whose it was. The
+  // page arrives rendered, so a picture can fail before React is listening;
+  // it is checked again once it is.
+  const [failed, setFailed] = useState(false);
+  const picture = useRef<HTMLImageElement | null>(null);
+  useEffect(() => {
+    const image = picture.current;
+    if (image?.complete && image.naturalWidth === 0) setFailed(true);
+  }, [node.imageFileId]);
+  return (
+    <span
+      className="insp-badge"
+      style={{ width: size, height: size, ['--tag' as string]: colorFor(node as SimNode) }}
+    >
+      {node.imageFileId && !failed ? (
+        // A thumbnail of a file already in this workspace; next/image adds nothing here.
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          ref={picture}
+          src={`/api/drive/files/${node.imageFileId}/content?disposition=inline&size=320`}
+          alt=""
+          onError={() => setFailed(true)}
+        />
+      ) : (
+        <span style={{ fontSize: size * 0.34 }}>{initialsOf(node.label)}</span>
+      )}
+    </span>
   );
 }
 
@@ -1256,12 +1729,19 @@ function drawNode(
     ctx.shadowBlur = 0;
   }
 
+  // The one that is open in the inspector wears a slowly turning orbit in its
+  // own colour, so it can be found again after looking away.
   if (isSelected) {
+    const turn = typeof performance === 'undefined' ? 0 : performance.now() / 45;
+    ctx.save();
+    ctx.setLineDash([5 / scale, 4 / scale]);
+    ctx.lineDashOffset = -turn / scale;
     ctx.beginPath();
-    ctx.arc(x, y, radius + 3, 0, 2 * Math.PI);
+    ctx.arc(x, y, radius + 7 / scale + 3, 0, 2 * Math.PI);
     ctx.lineWidth = 1.5 / scale;
-    ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+    ctx.strokeStyle = hexWithAlpha(color, 0.95);
     ctx.stroke();
+    ctx.restore();
   }
 
   // A ring marks something with more inside it that has not been opened.
