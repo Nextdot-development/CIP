@@ -365,6 +365,66 @@ describe('a 403 is reported for what it actually is', () => {
   });
 });
 
+describe('a refresh token Google has stopped honouring', () => {
+  /**
+   * The token endpoint does not answer 401 for a dead grant. It answers 400
+   * with `invalid_grant`, and that went unrecognised for eight days on the live
+   * connection: marked connected, no Reconnect button, every sync refused.
+   */
+  const realFetch = globalThis.fetch;
+
+  function stubToken(status: number, error: string) {
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ error, error_description: 'Token has been expired or revoked.' }), {
+        status,
+        headers: { 'content-type': 'application/json' },
+      })) as typeof fetch;
+  }
+
+  async function realClient() {
+    const { GoogleDriveClient } = await import('../src/server/integrations/googleDrive/client');
+    return new GoogleDriveClient('client-id', 'client-secret');
+  }
+
+  after(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  it('400 invalid_grant asks for the account to be reconnected', async () => {
+    const client = await realClient();
+    stubToken(400, 'invalid_grant');
+    try {
+      await assert.rejects(
+        () => client.refresh('refresh-token'),
+        (error: unknown) => {
+          const e = error as { kind: string; message: string };
+          assert.equal(e.kind, 'needs_reauth');
+          assert.match(e.message, /reconnect/i);
+          return true;
+        },
+      );
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it('any other 400 is still a refusal, not a reason to reconnect', async () => {
+    const client = await realClient();
+    stubToken(400, 'invalid_request');
+    try {
+      await assert.rejects(
+        () => client.refresh('refresh-token'),
+        (error: unknown) => {
+          assert.equal((error as { kind: string }).kind, 'permanent');
+          return true;
+        },
+      );
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+});
+
 describe('sync discovers, ingests and hands over to the existing pipeline', () => {
   it('ingests a supported file and marks it as coming from Google Drive', async () => {
     await connect(mm, MM_FOLDER);

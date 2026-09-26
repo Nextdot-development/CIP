@@ -311,6 +311,16 @@ async function classify(response: Response): Promise<GoogleDriveError> {
     return new GoogleDriveError('needs_reauth', 'Google Drive access has expired. Reconnect to continue.');
   }
 
+  // A dead refresh token is not a 401. The token endpoint answers 400 with
+  // `invalid_grant` - the grant was revoked, the password changed, or an app
+  // still in testing let it lapse after a week. Read as an ordinary refusal it
+  // left the connection marked connected, with no Reconnect button anywhere,
+  // while every sync for eight days failed with "Google Drive refused the
+  // request" and nothing new came in.
+  if (response.status === 400 && (await oauthError(response)) === 'invalid_grant') {
+    return new GoogleDriveError('needs_reauth', 'Google Drive access has expired. Reconnect to continue.');
+  }
+
   if (response.status === 403) {
     // 403 is overloaded: "the API is switched off", "you may not read that",
     // and "slow down" all arrive as one status. Treating them alike sent
@@ -399,6 +409,19 @@ async function errorReason(response: Response): Promise<string | null> {
     if (typeof fromList === 'string') return fromList;
     const status = body.error?.status;
     return typeof status === 'string' ? status : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The error code from the OAuth token endpoint, which is shaped differently
+ * from the Drive API's: a bare string, `{"error": "invalid_grant"}`.
+ */
+async function oauthError(response: Response): Promise<string | null> {
+  try {
+    const body = (await response.clone().json()) as { error?: unknown };
+    return typeof body.error === 'string' ? body.error : null;
   } catch {
     return null;
   }
