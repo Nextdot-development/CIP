@@ -69,8 +69,18 @@
 
 .graph-body { display: flex; flex: 1; min-height: 0; }
 
-.graph-canvas { position: relative; flex: 1; min-width: 0; }
+/* The backdrop is here rather than on the canvas: a deep, faintly violet
+   field that falls away to near-black at the edges, the way Obsidian's graph
+   does, so the lit nodes read as points of light rather than dots on a page.
+   The canvas is transparent above it. */
+.graph-canvas {
+  position: relative; flex: 1; min-width: 0;
+  background:
+    radial-gradient(ellipse 70% 60% at 50% 45%, rgba(92, 70, 140, 0.16), transparent 70%),
+    radial-gradient(ellipse at center, #17161c 0%, #111015 55%, #0b0a0e 100%);
+}
 .graph-canvas canvas { display: block; }
+.graph-canvas.is-pointing canvas { cursor: pointer; }
 
 .graph-loading,
 .graph-busy {
@@ -87,20 +97,26 @@
 .graph-stats {
   position: absolute; top: 14px; left: 14px;
   display: flex; flex-wrap: wrap; gap: 4px 14px; max-width: 320px;
-  padding: 10px 13px; border-radius: var(--r-sm);
-  background: rgba(18, 22, 31, 0.86); border: 1px solid rgba(148, 163, 184, 0.18);
-  color: #94a3b8; font-size: 12px; pointer-events: none; backdrop-filter: blur(6px);
+  padding: 10px 13px; border-radius: 10px;
+  background: rgba(22, 20, 28, 0.62); border: 1px solid rgba(255, 255, 255, 0.07);
+  color: #8e8b9c; font-size: 12px; pointer-events: none;
+  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
 }
-.graph-stats b { color: #e2e8f0; font-weight: 600; margin-right: 3px; }
+.graph-stats b { color: #ecebf2; font-weight: 600; margin-right: 3px; }
 
 .graph-legend {
   position: absolute; bottom: 14px; left: 14px;
-  display: flex; gap: 14px; padding: 8px 12px; border-radius: 999px;
-  background: rgba(18, 22, 31, 0.86); border: 1px solid rgba(148, 163, 184, 0.18);
-  font-size: 12px; color: #94a3b8; pointer-events: none; text-transform: capitalize;
+  display: flex; flex-wrap: wrap; gap: 8px 14px; padding: 8px 14px; border-radius: 999px;
+  background: rgba(22, 20, 28, 0.62); border: 1px solid rgba(255, 255, 255, 0.07);
+  font-size: 12px; color: #a3a0b2; pointer-events: none; text-transform: capitalize;
+  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
 }
 .graph-legend span { display: inline-flex; align-items: center; gap: 6px; }
-.graph-legend i { width: 9px; height: 9px; border-radius: 50%; display: block; }
+/* Each swatch glows in its own colour, as its nodes do. */
+.graph-legend i {
+  width: 8px; height: 8px; border-radius: 50%; display: block;
+  box-shadow: 0 0 8px currentColor;
+}
 
 .graph-inspector {
   width: 320px; flex: none; overflow-y: auto;

@@ -31,7 +31,9 @@ import type {
  */
 
 /** react-force-graph mutates these in place with x/y/vx/vy as it simulates. */
-type SimNode = GraphNodeDTO & { x?: number; y?: number; fx?: number; fy?: number };
+type SimNode = GraphNodeDTO & {
+  x?: number; y?: number; vx?: number; vy?: number; fx?: number; fy?: number;
+};
 type SimLink = { source: string | SimNode; target: string | SimNode; kind: string; score?: number };
 
 /** What the canvas can be told to do from here. */
@@ -40,8 +42,14 @@ type GraphHandle = {
   zoom: (level?: number, ms?: number) => number | void;
   centerAt: (x?: number, y?: number, ms?: number) => void;
   d3ReheatSimulation: () => void;
-  /** The underlying d3 forces, so the layout can be spread out to taste. */
-  d3Force: (name: string) => { strength?: (v: number) => unknown; distance?: (v: number) => unknown } | undefined;
+  /**
+   * The underlying d3 forces, so the layout can be spread out to taste. Given
+   * a force as well, it sets one - which is how collision is added.
+   */
+  d3Force: (
+    name: string,
+    force?: ((alpha: number) => void) & { initialize?: (nodes: SimNode[]) => void },
+  ) => { strength?: (v: number) => unknown; distance?: (v: number) => unknown } | undefined;
 };
 
 /**
@@ -59,6 +67,7 @@ type ForceGraphProps = {
   height?: number;
   backgroundColor?: string;
   cooldownTicks?: number;
+  warmupTicks?: number;
   d3VelocityDecay?: number;
   nodeRelSize?: number;
   onNodeClick?: (node: SimNode) => void;
@@ -83,14 +92,14 @@ const ForceGraph2D = dynamic(() => import('react-force-graph-2d'), {
 const TYPE_COLOR: Record<GraphNodeType, string> = {
   // A brand is the only kind of node that is not a place a file lives, so it
   // is the only warm one. Everything structural stays on the cool side.
-  brand: '#f9a8d4',
+  brand: '#f5a3cf',
   // A hub is what brands have in common rather than a brand itself, so it is
   // the same warm family and a shade apart from it.
-  trait: '#fdba74',
-  source: '#c4b5fd',
-  folder: '#7dd3fc',
-  file: '#86efac',
-  chunk: '#fcd34d',
+  trait: '#f7b77a',
+  source: '#b9a6f7',
+  folder: '#7fc8ee',
+  file: '#86dfa8',
+  chunk: '#f1d27a',
 };
 
 /**
@@ -103,12 +112,12 @@ const TYPE_COLOR: Record<GraphNodeType, string> = {
  * stuff recedes instead of competing with it.
  */
 const DIMENSION_COLOR: Record<string, string> = {
-  country:  '#7dd3fc',
-  category: '#fdba74',
-  flavour:  '#86efac',
-  tier:     '#c4b5fd',
+  country:  '#7fc8ee',
+  category: '#f7b77a',
+  flavour:  '#86dfa8',
+  tier:     '#b9a6f7',
 };
-const UNNAMED_HUB = '#8a94a6';
+const UNNAMED_HUB = '#6b6e7b';
 
 function colorFor(node: SimNode): string {
   if (node.type !== 'trait') return TYPE_COLOR[node.type];
@@ -183,8 +192,14 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
     // file tree is hundreds of nodes and the same spacing would fling them
     // off the canvas.
     const roomy = view === 'brands';
-    handle.d3Force('charge')?.strength?.(roomy ? -900 : -420);
-    handle.d3Force('link')?.distance?.(roomy ? 150 : 90);
+    handle.d3Force('charge')?.strength?.(roomy ? -520 : -260);
+    handle.d3Force('link')?.distance?.(roomy ? 110 : 70);
+    // Repulsion alone let thirty labelled nodes settle in a knot with every
+    // name on top of the next. Collision gives each one room for its name.
+    handle.d3Force('collide', collide());
+    // And a gentle pull to the middle, so a brand that shares nothing with
+    // the others stays on screen instead of dragging the whole view out.
+    handle.d3Force('gravity', gravity());
     handle.d3ReheatSimulation();
   }, [nodes.length, view]);
 
@@ -368,6 +383,28 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
   }, [edges, selected]);
 
   /**
+   * What is lit: the node under the pointer, or the selection when the
+   * pointer is elsewhere. Obsidian lights on hover, and a graph that only
+   * answers a click makes you click every node to learn anything.
+   */
+  const focusId = hovered ?? selected?.id ?? null;
+  const lit = useMemo(() => {
+    if (!focusId) return new Set<string>();
+    const near = new Set<string>([focusId]);
+    for (const edge of edges as unknown as SimLink[]) {
+      const source = endId(edge.source);
+      const target = endId(edge.target);
+      if (source === focusId) near.add(target);
+      if (target === focusId) near.add(source);
+    }
+    return near;
+  }, [edges, focusId]);
+  const focusColor = useMemo(() => {
+    const node = focusId ? nodes.find((n) => n.id === focusId) : undefined;
+    return node ? colorFor(node) : null;
+  }, [focusId, nodes]);
+
+  /**
    * The brands the selected one is most like, closest first.
    *
    * Read off the edges already drawn rather than fetched: the reason is
@@ -548,20 +585,26 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
       </div>
 
       <div className="graph-body">
-        <div className="graph-canvas" ref={shellRef}>
+        <div className={`graph-canvas${hovered ? ' is-pointing' : ''}`} ref={shellRef}>
           <ForceGraph2D
             ref={graphRef}
             graphData={graphData}
             width={size.width}
             height={size.height}
-            backgroundColor="#0d1017"
-            cooldownTicks={120}
+            // Transparent: the backdrop is drawn by CSS, a soft vignette the
+            // canvas cannot paint without redrawing it every frame.
+            backgroundColor="rgba(0,0,0,0)"
+            // Laid out before the first frame, so the graph opens as a shape
+            // rather than as an explosion from a single point, then left to
+            // settle gently the way Obsidian's does.
+            warmupTicks={80}
+            cooldownTicks={220}
             onEngineStop={() => {
               if (hasFitted.current) return;
               hasFitted.current = true;
-              graphRef.current?.zoomToFit(500, 70);
+              graphRef.current?.zoomToFit(700, 90);
             }}
-            d3VelocityDecay={0.28}
+            d3VelocityDecay={0.32}
             nodeRelSize={5}
             onNodeClick={(node) => setSelected(node)}
             onNodeHover={(node) => setHovered(node?.id ?? null)}
@@ -573,31 +616,31 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
               node.fy = node.y;
             }}
             linkColor={(edge) => {
-              const dim = selected !== null && !touches(edge, neighbours);
-              if (edge.kind === 'shares') {
-                return dim ? 'rgba(253,186,116,0.06)' : 'rgba(253,186,116,0.38)';
+              // Lit: the lines out of whatever is under the pointer take its
+              // colour. Everything else sinks almost out of sight.
+              if (focusId !== null) {
+                const on = endId(edge.source) === focusId || endId(edge.target) === focusId;
+                return on && focusColor ? hexWithAlpha(focusColor, 0.85) : 'rgba(200,200,215,0.035)';
               }
               if (edge.kind === 'resembles') {
                 // Stronger resemblance draws stronger, so the shape of the
-                // portfolio is readable without clicking anything.
-                const strength = Math.min(1, Math.max(0.25, edge.score ?? 0.3));
-                return dim ? 'rgba(249,168,212,0.08)' : `rgba(249,168,212,${strength})`;
+                // portfolio is readable without pointing at anything.
+                const strength = Math.min(0.55, Math.max(0.12, (edge.score ?? 0.3) * 0.6));
+                return `rgba(245,163,207,${strength})`;
               }
-              if (edge.kind === 'related') return dim ? 'rgba(252,211,77,0.07)' : 'rgba(252,211,77,0.45)';
-              return dim ? 'rgba(148,163,184,0.07)' : 'rgba(148,163,184,0.35)';
+              if (edge.kind === 'related') return 'rgba(241,210,122,0.3)';
+              return 'rgba(200,200,215,0.16)';
             }}
-            linkWidth={(edge) =>
-              edge.kind === 'resembles' ? 1.2 + 2.4 * (edge.score ?? 0) : edge.kind === 'related' ? 1.6 : 1
-            }
-            linkDirectionalParticles={(edge) =>
-              selected !== null && touches(edge, neighbours) ? 2 : 0
-            }
-            linkDirectionalParticleWidth={2}
+            linkWidth={(edge) => {
+              const on = focusId !== null && (endId(edge.source) === focusId || endId(edge.target) === focusId);
+              if (on) return 1.8;
+              return edge.kind === 'resembles' ? 0.6 + 1.4 * (edge.score ?? 0) : 0.7;
+            }}
             nodeCanvasObject={(node, ctx, scale) => {
               drawNode(node, ctx, scale, {
+                focusId,
                 selectedId: selected?.id ?? null,
-                hoveredId: hovered,
-                neighbours,
+                lit,
                 matches,
                 expanded,
               });
@@ -639,20 +682,20 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
             {view === 'brands'
               ? (
                 <>
-                  <span><i style={{ background: TYPE_COLOR.brand }} />brand</span>
+                  <span><i style={{ background: TYPE_COLOR.brand, color: TYPE_COLOR.brand }} />brand</span>
                   {(['category', 'flavour', 'tier', 'country'] as const)
                     .filter((d) => nodes.some((n) => n.type === 'trait' && n.dimension === d))
                     .map((d) => (
-                      <span key={d}><i style={{ background: DIMENSION_COLOR[d] }} />{d}</span>
+                      <span key={d}><i style={{ background: DIMENSION_COLOR[d], color: DIMENSION_COLOR[d] }} />{d}</span>
                     ))}
                   {nodes.some((n) => n.type === 'trait' && !n.dimension) && (
-                    <span><i style={{ background: UNNAMED_HUB }} />also shared</span>
+                    <span><i style={{ background: UNNAMED_HUB, color: UNNAMED_HUB }} />also shared</span>
                   )}
                 </>
               )
               : (['source', 'folder', 'file', 'chunk'] as GraphNodeType[]).map((type) => (
                 <span key={type}>
-                  <i style={{ background: TYPE_COLOR[type] }} />
+                  <i style={{ background: TYPE_COLOR[type], color: TYPE_COLOR[type] }} />
                   {type === 'chunk' ? 'passage' : type}
                 </span>
               ))}
@@ -776,11 +819,6 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
   );
 }
 
-/** How big a node draws. Weight comes from the server, from real counts. */
-function radiusFor(node: SimNode): number {
-  return Math.min(3 + Math.sqrt(node.weight) * 1.9, 13);
-}
-
 function edgeKey(edge: GraphEdgeDTO): string {
   const ends = [endId(edge.source as string | { id: string }), endId(edge.target as string | { id: string })];
   return `${edge.kind}:${ends.sort().join('|')}`;
@@ -799,63 +837,175 @@ function endId(end: string | { id: string }): string {
   return typeof end === 'string' ? end : end.id;
 }
 
-function touches(link: SimLink, ids: Set<string>): boolean {
-  return ids.has(endId(link.source)) && ids.has(endId(link.target));
+/** How big a node draws. Weight comes from the server, from real counts. */
+function radiusFor(node: SimNode): number {
+  if (node.type === 'trait' && !node.dimension) return Math.min(2.5 + Math.sqrt(node.weight) * 1.1, 6);
+  return Math.min(3 + Math.sqrt(node.weight) * 1.9, 13);
+}
+
+/**
+ * Room a node needs around it: its dot, and its name for the kinds that are
+ * always named. Without this the layout only pushed dots apart, and thirty
+ * labels settled on top of one another in a knot in the middle of the canvas.
+ */
+function roomFor(node: SimNode): number {
+  const named = node.type === 'brand' || (node.type === 'trait' && node.dimension);
+  return radiusFor(node) + (named ? 16 : 6);
+}
+
+/**
+ * Keeps nodes from overlapping.
+ *
+ * A d3 force in the shape react-force-graph expects: called every tick with
+ * the simulation's heat, handed the nodes once. Pairwise, which is fine at the
+ * size these graphs are - a few dozen brands, a few hundred files - and saves
+ * pulling in d3-force for the one function.
+ */
+function collide(strength = 0.7) {
+  let nodes: SimNode[] = [];
+  const force = (alpha: number) => {
+    for (let i = 0; i < nodes.length; i += 1) {
+      const a = nodes[i]!;
+      for (let j = i + 1; j < nodes.length; j += 1) {
+        const b = nodes[j]!;
+        let dx = (b.x ?? 0) - (a.x ?? 0);
+        let dy = (b.y ?? 0) - (a.y ?? 0);
+        const min = roomFor(a) + roomFor(b);
+        let d2 = dx * dx + dy * dy;
+        if (d2 >= min * min) continue;
+        if (d2 === 0) {
+          // Two nodes on the same spot have no direction to part in.
+          dx = (Math.random() - 0.5) * 1e-3;
+          dy = (Math.random() - 0.5) * 1e-3;
+          d2 = dx * dx + dy * dy;
+        }
+        const d = Math.sqrt(d2);
+        const push = ((min - d) / d) * strength * Math.min(1, alpha * 4) * 0.5;
+        a.vx = (a.vx ?? 0) - dx * push;
+        a.vy = (a.vy ?? 0) - dy * push;
+        b.vx = (b.vx ?? 0) + dx * push;
+        b.vy = (b.vy ?? 0) + dy * push;
+      }
+    }
+  };
+  force.initialize = (given: SimNode[]) => {
+    nodes = given;
+  };
+  return force;
+}
+
+/**
+ * A gentle pull towards the middle, on every node.
+ *
+ * Without it a node with no lines - Jaisalmer, which shares no trait with any
+ * other brand - is pushed away by every other node and nothing pulls it back.
+ * It drifted hundreds of units out, and fitting the view to include it shrank
+ * the rest of the portfolio to a knot in one corner. Obsidian has the same
+ * force, and calls it exactly that.
+ */
+function gravity(strength = 0.07) {
+  let nodes: SimNode[] = [];
+  const force = (alpha: number) => {
+    for (const node of nodes) {
+      node.vx = (node.vx ?? 0) - (node.x ?? 0) * strength * alpha;
+      node.vy = (node.vy ?? 0) - (node.y ?? 0) * strength * alpha;
+    }
+  };
+  force.initialize = (given: SimNode[]) => {
+    nodes = given;
+  };
+  return force;
+}
+
+/** 0 below `from`, 1 above `to`, and a straight line between. */
+function ramp(value: number, from: number, to: number): number {
+  return Math.min(1, Math.max(0, (value - from) / (to - from)));
+}
+
+/**
+ * How visible a node's name is at this zoom, before any hover.
+ *
+ * Obsidian's rule, more or less: from far away you see the landmarks, and the
+ * rest of the names rise into view as you move in. Brands are the landmarks -
+ * reading your own portfolio the moment the page opens is the point - and the
+ * numerous kinds wait until there is room for them.
+ */
+function labelOpacity(node: SimNode, scale: number): number {
+  switch (node.type) {
+    case 'brand':
+      return 1;
+    case 'trait':
+      // What the brands share is the point of this view, so a named trait is
+      // readable from the first frame; the grey tail waits for a closer look.
+      return node.dimension ? 0.35 + 0.65 * ramp(scale, 0.5, 1) : ramp(scale, 1.2, 2);
+    case 'source':
+    case 'folder':
+      return ramp(scale, 0.6, 1.1);
+    case 'file':
+      return ramp(scale, 1.3, 2.1);
+    case 'chunk':
+      return ramp(scale, 2.2, 3.2);
+  }
 }
 
 /**
  * Draws one node.
  *
- * Selection dims everything that is not adjacent, which is what makes a dense
- * graph readable: the alternative is a wall of equally-bright dots where the
- * thing you clicked is indistinguishable from the rest.
+ * Hovering (or, with nothing hovered, the selection) lights a node and its
+ * neighbours and sinks everything else, which is what makes a dense graph
+ * readable: the alternative is a wall of equally bright dots where the thing
+ * you are pointing at is indistinguishable from the rest.
  */
 function drawNode(
   node: SimNode,
   ctx: CanvasRenderingContext2D,
   scale: number,
   state: {
+    focusId: string | null;
     selectedId: string | null;
-    hoveredId: string | null;
-    neighbours: Set<string>;
+    lit: Set<string>;
     matches: Set<string>;
     expanded: Set<string>;
   },
 ): void {
   const x = node.x ?? 0;
   const y = node.y ?? 0;
-  const radius = radiusFor(node);
+  const color = colorFor(node);
 
+  const focused = state.focusId !== null;
+  const isFocus = state.focusId === node.id;
   const isSelected = state.selectedId === node.id;
-  const isNear = state.selectedId === null || state.neighbours.has(node.id);
   const isMatch = state.matches.has(node.id);
-  const dimmed = !isNear && !isMatch;
+  const inLight = !focused || state.lit.has(node.id);
+  const radius = radiusFor(node) * (isFocus ? 1.3 : 1);
 
-  ctx.globalAlpha = dimmed ? 0.18 : 1;
+  ctx.globalAlpha = inLight || isMatch ? 1 : 0.1;
 
   // A search hit gets a halo so it can be found without reading every label.
   if (isMatch) {
     ctx.beginPath();
-    ctx.arc(x, y, radius + 6, 0, 2 * Math.PI);
-    ctx.fillStyle = 'rgba(250, 204, 21, 0.18)';
+    ctx.arc(x, y, radius + 7, 0, 2 * Math.PI);
+    ctx.fillStyle = 'rgba(250, 204, 21, 0.16)';
     ctx.fill();
   }
 
-  if (isSelected || state.hoveredId === node.id) {
-    ctx.beginPath();
-    ctx.arc(x, y, radius + 4, 0, 2 * Math.PI);
-    ctx.fillStyle = 'rgba(255,255,255,0.14)';
-    ctx.fill();
+  // The glow. Brands always carry a little of it, so the portfolio reads as
+  // the lit points it is; whatever is under the pointer carries more.
+  if (isFocus || (focused && inLight) || node.type === 'brand') {
+    ctx.shadowColor = color;
+    ctx.shadowBlur = isFocus ? 28 : focused ? 14 : 10;
   }
-
   ctx.beginPath();
   ctx.arc(x, y, radius, 0, 2 * Math.PI);
-  ctx.fillStyle = colorFor(node);
+  ctx.fillStyle = color;
   ctx.fill();
+  ctx.shadowBlur = 0;
 
   if (isSelected) {
-    ctx.lineWidth = 2 / scale;
-    ctx.strokeStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(x, y, radius + 2.5, 0, 2 * Math.PI);
+    ctx.lineWidth = 1.5 / scale;
+    ctx.strokeStyle = 'rgba(255,255,255,0.9)';
     ctx.stroke();
   }
 
@@ -864,54 +1014,50 @@ function drawNode(
     ctx.beginPath();
     ctx.arc(x, y, radius + 2.5, 0, 2 * Math.PI);
     ctx.lineWidth = 1 / scale;
-    ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+    ctx.strokeStyle = 'rgba(255,255,255,0.3)';
     ctx.stroke();
   }
 
-  // Labels only once there is room for them, and always for what is selected.
-  // Labels are drawn when there is room for them. Passages are the numerous
-  // kind, so they stay quiet until somebody zooms in or picks one.
-  // A brand and a hub are always named. There are a few dozen of them and
-  // reading your own brands the moment the page opens is the entire point -
-  // a constellation of unlabelled dots proves nothing about what CIP knows.
-  // Files and passages are the numerous kind and stay quiet until zoomed to.
-  const showLabel =
-    isSelected ||
-    node.type === 'brand' ||
-    node.type === 'trait' ||
-    node.type === 'source' ||
-    node.type === 'folder' ||
-    (node.type === 'file' && scale > 0.9) ||
-    scale > 2;
-
-  if (showLabel && !dimmed) {
-    const emphasis = node.type === 'brand' || (node.type === 'trait' && node.dimension);
-    const size = Math.max((emphasis ? 11 : 10) / scale, 2.2);
-    ctx.font = `${emphasis ? 600 : 400} ${size}px Inter, system-ui, sans-serif`;
+  // With something lit, exactly its neighbourhood is named and nothing else.
+  // Otherwise the zoom decides.
+  const opacity = focused ? (inLight ? 1 : 0) : Math.max(labelOpacity(node, scale), isSelected ? 1 : 0);
+  if (opacity > 0.02) {
+    const emphasis = node.type === 'brand' || isFocus;
+    // Text grows as you zoom in, and more slowly than the graph does, so it
+    // is never microscopic from afar nor enormous up close.
+    const onScreen = Math.min(Math.max((emphasis ? 12.5 : 11) * Math.sqrt(scale), 9.5), 17);
+    const size = onScreen / scale;
+    // Whole hundreds only: a weight of 450 is read by some canvases as the
+    // font size, and every trait was drawn four hundred pixels tall.
+    ctx.font = `${emphasis ? 600 : 500} ${size.toFixed(2)}px Inter, system-ui, sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
 
-    // Its own name where it has one, and its id where it does not. A node
-    // without a label should not reach here any more - dangling edges are
-    // dropped before the graph is handed over - but a label is a thing to
-    // draw, and one missing must never be a thing that takes down a page.
+    // Its own name where it has one, and its id where it does not. A label is
+    // a thing to draw, and one missing must never take down a page.
     const name = node.label ?? node.id;
     const label = name.length > 30 ? `${name.slice(0, 29)}…` : name;
+    const top = y + radius + 3 / scale;
 
-    // A dark halo behind the text, so a label crossing an edge or another
-    // node stays readable instead of dissolving into it.
-    ctx.lineWidth = 3 / scale;
-    ctx.strokeStyle = 'rgba(8, 11, 16, 0.85)';
+    ctx.globalAlpha = (inLight || isMatch ? 1 : 0.1) * opacity;
+    // A dark halo behind the text, so a label crossing a line stays readable.
+    ctx.lineWidth = 3.5 / scale;
+    ctx.strokeStyle = 'rgba(14, 13, 18, 0.9)';
     ctx.lineJoin = 'round';
-    ctx.strokeText(label, x, y + radius + 3);
-
-    ctx.fillStyle = isSelected
+    ctx.strokeText(label, x, top);
+    ctx.fillStyle = isFocus || isSelected
       ? '#ffffff'
-      : emphasis
-        ? 'rgba(241,245,249,0.95)'
-        : 'rgba(203,213,225,0.72)';
-    ctx.fillText(label, x, y + radius + 3);
+      : node.type === 'brand'
+        ? 'rgba(236, 234, 244, 0.95)'
+        : 'rgba(196, 194, 208, 0.85)';
+    ctx.fillText(label, x, top);
   }
 
   ctx.globalAlpha = 1;
+}
+
+/** A #rrggbb colour at a given opacity, for lines that take a node's colour. */
+function hexWithAlpha(hex: string, alpha: number): string {
+  const value = Number.parseInt(hex.slice(1), 16);
+  return `rgba(${(value >> 16) & 255},${(value >> 8) & 255},${value & 255},${alpha})`;
 }
