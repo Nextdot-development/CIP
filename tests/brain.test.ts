@@ -989,6 +989,57 @@ describe('THE CHECKER: a creative judged against the brand, and nothing else', (
     assert.ok(sent.houseBrands.includes('8PM'));
   });
 
+  // "West Africa" matched no rule: Ghana's and Nigeria's are filed under
+  // their own names, so a West African film with no health warning anywhere
+  // in it was passed without a word.
+  it('a region is judged against the rules of every country in it', async () => {
+    await rule('required', 'Carry the Ghana FDA health warning.', 'regulation', 'Ghana');
+    await rule('required', 'Carry the ARCON health warning.', 'regulation', 'Nigeria');
+    await rule('required', 'Carry the Rule 7(2)(viii) warning.', 'regulation', 'India');
+    await rule('required', 'Carry a responsible drinking message.');
+
+    const { rulesForBrief } = await import('../src/server/brain/checker');
+    const texts = async (market: string | null) =>
+      (await rulesForBrief(mm, { brand: null, market })).map((r) => r.rule).sort();
+
+    const westAfrica = await texts('West Africa');
+    assert.ok(westAfrica.some((r) => r.includes('Ghana FDA')), 'Ghana was left out of West Africa');
+    assert.ok(westAfrica.some((r) => r.includes('ARCON')), 'Nigeria was left out of West Africa');
+    assert.ok(westAfrica.some((r) => r.includes('responsible drinking')), 'the house-wide rule was lost');
+    assert.ok(!westAfrica.some((r) => r.includes('7(2)(viii)')), 'India is not in West Africa');
+
+    // People type markets; case is not a different country.
+    assert.deepEqual(await texts('west africa'), westAfrica);
+
+    // A country does not take its neighbour's rules.
+    const ghana = await texts('Ghana');
+    assert.ok(ghana.some((r) => r.includes('Ghana FDA')));
+    assert.ok(!ghana.some((r) => r.includes('ARCON')), "Nigeria's rules applied to Ghana");
+  });
+
+  it('a rule written for a region binds each country in it', async () => {
+    await rule('forbidden', 'No sports imagery in West African alcohol advertising.', 'regulation', 'West Africa');
+    const { rulesForBrief } = await import('../src/server/brain/checker');
+    const nigeria = (await rulesForBrief(mm, { brand: null, market: 'Nigeria' })).map((r) => r.rule);
+    assert.ok(nigeria.some((r) => r.includes('sports imagery')));
+    const india = (await rulesForBrief(mm, { brand: null, market: 'India' })).map((r) => r.rule);
+    assert.ok(!india.some((r) => r.includes('sports imagery')));
+  });
+
+  it('tells the Brain whose law each regional rule is', async () => {
+    await rule('required', 'Carry the Ghana FDA health warning.', 'regulation', 'Ghana');
+    const { runCheck } = await import('../src/server/brain/checker');
+    const creative = await uploadImage(mm, 'West Africa banner.png');
+    await runCheck(mm, { fileId: creative.id, brand: null, market: 'West Africa' });
+
+    const sent = fake.lastCheckInput;
+    assert.ok(sent, 'the checker never reached the Brain');
+    assert.ok(
+      sent.rules.some((r) => r.statement === '(Ghana) Carry the Ghana FDA health warning.'),
+      `rules sent: ${sent.rules.map((r) => r.statement).join(' | ')}`,
+    );
+  });
+
   it('throws away a flag that cites a rule nobody sent', async () => {
     await rule('required', 'Carry a responsible drinking message.');
     // R1 exists. R9 does not: that is a rule the model made up, and a flag

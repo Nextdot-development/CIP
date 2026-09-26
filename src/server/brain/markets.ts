@@ -47,6 +47,43 @@ const KNOWN_MARKETS: { market: string; patterns: RegExp }[] = [
 ];
 
 /**
+ * Markets that are made of other markets.
+ *
+ * A creative for West Africa runs in Ghana and in Nigeria, and has to satisfy
+ * the law of both. Rules are written for the country whose law they are, so a
+ * check asked about "West Africa" matched none of them: Ghana FDA and Nigeria
+ * ARCON were never applied to a West African creative, and a film with no
+ * health warning anywhere in it was passed without a word.
+ *
+ * Only countries CIP holds rules for are listed. Add one here when its rules
+ * are added, not before - a country named with nothing behind it changes
+ * nothing, and suggests coverage that is not there.
+ */
+const REGIONS: Record<string, string[]> = {
+  'West Africa': ['Ghana', 'Nigeria'],
+};
+
+/**
+ * Every market whose rules apply to a creative for this one.
+ *
+ * A region brings in its countries, because the creative runs in all of them.
+ * A country brings in the regions it belongs to, because a rule written for
+ * West Africa is as binding in Ghana. Compared without regard to case, since
+ * these are typed by people.
+ */
+export function marketsCovering(market: string): string[] {
+  const asked = market.trim();
+  const key = asked.toLowerCase();
+  const found = new Set<string>([asked]);
+  for (const [region, countries] of Object.entries(REGIONS)) {
+    const lowered = countries.map((c) => c.toLowerCase());
+    if (region.toLowerCase() === key) countries.forEach((c) => found.add(c));
+    if (lowered.includes(key)) found.add(region);
+  }
+  return [...found];
+}
+
+/**
  * The market a filename suggests, if it clearly suggests one.
  *
  * The extension is dropped first so `India.pdf` matches on `India` rather than

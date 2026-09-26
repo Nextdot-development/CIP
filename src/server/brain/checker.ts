@@ -7,6 +7,7 @@ import { renderPdfPages } from '../drive/extraction/pdfRender';
 import { readAsset } from '../media/generation';
 import { readBrandDna } from './brandDna';
 import { companyBrands } from './brands';
+import { marketsCovering } from './markets';
 import { productShots } from './retrieval';
 import { fitForVision } from './fitImage';
 import { videoContactSheet } from './contactSheet';
@@ -618,7 +619,15 @@ export async function runCheck(
       advisory: rule.source === 'suggested' && rule.verifiedAt === null,
       graded: rule.ruleCode && rule.severity ? FROM_RULE[rule.severity] : undefined,
     });
-    sent.push({ ref, dimension: 'compliance', requirement: rule.requirement, statement: rule.rule });
+    // Named, once more than one country's rules are in play: a West African
+    // creative is judged against Ghana's rules and Nigeria's, and "the
+    // statutory warning is missing" is only actionable once it says whose.
+    sent.push({
+      ref,
+      dimension: 'compliance',
+      requirement: rule.requirement,
+      statement: rule.market ? `(${rule.market}) ${rule.rule}` : rule.rule,
+    });
   });
 
   const judged: Record<CheckDimension, boolean> = {
@@ -1109,6 +1118,8 @@ export type BriefRule = {
   ruleCode: string | null;
   severity: RuleSeverity;
   ruleType: RuleType;
+  /** The country or region whose rule this is. Null for one that applies everywhere. */
+  market: string | null;
 };
 
 export type RuleSeverity = 'critical' | 'major' | 'minor' | 'informational';
@@ -1154,17 +1165,20 @@ export async function rulesForBrief(
 ): Promise<BriefRule[]> {
   const brand = context.brand?.trim() || null;
   const market = context.market?.trim() || null;
+  // "West Africa" is Ghana and Nigeria, and a creative for it answers to both.
+  // Matching the name alone applied neither. See marketsCovering.
+  const covering = market ? marketsCovering(market).map((m) => m.toLowerCase()) : [];
 
   return withCompanyScope(scope, (tx) =>
     tx<BriefRule[]>`
       select id, rule, requirement, category, source, verified_at as "verifiedAt",
-             rule_code as "ruleCode", severity, rule_type as "ruleType"
+             rule_code as "ruleCode", severity, rule_type as "ruleType", market
         from compliance_rules
        where company_id = ${scope.companyId}
          and active
          and category <> 'medium'
          and (brand is null or brand = ${brand})
-         and (market is null or market = ${market})
+         and (market is null or lower(market) = any(${covering}::text[]))
        order by requirement, rule
     `,
   );
