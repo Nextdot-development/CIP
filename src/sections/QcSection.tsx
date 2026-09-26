@@ -18,7 +18,16 @@ import type { CheckFlag } from '@/server/brain/checker';
 type Coverage = { rules: number; verifiedRules: number; facts: number };
 
 /** Something CIP already holds, which can be checked whatever its size. */
-type Held = { id: string; name: string; isPdf: boolean; sizeMb: number };
+type Held = { id: string; name: string; kind: 'PDF' | 'image' | 'video'; sizeMb: number };
+
+/**
+ * Whether a file is a video, from its name.
+ *
+ * Only for what the screen says while it works: a video is one check of the
+ * whole film, not "page 1 of 1", and it takes longer than a picture because
+ * the frames have to be taken out of it first.
+ */
+const VIDEO_NAME = /\.(mp4|mov|webm|mkv)$/i;
 
 type Report = {
   check: {
@@ -377,18 +386,21 @@ export function QcSection({
             {phase.at === 'uploading'
               ? `Uploading ${phase.name}…`
               : phase.at === 'checking'
-                ? `Looking at page ${phase.page} of ${phase.of}…`
+                ? VIDEO_NAME.test(phase.name)
+                  ? 'Watching it from the first frame to the end card…'
+                  : `Looking at page ${phase.page} of ${phase.of}…`
                 : 'Drop a creative here, or click to browse'}
           </span>
           <span className="f">
-            PNG, JPEG, WebP or PDF, up to 4.5 MB. A PDF is checked one page at a time.
+            PNG, JPEG, WebP, PDF or a video (MP4, MOV, WebM), up to 4.5 MB. A PDF is
+            checked a page at a time; a video is checked whole, start to end card.
           </span>
         </button>
         <input
           ref={input}
           type="file"
           hidden
-          accept="image/png,image/jpeg,image/webp,application/pdf"
+          accept="image/png,image/jpeg,image/webp,application/pdf,video/mp4,video/quicktime,video/webm"
           onChange={(event) => {
             const file = event.target.files?.[0];
             event.target.value = '';
@@ -413,7 +425,9 @@ export function QcSection({
             <span>
               {phase.at === 'uploading'
                 ? `Taking ${phase.name}…`
-                : `Reading ${phase.name} — page ${phase.page} of ${phase.of}`}
+                : VIDEO_NAME.test(phase.name)
+                  ? `Watching ${phase.name}. Taking frames out of a video takes a minute.`
+                  : `Reading ${phase.name} — page ${phase.page} of ${phase.of}`}
             </span>
             {phase.at === 'checking' && (
               <span className="qc-progress-track" aria-hidden>
@@ -458,14 +472,14 @@ export function QcSection({
                   <button type="button" onClick={() => void checkHeld(file)} disabled={busy || !configured}>
                     <span className="truncate">{file.name}</span>
                     <span className="tiny muted">
-                      {file.isPdf ? 'PDF' : 'image'} · {file.sizeMb} MB
+                      {file.kind} · {file.sizeMb} MB
                     </span>
                   </button>
                 </li>
               ))}
           </ul>
           {held.length === 0 && (
-            <p className="tiny muted">CIP holds no pictures or PDFs yet.</p>
+            <p className="tiny muted">CIP holds no pictures, PDFs or videos yet.</p>
           )}
           </>
           )}
@@ -473,7 +487,9 @@ export function QcSection({
 
         {phase.at === 'done' && (
           <p className="tiny muted" style={{ marginTop: 12 }}>
-            Finished {phase.name} — {pages.length} page{pages.length === 1 ? '' : 's'} checked.
+            {VIDEO_NAME.test(phase.name)
+              ? `Finished ${phase.name} — watched start to finish.`
+              : `Finished ${phase.name} — ${pages.length} page${pages.length === 1 ? '' : 's'} checked.`}
           </p>
         )}
       </div>

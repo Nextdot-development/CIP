@@ -689,6 +689,22 @@ export type CheckInput = {
    * of a hundred. Only a page of a PDF may excuse itself.
    */
   fromDocument: boolean;
+  /**
+   * Set when the image is a video laid out as a contact sheet.
+   *
+   * Without it the Brain reads the sheet as one busy poster and judges each
+   * frame alone - a warning on the end card is then "missing" from the rest.
+   */
+  sequence?: VideoSequence | null;
+};
+
+/** Frames of one video, side by side in order, and when each was taken. */
+export type VideoSequence = {
+  durationSeconds: number;
+  /** Seconds into the video, one per frame, in reading order. */
+  at: number[];
+  /** Frames per row, so "frame 4" can be found on the sheet. */
+  columns: number;
 };
 
 export type IdentifyInput = {

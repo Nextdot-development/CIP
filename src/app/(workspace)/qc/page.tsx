@@ -41,7 +41,8 @@ export default async function QcPage() {
           from drive_files
          where company_id = ${scope.companyId}
            and archived_at is null
-           and lower(mime_type) in ('application/pdf', 'image/png', 'image/jpeg', 'image/webp')
+           and lower(mime_type) in ('application/pdf', 'image/png', 'image/jpeg', 'image/webp',
+                                    'video/mp4', 'video/quicktime', 'video/webm', 'video/x-matroska')
          order by created_at desc
          limit 200
       `,
@@ -59,7 +60,11 @@ export default async function QcPage() {
       held={held.map((f) => ({
         id: f.id,
         name: f.name,
-        isPdf: f.mime_type.toLowerCase() === 'application/pdf',
+        kind: f.mime_type.toLowerCase() === 'application/pdf'
+          ? 'PDF'
+          : f.mime_type.toLowerCase().startsWith('video/')
+            ? 'video'
+            : 'image',
         sizeMb: Number((f.file_size / 1024 / 1024).toFixed(1)),
       }))}
     />

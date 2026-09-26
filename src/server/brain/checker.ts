@@ -9,9 +9,10 @@ import { readBrandDna } from './brandDna';
 import { companyBrands } from './brands';
 import { productShots } from './retrieval';
 import { fitForVision } from './fitImage';
+import { videoContactSheet } from './contactSheet';
 import { brain } from './providers';
-import { BRAIN_LIMITS, BrainFailed } from './providers/types';
-import type { AssetKind, CheckDimension, CheckFinding, CheckRule } from './providers/types';
+import { ANALYSABLE_VIDEO_TYPES, BRAIN_LIMITS, BrainFailed } from './providers/types';
+import type { AssetKind, CheckDimension, CheckFinding, CheckRule, VideoSequence } from './providers/types';
 
 /**
  * The Consistency & Compliance Checker.
@@ -143,6 +144,13 @@ const SEVERITY_RANK = { note: 0, warning: 1, critical: 2 } as const;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const CHECKABLE_IMAGES = new Set(['image/png', 'image/jpeg', 'image/webp']);
+/** What ffmpeg is told the file is, since it goes to disk under a made-up name. */
+const VIDEO_EXTENSIONS: Record<string, string> = {
+  'video/mp4': 'mp4',
+  'video/quicktime': 'mov',
+  'video/webm': 'webm',
+  'video/x-matroska': 'mkv',
+};
 
 /**
  * Scores worked out from the flags that still stand.
@@ -352,6 +360,8 @@ async function resolveSubject(
   market: string | null;
   /** True only for a page drawn out of a PDF. */
   fromDocument: boolean;
+  /** Set when the image is a video laid out frame by frame. */
+  sequence?: VideoSequence | null;
 }> {
   const fileId = input.fileId?.trim() || null;
   const generationId = input.generationId?.trim() || null;
@@ -405,10 +415,32 @@ async function resolveSubject(
       };
     }
 
+    /**
+     * A video is checked whole, as one sheet of frames in order.
+     *
+     * Not a frame at a time like the pages of a deck: a film's statutory
+     * warning is often on the end card only, and every other frame would be
+     * failed for lacking it. See contactSheet.ts.
+     */
+    if ((ANALYSABLE_VIDEO_TYPES as readonly string[]).includes(mime)) {
+      const sheet = await videoContactSheet(await fileBytes(scope, file), VIDEO_EXTENSIONS[mime] ?? 'mp4');
+      return {
+        fileId: file.id,
+        generationId: null,
+        subject: file.name,
+        bytes: sheet.bytes,
+        mimeType: sheet.mimeType,
+        brand: file.brand,
+        market: file.market,
+        fromDocument: false,
+        sequence: sheet.sequence,
+      };
+    }
+
     if (!CHECKABLE_IMAGES.has(mime)) {
       throw new CheckRejected(
-        'CIP can look at a picture or a PDF. A Word document or a spreadsheet has ' +
-          'to be exported to one of those first.',
+        'CIP can look at a picture, a PDF or a video. A Word document or a ' +
+          'spreadsheet has to be exported to one of those first.',
       );
     }
     return {
@@ -602,6 +634,7 @@ export async function runCheck(
       houseBrands: (await companyBrands(scope)).map((b) => b.name),
       references: await packReferences(scope, brand),
       fromDocument: subject.fromDocument,
+      sequence: subject.sequence ?? null,
     });
   } catch (error) {
     const failure =

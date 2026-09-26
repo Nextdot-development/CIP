@@ -39,6 +39,7 @@ import type {
   PdfPageAnalysis,
   PdfPageInput,
   PdfPost,
+  VideoSequence,
 } from './types';
 
 /**
@@ -948,6 +949,7 @@ export class OpenAIBrainProvider implements BrainProvider {
           (input.brand ? ` for the brand ${input.brand}` : '') +
           (input.market ? ` in ${input.market}` : '') +
           '.\n\n' +
+          (input.sequence ? videoSheetNote(input.sequence) : '') +
           (input.fromDocument
             ? 'This is one page of a document, so first say what is on it.\n' +
               '- "creative": an advert, post, banner, packshot, or anything laid out to ' +
@@ -1465,5 +1467,36 @@ export function openAIBrainFromEnv(): OpenAIBrainProvider {
     process.env.OPENAI_API_KEY,
     process.env.CIP_BRAIN_MODEL ?? DEFAULT_MODEL,
     process.env.OPENAI_BASE_URL ?? BASE_URL,
+  );
+}
+
+/**
+ * What a video contact sheet is, said to the model before it judges one.
+ *
+ * Read as a single poster, a sheet of six frames has six logos, six bottles
+ * and a warning in only one corner. Read as a film, it has one logo, one
+ * bottle and a warning on the end card - which is the truth, and which is
+ * what the rules are about.
+ */
+function videoSheetNote(sequence: VideoSequence): string {
+  const clock = (seconds: number): string => {
+    const whole = Math.max(0, Math.round(seconds));
+    return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`;
+  };
+  const rows = Math.ceil(sequence.at.length / sequence.columns);
+  const moments = sequence.at.map((at, i) => `frame ${i + 1} at ${clock(at)}`).join(', ');
+
+  return (
+    `This image is not one picture. It is ${sequence.at.length} frames from a ` +
+    `${clock(sequence.durationSeconds)} video, laid out ${sequence.columns} across and ` +
+    `${rows} down, in order left to right and then top to bottom: ${moments}. The ` +
+    'last frame is taken just before the end, so an end card will be on it.\n\n' +
+    'Judge the video as a whole, not each frame alone. Something a rule requires is ' +
+    'present if it is visible in any frame - a statutory warning shown only on the end ' +
+    'card is present, not missing. Something a rule forbids is present if it is visible ' +
+    'in any frame. When a finding depends on particular frames, say which ones, by ' +
+    'number or time. The dark lines between frames and the grid itself are how the ' +
+    'video was laid out for you; they are not part of the creative and are never a ' +
+    'fault.\n\n'
   );
 }
