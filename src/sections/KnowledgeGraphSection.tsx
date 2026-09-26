@@ -137,12 +137,77 @@ const TYPE_ICON: Record<GraphNodeType, IconName> = {
   chunk: 'book',
 };
 
+/**
+ * Where somebody has put nodes by hand, kept in this browser.
+ *
+ * Dragging a node pins it, as Obsidian does, and an arrangement somebody took
+ * the trouble to make should still be there tomorrow. Per view, since a place
+ * in the portfolio means nothing in the file tree. Only this person's browser:
+ * it is a preference about their screen, not a fact about the company. Reset
+ * lets everything go back to finding its own place.
+ *
+ * Every read and write is guarded: storage can be refused outright - a private
+ * window, a full disk, a blocked site - and the graph must draw regardless.
+ */
+type Pins = Record<string, [number, number]>;
+const pinsKey = (view: string) => `cip.graph.pins.${view}`;
+
+function readPins(view: string): Pins {
+  try {
+    return JSON.parse(window.localStorage.getItem(pinsKey(view)) ?? '{}') as Pins;
+  } catch {
+    return {};
+  }
+}
+
+function rememberPin(view: string, node: SimNode): void {
+  try {
+    const pins = readPins(view);
+    pins[node.id] = [node.x ?? 0, node.y ?? 0];
+    window.localStorage.setItem(pinsKey(view), JSON.stringify(pins));
+  } catch {
+    // The pin still holds for this visit; it just will not outlive it.
+  }
+}
+
+function forgetPins(view: string): void {
+  try {
+    window.localStorage.removeItem(pinsKey(view));
+  } catch {
+    // Nothing was kept, so there is nothing to forget.
+  }
+}
+
+/** Fresh nodes from the server, with anything pinned put back where it was left. */
+function withPins(view: string, fresh: SimNode[]): SimNode[] {
+  const pins = typeof window === 'undefined' ? {} : readPins(view);
+  return fresh.map((node) => {
+    const pin = pins[node.id];
+    return pin ? { ...node, x: pin[0], y: pin[1], fx: pin[0], fy: pin[1] } : node;
+  });
+}
+
 export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO }) {
   const { note } = useToast();
   const graphRef = useRef<GraphHandle | null>(null);
+  /**
+   * Whether the renderer has arrived.
+   *
+   * It is loaded after the page, so on the first pass graphRef is empty. The
+   * layout forces used to be set in an effect that simply returned when it
+   * found nothing there, and ran again only if the canvas changed size - so
+   * most of the time they were never applied at all, and the graph was laid
+   * out with the library's defaults: short links, weak repulsion, no room for
+   * names. That is the knot that opened every time. Now the effect waits.
+   */
+  const [graphReady, setGraphReady] = useState(false);
+  const attachGraph = useCallback((handle: GraphHandle | null) => {
+    graphRef.current = handle;
+    if (handle) setGraphReady(true);
+  }, []);
   const shellRef = useRef<HTMLDivElement | null>(null);
 
-  const [nodes, setNodes] = useState<SimNode[]>(() => initial.nodes as SimNode[]);
+  const [nodes, setNodes] = useState<SimNode[]>(() => withPins('brands', initial.nodes as SimNode[]));
   const [edges, setEdges] = useState<GraphEdgeDTO[]>(initial.edges);
   const [stats, setStats] = useState(initial.stats);
   const [empty] = useState(initial.empty);
@@ -183,6 +248,8 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
    * few dozen pixels across and a logo file can be several megabytes.
    */
   const [images, setImages] = useState<Map<string, NodeImage>>(() => new Map());
+
+  const savePin = useCallback((node: SimNode) => rememberPin(view, node), [view]);
   const [busy, setBusy] = useState(false);
   const [size, setSize] = useState({ width: 800, height: 600 });
 
@@ -197,7 +264,7 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
    */
   useEffect(() => {
     const handle = graphRef.current;
-    if (!handle?.d3Force) return;
+    if (!graphReady || !handle?.d3Force) return;
 
     // The portfolio is a few dozen nodes and every one of them carries a
     // label, so it needs far more room than a cloud of unlabelled dots. The
@@ -212,8 +279,11 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
     // And a gentle pull to the middle, so a brand that shares nothing with
     // the others stays on screen instead of dragging the whole view out.
     handle.d3Force('gravity', gravity(size.width / Math.max(1, size.height)));
+    // The layout changes shape under new forces, so it is fitted again once it
+    // settles rather than left framed for the one it replaced.
+    hasFitted.current = false;
     handle.d3ReheatSimulation();
-  }, [nodes.length, view, size.width, size.height]);
+  }, [graphReady, nodes.length, view, size.width, size.height]);
 
   useEffect(() => {
     const wanted = nodes
@@ -298,7 +368,7 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
           ...overrides,
         });
         if (!graph) return;
-        setNodes(graph.nodes as SimNode[]);
+        setNodes(withPins(view, graph.nodes as SimNode[]));
         setEdges(graph.edges);
         setStats(graph.stats);
         setExpanded(new Set());
@@ -613,14 +683,23 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
           <button type="button" title="Zoom in" onClick={() => graphRef.current?.zoom((graphRef.current.zoom() as number) * 1.4, 250)}>+</button>
           <button type="button" title="Zoom out" onClick={() => graphRef.current?.zoom((graphRef.current.zoom() as number) / 1.4, 250)}>−</button>
           <button type="button" onClick={() => graphRef.current?.zoomToFit(600, 60)}>Fit</button>
-          <button type="button" onClick={() => void reload()}>Reset</button>
+          <button
+            type="button"
+            title="Forget where nodes were moved to, and lay the graph out again"
+            onClick={() => {
+              forgetPins(view);
+              void reload();
+            }}
+          >
+            Reset
+          </button>
         </div>
       </div>
 
       <div className="graph-body">
         <div className={`graph-canvas${hovered ? ' is-pointing' : ''}`} ref={shellRef}>
           <ForceGraph2D
-            ref={graphRef}
+            ref={attachGraph}
             graphData={graphData}
             width={size.width}
             height={size.height}
@@ -660,6 +739,7 @@ export function KnowledgeGraphSection({ initial }: { initial: KnowledgeGraphDTO 
               // that springs back the moment you let go feels broken.
               node.fx = node.x;
               node.fy = node.y;
+              savePin(node);
             }}
             linkColor={(edge) => {
               // Lit: the lines out of whatever is under the pointer take its
@@ -903,11 +983,17 @@ function radiusFor(node: SimNode): number {
  * Room a node needs around it: its dot, and its name for the kinds that are
  * always named. Without this the layout only pushed dots apart, and thirty
  * labels settled on top of one another in a knot in the middle of the canvas.
+ *
+ * A name is wider than it is tall, and a circle of room has to cover its
+ * width: "Royal Ranthambore" needs far more than "rum". Measured roughly, at
+ * the size names are drawn when the graph is fitted to the screen.
  */
 function roomFor(node: SimNode): number {
-  if (node.type === 'brand') return radiusFor(node) + 20;
-  const named = node.type === 'trait' && node.dimension;
-  return radiusFor(node) + (named ? 16 : 6);
+  const radius = radiusFor(node);
+  const name = (node.label ?? '').length;
+  if (node.type === 'brand') return Math.max(radius + 22, name * 3.6 + 8);
+  if (node.type === 'trait' && node.dimension) return Math.max(radius + 16, name * 3.2 + 6);
+  return radius + 6;
 }
 
 /**
