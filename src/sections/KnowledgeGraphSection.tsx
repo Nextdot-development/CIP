@@ -107,11 +107,11 @@ const TYPE_COLOR: Record<GraphNodeType, string> = {
   brand: '#d9bf86',
   // A hub is what brands have in common rather than a brand itself, so it is
   // the same warm family and a shade apart from it.
-  trait: '#f7b77a',
-  source: '#b9a6f7',
-  folder: '#7fc8ee',
-  file: '#86dfa8',
-  chunk: '#f1d27a',
+  trait: '#c7896a',
+  source: '#a996b8',
+  folder: '#7fa3b0',
+  file: '#94ae8c',
+  chunk: '#cdb27a',
 };
 
 /**
@@ -124,12 +124,12 @@ const TYPE_COLOR: Record<GraphNodeType, string> = {
  * stuff recedes instead of competing with it.
  */
 const DIMENSION_COLOR: Record<string, string> = {
-  country:  '#7fc8ee',
-  category: '#f7b77a',
-  flavour:  '#86dfa8',
-  tier:     '#b9a6f7',
+  country:  '#7fa3b0',
+  category: '#c7896a',
+  flavour:  '#94ae8c',
+  tier:     '#a996b8',
 };
-const UNNAMED_HUB = '#6b6e7b';
+const UNNAMED_HUB = '#6f685c';
 
 function colorFor(node: SimNode): string {
   if (node.type !== 'trait') return TYPE_COLOR[node.type];
@@ -1080,12 +1080,6 @@ export function KnowledgeGraphSection({
             // painting - which lets the logos appear as they load and the
             // light run along the lines of whatever is being pointed at.
             autoPauseRedraw={view !== 'brands'}
-            linkDirectionalParticles={(edge) =>
-              focusId !== null && (endId(edge.source) === focusId || endId(edge.target) === focusId) ? 2 : 0
-            }
-            linkDirectionalParticleWidth={2.4}
-            linkDirectionalParticleSpeed={0.006}
-            linkDirectionalParticleColor={farColor}
             nodeRelSize={5}
             onNodeClick={(node) => setSelected(node)}
             onNodeHover={(node) => {
@@ -1099,7 +1093,10 @@ export function KnowledgeGraphSection({
               setTip({ node, x: at.x, y: at.y });
             }}
             // A card left where a node used to be is worse than none.
-            onZoom={() => setTip(null)}
+            // Zoom events fire while the renderer is itself rendering, and a
+            // state change there is an error; the card is cleared a frame on,
+            // and only if there is one to clear.
+            onZoom={() => window.requestAnimationFrame(() => setTip((t) => (t ? null : t)))}
             onBackgroundClick={() => setSelected(null)}
             onNodeDragEnd={(node) => {
               // Pin where it was dropped. Obsidian does the same, and a node
@@ -1116,22 +1113,22 @@ export function KnowledgeGraphSection({
               if (focusId !== null) {
                 const a = endId(edge.source);
                 const b = endId(edge.target);
-                if (!lit.has(a) || !lit.has(b)) return 'rgba(200,200,215,0.035)';
+                if (!lit.has(a) || !lit.has(b)) return 'rgba(211,200,182,0.04)';
                 const direct = a === focusId || b === focusId;
-                return hexWithAlpha(farColor(edge), direct ? 0.85 : 0.35);
+                return hexWithAlpha(farColor(edge), direct ? 0.6 : 0.25);
               }
               if (edge.kind === 'resembles') {
                 // Stronger resemblance draws stronger, so the shape of the
                 // portfolio is readable without pointing at anything.
                 const strength = Math.min(0.55, Math.max(0.12, (edge.score ?? 0.3) * 0.6));
-                return `rgba(245,163,207,${strength})`;
+                return `rgba(217,191,134,${strength})`;
               }
-              if (edge.kind === 'related') return 'rgba(241,210,122,0.3)';
-              return 'rgba(200,200,215,0.16)';
+              if (edge.kind === 'related') return 'rgba(205,178,122,0.28)';
+              return 'rgba(211,200,182,0.13)';
             }}
             linkWidth={(edge) => {
               const on = focusId !== null && (endId(edge.source) === focusId || endId(edge.target) === focusId);
-              const base = on ? 1.8 : edge.kind === 'resembles' ? 0.6 + 1.4 * (edge.score ?? 0) : 0.7;
+              const base = on ? 1.3 : edge.kind === 'resembles' ? 0.6 + 1.4 * (edge.score ?? 0) : 0.7;
               return base * settings.linkThickness;
             }}
             // Obsidian's arrows: which way a line runs - from a brand to what
@@ -1141,7 +1138,7 @@ export function KnowledgeGraphSection({
             linkDirectionalArrowColor={(edge) =>
               focusId !== null && lit.has(endId(edge.source)) && lit.has(endId(edge.target))
                 ? hexWithAlpha(farColor(edge), 0.9)
-                : 'rgba(200,200,215,0.35)'}
+                : 'rgba(211,200,182,0.3)'}
             nodeCanvasObject={(node, ctx, scale) => {
               drawNode(node, ctx, scale, {
                 focusId,
@@ -1900,8 +1897,8 @@ function drawBrand(
   // Depth before light: a shadow under every badge, and a warm glow only on
   // the one being pointed at.
   ctx.save();
-  ctx.shadowColor = focus ? 'rgba(232, 204, 140, 0.75)' : 'rgba(0, 0, 0, 0.6)';
-  ctx.shadowBlur = focus ? 30 : 14;
+  ctx.shadowColor = focus ? 'rgba(232, 204, 140, 0.4)' : 'rgba(0, 0, 0, 0.55)';
+  ctx.shadowBlur = focus ? 16 : 12;
   ctx.shadowOffsetY = focus ? 0 : 3;
   ctx.beginPath();
   ctx.arc(x, y, radius, 0, 2 * Math.PI);
@@ -1916,7 +1913,9 @@ function drawBrand(
   ctx.fill();
   ctx.restore();
 
-  if (picture && picture.image.width > 0 && picture.image.height > 0) {
+  // Guarded: a live reload can keep pictures loaded in an older shape.
+  const image = picture?.image;
+  if (image && image.width > 0 && image.height > 0 && picture) {
     // A picture on its own ground can fill more of the badge, since its edge
     // no longer shows; a cut-out keeps a margin so the bottle has air.
     const inner = radius * (picture.plate ? 0.9 : 0.8);
@@ -1979,27 +1978,16 @@ function drawTrait(
   scale: number,
   radius: number,
   color: string,
-  glow: number,
 ): void {
   const x = node.x ?? 0;
   const y = node.y ?? 0;
-
-  ctx.shadowColor = color;
-  ctx.shadowBlur = glow;
   ctx.beginPath();
   ctx.arc(x, y, radius, 0, 2 * Math.PI);
-  ctx.fillStyle = hexWithAlpha(color, 0.2);
-  ctx.fill();
-  ctx.shadowBlur = 0;
-
-  ctx.lineWidth = Math.max(1 / scale, radius * 0.14);
-  ctx.strokeStyle = hexWithAlpha(color, 0.9);
-  ctx.stroke();
-
-  ctx.beginPath();
-  ctx.arc(x, y, radius * 0.38, 0, 2 * Math.PI);
   ctx.fillStyle = color;
   ctx.fill();
+  ctx.lineWidth = Math.max(1 / scale, radius * 0.12);
+  ctx.strokeStyle = 'rgba(16, 14, 11, 0.7)';
+  ctx.stroke();
 }
 
 /**
@@ -2048,22 +2036,16 @@ function drawNode(
 
   // Brands always carry a little glow, so the portfolio reads as the lit
   // points it is; whatever is under the pointer carries more.
-  const glow = isFocus ? 30 : focused && inLight ? 16 : node.type === 'brand' ? 14 : node.type === 'trait' && node.dimension ? 6 : 0;
 
   if (node.type === 'brand') {
     drawBrand(node, ctx, scale, radius, inLight, isFocus, node.imageFileId ? state.images.get(node.imageFileId) : undefined);
   } else if (node.type === 'trait' && node.dimension) {
-    drawTrait(node, ctx, scale, radius, color, glow);
+    drawTrait(node, ctx, scale, radius, color);
   } else {
-    if (glow > 0) {
-      ctx.shadowColor = color;
-      ctx.shadowBlur = glow;
-    }
     ctx.beginPath();
     ctx.arc(x, y, radius, 0, 2 * Math.PI);
     ctx.fillStyle = color;
     ctx.fill();
-    ctx.shadowBlur = 0;
   }
 
   // The one that is open in the inspector wears a slowly turning orbit in its
@@ -2117,14 +2099,14 @@ function drawNode(
     ctx.globalAlpha = (inLight || isMatch ? 1 : 0.1) * opacity;
     // A dark halo behind the text, so a label crossing a line stays readable.
     ctx.lineWidth = 3.5 / scale;
-    ctx.strokeStyle = 'rgba(14, 13, 18, 0.9)';
+    ctx.strokeStyle = 'rgba(16, 14, 11, 0.9)';
     ctx.lineJoin = 'round';
     ctx.strokeText(label, x, top);
     ctx.fillStyle = isFocus || isSelected
       ? '#ffffff'
       : node.type === 'brand'
-        ? 'rgba(236, 234, 244, 0.95)'
-        : 'rgba(196, 194, 208, 0.85)';
+        ? 'rgba(243, 237, 226, 0.95)'
+        : 'rgba(211, 200, 182, 0.8)';
     ctx.fillText(label, x, top);
   }
 
