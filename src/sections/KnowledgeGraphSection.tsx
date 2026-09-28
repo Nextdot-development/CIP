@@ -215,6 +215,29 @@ function forgetPins(view: string): void {
   }
 }
 
+/** The same request always gives the same key, whatever order its parts came in. */
+function graphKey(params: Record<string, string>): string {
+  return new URLSearchParams(Object.entries(params).sort(([a], [b]) => a.localeCompare(b))).toString();
+}
+
+/**
+ * A graph to draw, as copies.
+ *
+ * The simulation writes positions onto nodes and swaps each edge's ends for the
+ * node objects themselves. A graph that is kept to be drawn again must not be
+ * the one that was drawn, or its edges point at the last drawing's nodes.
+ */
+function copyOfGraph(graph: KnowledgeGraphDTO): { nodes: SimNode[]; edges: GraphEdgeDTO[] } {
+  return {
+    nodes: graph.nodes.map((n) => ({ ...n })) as SimNode[],
+    edges: graph.edges.map((e) => ({
+      ...e,
+      source: endId(e.source as string | { id: string }),
+      target: endId(e.target as string | { id: string }),
+    })),
+  };
+}
+
 /** Fresh nodes from the server, with anything pinned put back where it was left. */
 function withPins(view: string, fresh: SimNode[]): SimNode[] {
   const pins = typeof window === 'undefined' ? {} : readPins(view);
@@ -610,18 +633,69 @@ export function KnowledgeGraphSection({
     return () => observer.disconnect();
   }, []);
 
+  /**
+   * Each view's graph, fetched once and kept for the visit.
+   *
+   * Opening Files or Everything waited on the server every time, and until
+   * the answer came the old graph stayed on screen. The portfolio arrives with
+   * the page; the other two are asked for quietly once it is drawn, so a tab
+   * is usually ready before it is clicked. A request still on its way is
+   * shared, never sent twice. Only whole views are kept - an opened folder or
+   * a search is always asked for afresh - and Reset asks afresh too.
+   */
+  const graphRequests = useRef(
+    new Map<string, Promise<KnowledgeGraphDTO | null>>([[graphKey({ view: 'brands' }), Promise.resolve(initial)]]),
+  );
+  const graphsHeld = useRef(new Map<string, KnowledgeGraphDTO>([[graphKey({ view: 'brands' }), initial]]));
+
   const fetchGraph = useCallback(
-    async (params: Record<string, string>) => {
-      const search = new URLSearchParams(params);
-      const res = await fetch(`/api/knowledge-graph?${search}`, { cache: 'no-store' });
-      if (!res.ok) {
-        note('The knowledge graph could not be loaded.');
-        return null;
+    async (
+      params: Record<string, string>,
+      options: { fresh?: boolean; quiet?: boolean } = {},
+    ): Promise<KnowledgeGraphDTO | null> => {
+      const key = graphKey(params);
+      const keepable = !('nodeId' in params) && !('search' in params);
+      if (keepable && !options.fresh) {
+        const pending = graphRequests.current.get(key);
+        if (pending) return pending;
       }
-      return (await res.json()) as KnowledgeGraphDTO;
+
+      const request = (async () => {
+        const res = await fetch(`/api/knowledge-graph?${new URLSearchParams(params)}`, { cache: 'no-store' })
+          .catch(() => null);
+        if (!res?.ok) {
+          // A quiet fetch is one nobody asked for yet; failing it says nothing.
+          if (!options.quiet) note('The knowledge graph could not be loaded.');
+          return null;
+        }
+        const graph = (await res.json()) as KnowledgeGraphDTO;
+        if (keepable) graphsHeld.current.set(key, graph);
+        return graph;
+      })();
+
+      if (keepable) {
+        graphRequests.current.set(key, request);
+        // A failure is not kept: the next click should try again.
+        void request.then((graph) => {
+          if (!graph && graphRequests.current.get(key) === request) graphRequests.current.delete(key);
+        });
+      }
+      return request;
     },
     [note],
   );
+
+  // Once the portfolio is on screen, fetch the other two views in the quiet.
+  useEffect(() => {
+    if (!graphReady) return;
+    const later = window.setTimeout(() => {
+      for (const other of ['files', 'all']) void fetchGraph({ view: other }, { quiet: true });
+    }, 1500);
+    return () => window.clearTimeout(later);
+  }, [graphReady, fetchGraph]);
+
+  /** Which view is being fetched with nothing yet to show for it. */
+  const [loadingView, setLoadingView] = useState<string | null>(null);
 
   /**
    * Merges a fetched fragment into what is already drawn.
@@ -649,21 +723,33 @@ export function KnowledgeGraphSection({
   }, []);
 
   const reload = useCallback(
-    async (overrides: Record<string, string> = {}) => {
+    async (overrides: Record<string, string> = {}, options: { fresh?: boolean } = {}) => {
+      const params = {
+        view,
+        ...(sourceFilter !== 'all' ? { source: sourceFilter } : {}),
+        ...(typeFilter !== 'all' ? { type: typeFilter } : {}),
+        ...overrides,
+      };
+      // Already here: drawn at once, with no round trip and no flash.
+      const held = options.fresh ? undefined : graphsHeld.current.get(graphKey(params));
+      // Not here yet, and a different view: the old graph goes now rather than
+      // standing in for the new one until it arrives.
+      if (!held && overrides.view && overrides.view !== view) {
+        setNodes([]);
+        setEdges([]);
+        setSelected(null);
+        setLoadingView(overrides.view);
+      }
       setBusy(true);
       try {
-        const graph = await fetchGraph({
-          view,
-          ...(sourceFilter !== 'all' ? { source: sourceFilter } : {}),
-          ...(typeFilter !== 'all' ? { type: typeFilter } : {}),
-          ...overrides,
-        });
+        const graph = held ?? (await fetchGraph(params, { fresh: options.fresh }));
         if (!graph) return;
         // The view being loaded, which on a switch is the new one, not the
         // one still in state - pins are kept per view.
         const loading = (overrides.view as typeof view | undefined) ?? view;
-        setNodes(withPins(loading, graph.nodes as SimNode[]));
-        setEdges(graph.edges);
+        const copy = copyOfGraph(graph);
+        setNodes(withPins(loading, copy.nodes));
+        setEdges(copy.edges);
         setStats(graph.stats);
         setExpanded(new Set());
         setSelected(null);
@@ -675,6 +761,7 @@ export function KnowledgeGraphSection({
         window.setTimeout(() => fitView(800), 1200);
       } finally {
         setBusy(false);
+        setLoadingView(null);
       }
     },
     [fetchGraph, fitView, sourceFilter, typeFilter, view],
@@ -1116,7 +1203,7 @@ export function KnowledgeGraphSection({
             title="Forget where nodes were moved to, and lay the graph out again"
             onClick={() => {
               forgetPins(view);
-              void reload();
+              void reload({}, { fresh: true });
             }}
           >
             Reset
@@ -1386,7 +1473,11 @@ export function KnowledgeGraphSection({
             </div>
           )}
 
-          {busy && <div className="graph-busy">Working…</div>}
+          {loadingView ? (
+            <div className="graph-loading">
+              {loadingView === 'files' ? 'Loading the library…' : loadingView === 'all' ? 'Loading everything…' : 'Loading…'}
+            </div>
+          ) : busy && <div className="graph-busy">Working…</div>}
         </div>
 
         <aside className="graph-inspector">
@@ -1407,9 +1498,12 @@ export function KnowledgeGraphSection({
                 <div><span>Files</span><b>{liveStats.files}</b></div>
                 <div><span>Folders</span><b>{liveStats.folders}</b></div>
                 <div><span>Passages read</span><b>{liveStats.chunks.toLocaleString('en-IN')}</b></div>
-                <div><span>Drawn here</span><b>{nodes.filter((n) => n.type === 'file').length}</b></div>
+                <div><span>Drawn here</span><b>{loadingView ? '…' : nodes.filter((n) => n.type === 'file').length}</b></div>
               </div>
-              {nodes.filter((n) => n.type === 'file').length < liveStats.files && (
+              {/* Said only once something is drawn: "the most recent 0 of
+                  673" while the graph is still loading reads as a fault. */}
+              {!loadingView && nodes.some((n) => n.type === 'file') &&
+                nodes.filter((n) => n.type === 'file').length < liveStats.files && (
                 <p className="insp-hint" style={{ margin: '-8px 0 16px' }}>
                   The most recent {nodes.filter((n) => n.type === 'file').length} of {liveStats.files} files
                   are drawn. Search, or open a folder, to reach the rest.
@@ -1435,6 +1529,7 @@ export function KnowledgeGraphSection({
                 </section>
               )}
 
+              {(['image', 'video', 'pdf', 'doc'] as const).some((kind) => (groupCounts.get(`file:${kind}`) ?? 0) > 0) && (
               <section className="insp-section">
                 <p className="insp-label">By kind</p>
                 <div className="insp-tags">
@@ -1447,6 +1542,7 @@ export function KnowledgeGraphSection({
                     ))}
                 </div>
               </section>
+              )}
 
               <p className="insp-hint">
                 Point at a folder to see what it holds. Click a file to open it here.
@@ -1795,14 +1891,28 @@ function roomFor(node: SimNode, size = 1): number {
  */
 function collide(size = 1, strength = 0.7) {
   let nodes: SimNode[] = [];
+  // Worked out once, not per pair per tick: a node's room depends on its kind
+  // and its name, neither of which moves. Recomputing it inside the pair loop
+  // was most of what made Files and Everything take a second to appear.
+  let rooms: number[] = [];
+  let widest = 0;
   const force = (alpha: number) => {
-    for (let i = 0; i < nodes.length; i += 1) {
+    // Swept left to right: once the next node is further away across than any
+    // two rooms can reach, so is every node after it.
+    const order = nodes.map((_, i) => i).sort((p, q) => (nodes[p]!.x ?? 0) - (nodes[q]!.x ?? 0));
+    for (let oi = 0; oi < order.length; oi += 1) {
+      const i = order[oi]!;
       const a = nodes[i]!;
-      for (let j = i + 1; j < nodes.length; j += 1) {
+      const ax = a.x ?? 0;
+      const ay = a.y ?? 0;
+      const reach = rooms[i]! + widest;
+      for (let oj = oi + 1; oj < order.length; oj += 1) {
+        const j = order[oj]!;
         const b = nodes[j]!;
-        let dx = (b.x ?? 0) - (a.x ?? 0);
-        let dy = (b.y ?? 0) - (a.y ?? 0);
-        const min = roomFor(a, size) + roomFor(b, size);
+        let dx = (b.x ?? 0) - ax;
+        if (dx > reach) break;
+        let dy = (b.y ?? 0) - ay;
+        const min = rooms[i]! + rooms[j]!;
         let d2 = dx * dx + dy * dy;
         if (d2 >= min * min) continue;
         if (d2 === 0) {
@@ -1822,6 +1932,8 @@ function collide(size = 1, strength = 0.7) {
   };
   force.initialize = (given: SimNode[]) => {
     nodes = given;
+    rooms = given.map((node) => roomFor(node, size));
+    widest = rooms.reduce((most, room) => Math.max(most, room), 0);
   };
   return force;
 }
