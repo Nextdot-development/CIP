@@ -93,30 +93,6 @@
   border-radius: 999px; font-size: 12.5px;
 }
 
-/* Counted from the graph that is actually on screen, never stored. */
-.graph-stats {
-  position: absolute; top: 14px; left: 14px;
-  display: flex; flex-wrap: wrap; gap: 4px 14px; max-width: 320px;
-  padding: 10px 13px; border-radius: 10px;
-  background: rgba(27, 25, 18, 0.62); border: 1px solid rgba(255, 255, 255, 0.07);
-  color: #a89d8a; font-size: 12px; pointer-events: none;
-  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
-}
-.graph-stats b { color: #f3ede2; font-weight: 600; margin-right: 3px; }
-
-.graph-legend {
-  position: absolute; bottom: 14px; left: 14px;
-  display: flex; flex-wrap: wrap; gap: 8px 14px; padding: 8px 14px; border-radius: 999px;
-  background: rgba(27, 25, 18, 0.62); border: 1px solid rgba(255, 255, 255, 0.07);
-  font-size: 12px; color: #a89d8a; pointer-events: none; text-transform: capitalize;
-  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
-}
-.graph-legend span { display: inline-flex; align-items: center; gap: 6px; }
-/* Each swatch glows in its own colour, as its nodes do. */
-.graph-legend i {
-  width: 8px; height: 8px; border-radius: 50%; display: block;
-}
-
 .graph-inspector {
   width: 320px; flex: none; overflow-y: auto;
   padding: 16px; background: var(--surface);
@@ -344,6 +320,17 @@
   background: radial-gradient(circle at 32% 28%, #f5e8c6 0%, #d5b87d 55%, #a3834c 100%);
   box-shadow: inset 0 0 0 1px rgba(16, 14, 11, 0.45), 0 2px 6px rgba(0, 0, 0, 0.45);
 }
+/* A file, folder or source in the inspector: its kind's icon on a tile of its
+   kind's colour, the way a file manager shows one. */
+.insp-kindbadge {
+  flex: none; width: 40px; height: 40px; border-radius: 10px; display: grid; place-items: center;
+  color: var(--tag);
+  background: color-mix(in srgb, var(--tag) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--tag) 35%, transparent);
+}
+/* File names run long and have no spaces to break at. */
+.graph-inspector h3.insp-title-long { font-size: 15px; line-height: 1.35; overflow-wrap: anywhere; }
+
 .insp-planet {
   flex: none; width: 40px; height: 40px; border-radius: 50%;
   background: radial-gradient(circle, var(--tag) 0 26%, color-mix(in srgb, var(--tag) 18%, transparent) 30% 100%);

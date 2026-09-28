@@ -111,7 +111,7 @@ const TYPE_COLOR: Record<GraphNodeType, string> = {
   source: '#a996b8',
   folder: '#7fa3b0',
   file: '#94ae8c',
-  chunk: '#cdb27a',
+  chunk: '#9d9384',
 };
 
 /**
@@ -131,7 +131,36 @@ const DIMENSION_COLOR: Record<string, string> = {
 };
 const UNNAMED_HUB = '#6f685c';
 
+/**
+ * What kind of file a file is, in the four kinds a person sorts them into.
+ * Every file was the same green, so a folder of films and a folder of decks
+ * looked the same until each one was clicked.
+ */
+type FileKind = 'image' | 'video' | 'pdf' | 'doc';
+const IMAGE_TYPES = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'svg']);
+const VIDEO_TYPES = new Set(['mp4', 'mov', 'webm', 'mkv']);
+
+function fileKindOf(fileType: string | undefined): FileKind {
+  const type = (fileType ?? '').toLowerCase();
+  if (IMAGE_TYPES.has(type)) return 'image';
+  if (VIDEO_TYPES.has(type)) return 'video';
+  if (type === 'pdf') return 'pdf';
+  return 'doc';
+}
+
+/** Muted, as the rest of the graph is, and distinct from one another. */
+const FILE_KIND_COLOR: Record<FileKind, string> = {
+  image: '#8fb0a9',
+  video: '#c9a07a',
+  pdf: '#b88a8f',
+  doc: '#c9c0a8',
+};
+const FILE_KIND_LABEL: Record<FileKind, string> = {
+  image: 'Image', video: 'Video', pdf: 'PDF', doc: 'Document',
+};
+
 function colorFor(node: SimNode): string {
+  if (node.type === 'file') return FILE_KIND_COLOR[fileKindOf(node.fileType)];
   if (node.type !== 'trait') return TYPE_COLOR[node.type];
   return DIMENSION_COLOR[node.dimension ?? ''] ?? UNNAMED_HUB;
 }
@@ -201,6 +230,7 @@ function withPins(view: string, fresh: SimNode[]): SimNode[] {
  */
 function groupOf(node: GraphNodeDTO): string {
   if (node.type === 'trait') return node.dimension ?? 'shared';
+  if (node.type === 'file') return `file:${fileKindOf(node.fileType)}`;
   return node.type;
 }
 
@@ -354,6 +384,13 @@ const GROUPS: { key: string; label: string; color: string }[] = [
   { key: 'tier', label: 'Tier', color: DIMENSION_COLOR.tier! },
   { key: 'country', label: 'Country', color: DIMENSION_COLOR.country! },
   { key: 'shared', label: 'Also shared', color: UNNAMED_HUB },
+  { key: 'source', label: 'Sources', color: TYPE_COLOR.source },
+  { key: 'folder', label: 'Folders', color: TYPE_COLOR.folder },
+  { key: 'file:image', label: 'Images', color: FILE_KIND_COLOR.image },
+  { key: 'file:video', label: 'Videos', color: FILE_KIND_COLOR.video },
+  { key: 'file:pdf', label: 'PDFs', color: FILE_KIND_COLOR.pdf },
+  { key: 'file:doc', label: 'Documents', color: FILE_KIND_COLOR.doc },
+  { key: 'chunk', label: 'Passages', color: TYPE_COLOR.chunk },
 ];
 
 export function KnowledgeGraphSection({
@@ -501,7 +538,11 @@ export function KnowledgeGraphSection({
     // label, so it needs far more room than a cloud of unlabelled dots. The
     // file tree is hundreds of nodes and the same spacing would fling them
     // off the canvas.
-    const roomy = view === 'brands';
+    // Everything holds the brands and their names as well as the files, and
+    // at the file tree's tighter spacing the brands were squeezed into a knot
+    // at the top with their names on one another. Only the file tree, which
+    // is hundreds of unnamed dots, is laid out tight.
+    const roomy = view !== 'files';
     handle.d3Force('charge')?.strength?.(-settings.repelForce * (roomy ? 1 : 0.5));
     handle.d3Force('link')?.distance?.(settings.linkDistance * (roomy ? 1 : 0.64));
     // Left to the library unless somebody set it: its default weighs a line to
@@ -584,18 +625,25 @@ export function KnowledgeGraphSection({
           ...overrides,
         });
         if (!graph) return;
-        setNodes(withPins(view, graph.nodes as SimNode[]));
+        // The view being loaded, which on a switch is the new one, not the
+        // one still in state - pins are kept per view.
+        const loading = (overrides.view as typeof view | undefined) ?? view;
+        setNodes(withPins(loading, graph.nodes as SimNode[]));
         setEdges(graph.edges);
         setStats(graph.stats);
         setExpanded(new Set());
         setSelected(null);
         setMatches(new Set(graph.matches));
         hasFitted.current = false;
+        // A large graph takes seconds to settle, and waiting for it left
+        // Everything drawn too close, running off every edge. Framed once
+        // it has a shape, and again when it settles.
+        window.setTimeout(() => fitView(800), 1200);
       } finally {
         setBusy(false);
       }
     },
-    [fetchGraph, sourceFilter, typeFilter, view],
+    [fetchGraph, fitView, sourceFilter, typeFilter, view],
   );
 
   const expand = useCallback(
@@ -791,6 +839,22 @@ export function KnowledgeGraphSection({
     let links = (visibleEdges as unknown as SimLink[]).filter(
       (edge) => present.has(endId(edge.source)) && present.has(endId(edge.target)),
     );
+    // In Everything a branded file hangs off its brand alone. Tied to its
+    // brand and to CIP Drive as well, every file dragged its brand towards
+    // the one hub, and all eleven brands collapsed into a single knot. Hung
+    // from the brand, each brand gathers its own files into a cluster, the way
+    // Obsidian's notes gather round what links them. Where a file sits in the
+    // folders is what the Files view is for.
+    if (view === 'all') {
+      const branded = new Set(
+        links
+          .filter((edge) => edge.kind === 'contains' && endId(edge.source).startsWith('brand:'))
+          .map((edge) => endId(edge.target)),
+      );
+      links = links.filter(
+        (edge) => !(edge.kind === 'contains' && branded.has(endId(edge.target)) && !endId(edge.source).startsWith('brand:')),
+      );
+    }
     // Orphans: nodes nothing on screen connects to. Obsidian's switch, and the
     // one that tidies away a brand that shares nothing with the rest.
     if (!settings.orphans) {
@@ -806,7 +870,7 @@ export function KnowledgeGraphSection({
       links = links.filter((edge) => present.has(endId(edge.source)) && present.has(endId(edge.target)));
     }
     return { nodes: shown, links };
-  }, [nodes, visibleEdges, hiddenGroups, isolated, depth, settings.orphans, revealed, revealOrder]);
+  }, [nodes, visibleEdges, hiddenGroups, isolated, depth, settings.orphans, revealed, revealOrder, view]);
 
   // Isolating a cluster or switching a kind off changes what is drawn, and the
   // view is fitted to the new shape once it settles - an isolated cluster left
@@ -958,7 +1022,11 @@ export function KnowledgeGraphSection({
                 setTypeFilter('all');
                 // Each view has a sensible thing to lead with: groups in the
                 // portfolio, structure in the files.
-                setEdgeFilter(value === 'files' ? 'contains' : 'shares');
+                // Everything draws every kind of line: with only the shared
+                // traits drawn, its files floated loose across the canvas,
+                // joined to nothing - their folders and brands were there,
+                // but the lines to them were filtered out.
+                setEdgeFilter(value === 'files' ? 'contains' : value === 'all' ? 'all' : 'shares');
                 void reload({ view: value });
               }}
             >
@@ -1128,34 +1196,32 @@ export function KnowledgeGraphSection({
             }}
           />
 
-          {/* The portfolio's overlays: chips that are both legend and filter,
-              the controls for how the graph is laid out and lit, and a card
-              for whatever is under the pointer. */}
-          {view === 'brands' && (
-            <div className="graph-chips" role="group" aria-label="Show or hide">
-              {GROUPS.filter((g) => (groupCounts.get(g.key) ?? 0) > 0).map((g) => {
-                const off = hiddenGroups.has(g.key);
-                return (
-                  <button
-                    key={g.key}
-                    type="button"
-                    className={`graph-chip${off ? ' is-off' : ''}`}
-                    aria-pressed={!off}
-                    title={off ? `Show ${g.label.toLowerCase()}` : `Hide ${g.label.toLowerCase()}`}
-                    onClick={() => setHiddenGroups((current) => {
-                      const next = new Set(current);
-                      if (next.has(g.key)) next.delete(g.key); else next.add(g.key);
-                      return next;
-                    })}
-                  >
-                    <i style={{ background: g.color, color: g.color }} />
-                    {g.label}
-                    <b>{groupCounts.get(g.key)}</b>
-                  </button>
-                );
-              })}
-            </div>
-          )}
+          {/* The overlays: chips that are both legend and filter, in every
+              view, the controls for how the graph is laid out and lit, and a
+              card for whatever is under the pointer. */}
+          <div className="graph-chips" role="group" aria-label="Show or hide">
+            {GROUPS.filter((g) => (groupCounts.get(g.key) ?? 0) > 0).map((g) => {
+              const off = hiddenGroups.has(g.key);
+              return (
+                <button
+                  key={g.key}
+                  type="button"
+                  className={`graph-chip${off ? ' is-off' : ''}`}
+                  aria-pressed={!off}
+                  title={off ? `Show ${g.label.toLowerCase()}` : `Hide ${g.label.toLowerCase()}`}
+                  onClick={() => setHiddenGroups((current) => {
+                    const next = new Set(current);
+                    if (next.has(g.key)) next.delete(g.key); else next.add(g.key);
+                    return next;
+                  })}
+                >
+                  <i style={{ background: g.color, color: g.color }} />
+                  {g.label}
+                  <b>{groupCounts.get(g.key)}</b>
+                </button>
+              );
+            })}
+          </div>
 
           {/* Obsidian's graph settings, in the corner where Obsidian keeps
               them: closed to a single button until wanted. */}
@@ -1257,7 +1323,7 @@ export function KnowledgeGraphSection({
               <p className="graph-tip-title">
                 <i />
                 {tip.node.label}
-                <span>{tip.node.type === 'trait' ? (tip.node.dimension ?? 'shared') : tip.node.type}</span>
+                <span>{tip.node.type === 'trait' ? (tip.node.dimension ?? 'shared') : tip.node.type === 'file' ? FILE_KIND_LABEL[fileKindOf(tip.node.fileType)] : tip.node.type === 'chunk' ? 'passage' : tip.node.type}</span>
               </p>
               {tip.node.type === 'brand' ? (
                 <p className="graph-tip-body">
@@ -1272,318 +1338,361 @@ export function KnowledgeGraphSection({
                 <p className="graph-tip-body">
                   Shared by {tip.node.brandCount ?? lit.size - 1} brands
                 </p>
+              ) : tip.node.type === 'file' ? (
+                <p className="graph-tip-body">
+                  {(tip.node.fileType ?? '').toUpperCase()}
+                  {tip.node.chunkCount ? ` · ${tip.node.chunkCount} passages read` : ' · not read into passages'}
+                </p>
+              ) : tip.node.type === 'folder' || tip.node.type === 'source' ? (
+                <p className="graph-tip-body">
+                  {tip.node.type === 'folder' ? Math.max(0, tip.node.weight - 3) : tip.node.weight} files
+                </p>
               ) : null}
-            </div>
-          )}
-
-          {/* What is on screen, counted in the words of whichever graph this
-              is. Folder and passage counts under the portfolio told somebody
-              about a picture they were not looking at. In the portfolio the
-              chips and the inspector say it instead. */}
-          {view !== 'brands' && (
-            <div className="graph-stats">
-              <b>{liveStats.nodes}</b> Nodes
-              <b>{liveStats.edges}</b> Connections
-              <b>{liveStats.files}</b> Files
-              <b>{liveStats.folders}</b> Folders
-              <b>{liveStats.chunks}</b> Passages
-            </div>
-          )}
-
-          {/* The legend names what is on screen, not the full vocabulary.
-              Listing folders and passages under the portfolio was a legend
-              for a different picture. The portfolio's chips are its legend. */}
-          {view !== 'brands' && (
-            <div className="graph-legend">
-              {(['source', 'folder', 'file', 'chunk'] as GraphNodeType[]).map((type) => (
-                <span key={type}>
-                  <i style={{ background: TYPE_COLOR[type], color: TYPE_COLOR[type] }} />
-                  {type === 'chunk' ? 'passage' : type}
-                </span>
-              ))}
             </div>
           )}
 
           {busy && <div className="graph-busy">Working…</div>}
         </div>
 
-        {(selected || view === 'brands') && (
-          <aside className="graph-inspector">
-            <div className="row-between">
-              <span className="insp-eyebrow">Knowledge inspector</span>
-              {selected && (
-                <button type="button" className="insp-close" title="Back to the portfolio" onClick={() => setSelected(null)}>
-                  <Icon name="close" size={14} />
-                </button>
-              )}
-            </div>
+        <aside className="graph-inspector">
+          <div className="row-between">
+            <span className="insp-eyebrow">Knowledge inspector</span>
+            {selected && (
+              <button type="button" className="insp-close" title="Back to the portfolio" onClick={() => setSelected(null)}>
+                <Icon name="close" size={14} />
+              </button>
+            )}
+          </div>
 
-            {!selected ? (
-              /* Nothing chosen: the portfolio in numbers, and where to start. */
-              <>
-                <h3 className="insp-title">The portfolio</h3>
-                <div className="insp-grid">
-                  <div><span>Brands</span><b>{groupCounts.get('brand') ?? 0}</b></div>
-                  <div><span>Things in common</span><b>{nodes.filter((n) => n.type === 'trait').length}</b></div>
-                  <div><span>Connections</span><b>{liveStats.edges}</b></div>
-                  <div><span>Files read</span><b>{liveStats.files}</b></div>
-                </div>
-
-                {mostConnected.length > 0 && (
-                  <section className="insp-section">
-                    <p className="insp-label">Most connected</p>
-                    <div className="insp-brandlist">
-                      {mostConnected.map(({ node, degree }) => (
-                        <button key={node.id} type="button" onClick={() => goTo(node)}>
-                          <BrandBadge size={12} />
-                          <span className="grow truncate">{node.label}</span>
-                          <span className="muted">{degree} shared</span>
-                        </button>
-                      ))}
-                    </div>
-                  </section>
-                )}
-
-                {widestTraits.length > 0 && (
-                  <section className="insp-section">
-                    <p className="insp-label">Shared most widely</p>
-                    <div className="insp-tags">
-                      {widestTraits.map((t) => (
-                        <button key={t.id} type="button" className="insp-tag"
-                          style={{ ['--tag' as string]: colorFor(t) }} onClick={() => goTo(t)}>
-                          {t.label}<b>{t.brandCount}</b>
-                        </button>
-                      ))}
-                    </div>
-                  </section>
-                )}
-
-                <p className="insp-hint">
-                  Point at anything to light what it connects to. Click a brand to open it here.
+          {!selected && view !== 'brands' ? (
+            /* Nothing chosen among the files: the library in numbers. */
+            <>
+              <h3 className="insp-title">The library</h3>
+              <div className="insp-grid">
+                <div><span>Files</span><b>{liveStats.files}</b></div>
+                <div><span>Folders</span><b>{liveStats.folders}</b></div>
+                <div><span>Passages read</span><b>{liveStats.chunks.toLocaleString('en-IN')}</b></div>
+                <div><span>Drawn here</span><b>{nodes.filter((n) => n.type === 'file').length}</b></div>
+              </div>
+              {nodes.filter((n) => n.type === 'file').length < liveStats.files && (
+                <p className="insp-hint" style={{ margin: '-8px 0 16px' }}>
+                  The most recent {nodes.filter((n) => n.type === 'file').length} of {liveStats.files} files
+                  are drawn. Search, or open a folder, to reach the rest.
                 </p>
-              </>
-            ) : selected.type === 'brand' ? (
-              /* A brand: what it is made of, what it holds, and who it is like. */
-              <>
-                <div className="insp-hero">
-                  <BrandBadge size={34} />
-                  <div className="stack">
-                    <h3 className="insp-title">{selected.label}</h3>
-                    <span className="insp-pill" style={{ ['--tag' as string]: colorFor(selected) }}>
-                      Brand{isolated === selected.id ? ' · isolated' : ''}
-                    </span>
-                  </div>
-                </div>
+              )}
 
-                <div className="insp-grid">
-                  <div><span>Files</span><b>{selected.fileCount ?? 0}</b></div>
-                  <div><span>Things in common</span><b>{brandTraits.length}</b></div>
-                  {/* "Described as", not "is": this is what CIP read in the
-                      brand's files, and files can be wrong - Magic Moments
-                      came out as whisky. */}
-                  <div className="span-2">
-                    <span>Described as</span>
-                    <b className="truncate">
-                      {brandTraits.filter((t) => t.dimension === 'category').map((t) => t.label).join(', ') || '—'}
-                    </b>
-                  </div>
-                </div>
-
-                {brandTraits.length > 0 && (
-                  <section className="insp-section">
-                    <p className="insp-label">Connected knowledge ({brandTraits.length})</p>
-                    <div className="insp-tags">
-                      {brandTraits.map((t) => (
-                        <button key={t.id} type="button" className="insp-tag"
-                          style={{ ['--tag' as string]: colorFor(t) }} onClick={() => goTo(t)}>
-                          {t.label}
-                        </button>
-                      ))}
-                    </div>
-                  </section>
-                )}
-
-                {(selected.files?.length ?? 0) > 0 && (
-                  <section className="insp-section">
-                    <p className="insp-label row-between">
-                      Latest files <span className="muted">{selected.fileCount} in all</span>
-                    </p>
-                    <ul className="insp-files">
-                      {selected.files!.map((f) => (
-                        <li key={f.id}>
-                          <Icon name={FILE_ICON[f.fileType.toLowerCase()] ?? 'doc'} size={15} />
-                          <span className="grow stack">
-                            <span className="truncate">{f.name}</span>
-                            <span className="muted">
-                              {f.fileType.toUpperCase()}{formatBytes(f.bytes) ? ` · ${formatBytes(f.bytes)}` : ''}
-                            </span>
-                          </span>
-                          <a href={`/api/drive/files/${f.id}/content?disposition=inline`} target="_blank"
-                            rel="noreferrer" title="Open this file">
-                            <Icon name="arrow-right" size={14} />
-                          </a>
-                        </li>
-                      ))}
-                    </ul>
-                  </section>
-                )}
-
-                {/* A line drawn between two brands is a claim, and a claim
-                    nobody can check is worse than no claim - so what both were
-                    described as is listed under every score. */}
-                {resemblances.length > 0 && (
-                  <section className="insp-section">
-                    <p className="insp-label">Most alike in the portfolio</p>
-                    {resemblances.slice(0, 3).map((r) => (
-                      <div key={r.other} className="insp-alike">
-                        <div className="row-between">
-                          <button type="button" onClick={() => goTo(nodeById.get(`brand:${r.other}`))}>
-                            {r.other}
-                          </button>
-                          <b>{Math.round(r.score * 100)}% alike</b>
-                        </div>
-                        <i><span style={{ width: `${Math.max(4, Math.round(r.score * 100))}%` }} /></i>
-                        {r.shared.length > 0 && <p>Both: {r.shared.join(', ')}</p>}
-                      </div>
-                    ))}
-                  </section>
-                )}
-
-                <div className="insp-actions">
-                  {onOpenBrand && (
-                    <button type="button" className="btn btn-primary btn-sm insp-cta"
-                      onClick={() => onOpenBrand(selected.label)}>
-                      Open {selected.label}&apos;s full brain <Icon name="arrow-right" size={14} />
-                    </button>
-                  )}
-                  <button type="button" className="btn btn-sm"
-                    onClick={() => setIsolated(isolated === selected.id ? null : selected.id)}>
-                    {isolated === selected.id ? 'Show everything' : 'Isolate its cluster'}
-                  </button>
-                  {selected.expandable && !expanded.has(selected.id) && (
-                    <button type="button" className="btn btn-sm" disabled={busy}
-                      onClick={() => void expand(selected)}>
-                      Show its files on the graph
-                    </button>
-                  )}
-                  {expanded.has(selected.id) && (
-                    <button type="button" className="btn btn-sm" onClick={() => collapse(selected)}>
-                      Hide its files
-                    </button>
-                  )}
-                </div>
-              </>
-            ) : selected.type === 'trait' ? (
-              /* A trait: which brands share it. */
-              <>
-                <div className="insp-hero">
-                  <span className="insp-planet" style={{ ['--tag' as string]: colorFor(selected) }} />
-                  <div className="stack">
-                    <h3 className="insp-title">{selected.label}</h3>
-                    <span className="insp-pill" style={{ ['--tag' as string]: colorFor(selected) }}>
-                      {selected.dimension ?? 'shared trait'}
-                    </span>
-                  </div>
-                </div>
-
+              {nodes.some((n) => n.type === 'folder') && (
                 <section className="insp-section">
-                  <p className="insp-label">Shared by {onThisHub.length} brands</p>
+                  <p className="insp-label">Largest folders</p>
                   <div className="insp-brandlist">
-                    {onThisHub.map((name) => {
-                      const node = nodeById.get(`brand:${name}`);
-                      return (
-                        <button key={name} type="button" onClick={() => goTo(node)}>
-                          {node && <BrandBadge size={12} />}
-                          <span className="grow truncate">{name}</span>
+                    {nodes
+                      .filter((n) => n.type === 'folder')
+                      .sort((a, b) => b.weight - a.weight)
+                      .slice(0, 5)
+                      .map((folder) => (
+                        <button key={folder.id} type="button" onClick={() => goTo(folder)}>
+                          <Icon name="folder" size={15} />
+                          <span className="grow truncate">{folder.label}</span>
+                          <span className="muted">{Math.max(0, folder.weight - 3)} files</span>
                         </button>
-                      );
-                    })}
+                      ))}
                   </div>
                 </section>
+              )}
 
-                <div className="insp-actions">
-                  <button type="button" className="btn btn-sm"
-                    onClick={() => setIsolated(isolated === selected.id ? null : selected.id)}>
-                    {isolated === selected.id ? 'Show everything' : 'Isolate its brands'}
-                  </button>
+              <section className="insp-section">
+                <p className="insp-label">By kind</p>
+                <div className="insp-tags">
+                  {(['image', 'video', 'pdf', 'doc'] as const)
+                    .filter((kind) => (groupCounts.get(`file:${kind}`) ?? 0) > 0)
+                    .map((kind) => (
+                      <span key={kind} className="insp-tag" style={{ ['--tag' as string]: FILE_KIND_COLOR[kind] }}>
+                        {FILE_KIND_LABEL[kind]}s<b>{groupCounts.get(`file:${kind}`)}</b>
+                      </span>
+                    ))}
                 </div>
-              </>
-            ) : (
-              /* Files, folders, sources and passages: what they are, and where to go. */
-              <>
-                <span className="insp-kind">
-                  <Icon name={TYPE_ICON[selected.type]} size={14} />
-                  {selected.type === 'chunk' ? 'Passage' : selected.type}
-                </span>
-                <h3>{selected.label}</h3>
+              </section>
 
-                <dl className="insp-facts">
-                  {selected.fileType && (
-                    <div><dt>Type</dt><dd>{selected.fileType.toUpperCase()}</dd></div>
-                  )}
-                  {selected.source && (
-                    <div>
-                      <dt>Source</dt>
-                      <dd>{selected.source === 'google_drive' ? 'Google Drive' : 'CIP Drive'}</dd>
-                    </div>
-                  )}
-                  {selected.processingStatus && (
-                    <div><dt>Processing</dt><dd>{selected.processingStatus}</dd></div>
-                  )}
-                  {selected.chunkCount !== undefined && (
-                    <div><dt>Passages</dt><dd>{selected.chunkCount}</dd></div>
-                  )}
-                  {selected.ordinal !== undefined && (
-                    <div><dt>Position</dt><dd>#{selected.ordinal + 1}</dd></div>
-                  )}
-                  <div>
-                    <dt>Connections</dt>
-                    <dd>{neighbours.size > 0 ? neighbours.size - 1 : 0}</dd>
+              <p className="insp-hint">
+                Point at a folder to see what it holds. Click a file to open it here.
+              </p>
+            </>
+          ) : !selected ? (
+            /* Nothing chosen: the portfolio in numbers, and where to start. */
+            <>
+              <h3 className="insp-title">The portfolio</h3>
+              <div className="insp-grid">
+                <div><span>Brands</span><b>{groupCounts.get('brand') ?? 0}</b></div>
+                <div><span>Things in common</span><b>{nodes.filter((n) => n.type === 'trait').length}</b></div>
+                <div><span>Connections</span><b>{liveStats.edges}</b></div>
+                <div><span>Files read</span><b>{liveStats.files}</b></div>
+              </div>
+
+              {mostConnected.length > 0 && (
+                <section className="insp-section">
+                  <p className="insp-label">Most connected</p>
+                  <div className="insp-brandlist">
+                    {mostConnected.map(({ node, degree }) => (
+                      <button key={node.id} type="button" onClick={() => goTo(node)}>
+                        <BrandBadge size={12} />
+                        <span className="grow truncate">{node.label}</span>
+                        <span className="muted">{degree} shared</span>
+                      </button>
+                    ))}
                   </div>
-                </dl>
+                </section>
+              )}
 
-                {selected.snippet && <p className="insp-snippet">{selected.snippet}…</p>}
+              {widestTraits.length > 0 && (
+                <section className="insp-section">
+                  <p className="insp-label">Shared most widely</p>
+                  <div className="insp-tags">
+                    {widestTraits.map((t) => (
+                      <button key={t.id} type="button" className="insp-tag"
+                        style={{ ['--tag' as string]: colorFor(t) }} onClick={() => goTo(t)}>
+                        {t.label}<b>{t.brandCount}</b>
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              )}
 
-                <div className="insp-actions">
-                  {selected.expandable && !expanded.has(selected.id) && (
-                    <button type="button" className="btn btn-primary btn-sm" disabled={busy}
-                      onClick={() => void expand(selected)}>
-                      Expand knowledge
-                    </button>
-                  )}
-                  {expanded.has(selected.id) && (
-                    <button type="button" className="btn btn-sm" onClick={() => collapse(selected)}>
-                      Collapse
-                    </button>
-                  )}
-                  {selected.type === 'file' && (
-                    <>
-                      <a className="btn btn-sm" href={`/api/drive/files/${selected.id}/content`} download>
-                        Open file
-                      </a>
-                      <a className="btn btn-sm" href={`/api/drive/files/${selected.id}/extraction`}>
-                        View extraction
-                      </a>
-                    </>
-                  )}
-                  {selected.type === 'chunk' && selected.fileId && (
-                    <button type="button" className="btn btn-sm"
-                      onClick={() => {
-                        const file = nodes.find((n) => n.id === selected.fileId);
-                        if (file) goTo(file);
-                        else note('That passage came from a file that is not on the canvas yet.');
-                      }}>
-                      Open source
-                    </button>
-                  )}
-                  {selected.type === 'folder' && (
-                    <a className="btn btn-sm" href={`/drive?folder=${selected.id}`}>Open in Drive</a>
-                  )}
+              <p className="insp-hint">
+                Point at anything to light what it connects to. Click a brand to open it here.
+              </p>
+            </>
+          ) : selected.type === 'brand' ? (
+            /* A brand: what it is made of, what it holds, and who it is like. */
+            <>
+              <div className="insp-hero">
+                <BrandBadge size={34} />
+                <div className="stack">
+                  <h3 className="insp-title">{selected.label}</h3>
+                  <span className="insp-pill" style={{ ['--tag' as string]: colorFor(selected) }}>
+                    Brand{isolated === selected.id ? ' · isolated' : ''}
+                  </span>
                 </div>
-              </>
-            )}
-          </aside>
-        )}
+              </div>
+
+              <div className="insp-grid">
+                <div><span>Files</span><b>{selected.fileCount ?? 0}</b></div>
+                <div><span>Things in common</span><b>{brandTraits.length}</b></div>
+                {/* "Described as", not "is": this is what CIP read in the
+                    brand's files, and files can be wrong - Magic Moments
+                    came out as whisky. */}
+                <div className="span-2">
+                  <span>Described as</span>
+                  <b className="truncate">
+                    {brandTraits.filter((t) => t.dimension === 'category').map((t) => t.label).join(', ') || '—'}
+                  </b>
+                </div>
+              </div>
+
+              {brandTraits.length > 0 && (
+                <section className="insp-section">
+                  <p className="insp-label">Connected knowledge ({brandTraits.length})</p>
+                  <div className="insp-tags">
+                    {brandTraits.map((t) => (
+                      <button key={t.id} type="button" className="insp-tag"
+                        style={{ ['--tag' as string]: colorFor(t) }} onClick={() => goTo(t)}>
+                        {t.label}
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {(selected.files?.length ?? 0) > 0 && (
+                <section className="insp-section">
+                  <p className="insp-label row-between">
+                    Latest files <span className="muted">{selected.fileCount} in all</span>
+                  </p>
+                  <ul className="insp-files">
+                    {selected.files!.map((f) => (
+                      <li key={f.id}>
+                        <Icon name={FILE_ICON[f.fileType.toLowerCase()] ?? 'doc'} size={15} />
+                        <span className="grow stack">
+                          <span className="truncate">{f.name}</span>
+                          <span className="muted">
+                            {f.fileType.toUpperCase()}{formatBytes(f.bytes) ? ` · ${formatBytes(f.bytes)}` : ''}
+                          </span>
+                        </span>
+                        <a href={`/api/drive/files/${f.id}/content?disposition=inline`} target="_blank"
+                          rel="noreferrer" title="Open this file">
+                          <Icon name="arrow-right" size={14} />
+                        </a>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              )}
+
+              {/* A line drawn between two brands is a claim, and a claim
+                  nobody can check is worse than no claim - so what both were
+                  described as is listed under every score. */}
+              {resemblances.length > 0 && (
+                <section className="insp-section">
+                  <p className="insp-label">Most alike in the portfolio</p>
+                  {resemblances.slice(0, 3).map((r) => (
+                    <div key={r.other} className="insp-alike">
+                      <div className="row-between">
+                        <button type="button" onClick={() => goTo(nodeById.get(`brand:${r.other}`))}>
+                          {r.other}
+                        </button>
+                        <b>{Math.round(r.score * 100)}% alike</b>
+                      </div>
+                      <i><span style={{ width: `${Math.max(4, Math.round(r.score * 100))}%` }} /></i>
+                      {r.shared.length > 0 && <p>Both: {r.shared.join(', ')}</p>}
+                    </div>
+                  ))}
+                </section>
+              )}
+
+              <div className="insp-actions">
+                {onOpenBrand && (
+                  <button type="button" className="btn btn-primary btn-sm insp-cta"
+                    onClick={() => onOpenBrand(selected.label)}>
+                    Open {selected.label}&apos;s full brain <Icon name="arrow-right" size={14} />
+                  </button>
+                )}
+                <button type="button" className="btn btn-sm"
+                  onClick={() => setIsolated(isolated === selected.id ? null : selected.id)}>
+                  {isolated === selected.id ? 'Show everything' : 'Isolate its cluster'}
+                </button>
+                {selected.expandable && !expanded.has(selected.id) && (
+                  <button type="button" className="btn btn-sm" disabled={busy}
+                    onClick={() => void expand(selected)}>
+                    Show its files on the graph
+                  </button>
+                )}
+                {expanded.has(selected.id) && (
+                  <button type="button" className="btn btn-sm" onClick={() => collapse(selected)}>
+                    Hide its files
+                  </button>
+                )}
+              </div>
+            </>
+          ) : selected.type === 'trait' ? (
+            /* A trait: which brands share it. */
+            <>
+              <div className="insp-hero">
+                <span className="insp-planet" style={{ ['--tag' as string]: colorFor(selected) }} />
+                <div className="stack">
+                  <h3 className="insp-title">{selected.label}</h3>
+                  <span className="insp-pill" style={{ ['--tag' as string]: colorFor(selected) }}>
+                    {selected.dimension ?? 'shared trait'}
+                  </span>
+                </div>
+              </div>
+
+              <section className="insp-section">
+                <p className="insp-label">Shared by {onThisHub.length} brands</p>
+                <div className="insp-brandlist">
+                  {onThisHub.map((name) => {
+                    const node = nodeById.get(`brand:${name}`);
+                    return (
+                      <button key={name} type="button" onClick={() => goTo(node)}>
+                        {node && <BrandBadge size={12} />}
+                        <span className="grow truncate">{name}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
+
+              <div className="insp-actions">
+                <button type="button" className="btn btn-sm"
+                  onClick={() => setIsolated(isolated === selected.id ? null : selected.id)}>
+                  {isolated === selected.id ? 'Show everything' : 'Isolate its brands'}
+                </button>
+              </div>
+            </>
+          ) : (
+            /* Files, folders, sources and passages: what they are, and where to go. */
+            <>
+              <div className="insp-hero">
+                <span className="insp-kindbadge" style={{ ['--tag' as string]: colorFor(selected) }}>
+                  <Icon
+                    name={selected.type === 'file' ? (FILE_ICON[(selected.fileType ?? '').toLowerCase()] ?? 'doc') : TYPE_ICON[selected.type]}
+                    size={18}
+                  />
+                </span>
+                <div className="stack">
+                  <h3 className="insp-title insp-title-long">{selected.label}</h3>
+                  <span className="insp-pill" style={{ ['--tag' as string]: colorFor(selected) }}>
+                    {selected.type === 'file'
+                      ? FILE_KIND_LABEL[fileKindOf(selected.fileType)]
+                      : selected.type === 'chunk' ? 'passage' : selected.type}
+                  </span>
+                </div>
+              </div>
+
+              <dl className="insp-facts">
+                {selected.fileType && (
+                  <div><dt>Type</dt><dd>{selected.fileType.toUpperCase()}</dd></div>
+                )}
+                {selected.source && (
+                  <div>
+                    <dt>Source</dt>
+                    <dd>{selected.source === 'google_drive' ? 'Google Drive' : 'CIP Drive'}</dd>
+                  </div>
+                )}
+                {selected.processingStatus && (
+                  <div><dt>Processing</dt><dd>{selected.processingStatus}</dd></div>
+                )}
+                {selected.chunkCount !== undefined && (
+                  <div><dt>Passages</dt><dd>{selected.chunkCount}</dd></div>
+                )}
+                {selected.ordinal !== undefined && (
+                  <div><dt>Position</dt><dd>#{selected.ordinal + 1}</dd></div>
+                )}
+                <div>
+                  <dt>Connections</dt>
+                  <dd>{neighbours.size > 0 ? neighbours.size - 1 : 0}</dd>
+                </div>
+              </dl>
+
+              {selected.snippet && <p className="insp-snippet">{selected.snippet}…</p>}
+
+              <div className="insp-actions">
+                {selected.expandable && !expanded.has(selected.id) && (
+                  <button type="button" className="btn btn-primary btn-sm" disabled={busy}
+                    onClick={() => void expand(selected)}>
+                    Expand knowledge
+                  </button>
+                )}
+                {expanded.has(selected.id) && (
+                  <button type="button" className="btn btn-sm" onClick={() => collapse(selected)}>
+                    Collapse
+                  </button>
+                )}
+                {selected.type === 'file' && (
+                  <>
+                    <a className="btn btn-sm" href={`/api/drive/files/${selected.id}/content`} download>
+                      Open file
+                    </a>
+                    <a className="btn btn-sm" href={`/api/drive/files/${selected.id}/extraction`}>
+                      View extraction
+                    </a>
+                  </>
+                )}
+                {selected.type === 'chunk' && selected.fileId && (
+                  <button type="button" className="btn btn-sm"
+                    onClick={() => {
+                      const file = nodes.find((n) => n.id === selected.fileId);
+                      if (file) goTo(file);
+                      else note('That passage came from a file that is not on the canvas yet.');
+                    }}>
+                    Open source
+                  </button>
+                )}
+                {selected.type === 'folder' && (
+                  <a className="btn btn-sm" href={`/drive?folder=${selected.id}`}>Open in Drive</a>
+                )}
+              </div>
+            </>
+          )}
+        </aside>
       </div>
     </div>
   );
@@ -1898,7 +2007,13 @@ function drawNode(
   // The text fade threshold moves every kind's fade-in nearer or further, as
   // if the graph were zoomed that much more or less.
   const fadeScale = scale * Math.pow(2, state.textFade * 1.5);
-  const opacity = focused ? (inLight ? 1 : 0) : Math.max(labelOpacity(node, fadeScale), isSelected ? 1 : 0);
+  // A folder of a hundred and fifty files, lit, named all hundred and fifty
+  // at once in a pile nobody could read. Past a couple of dozen neighbours,
+  // files and passages keep to the zoom's rule and only the rest are named.
+  const crowded = focused && state.lit.size > 24 && !isFocus && (node.type === 'file' || node.type === 'chunk');
+  const opacity = focused
+    ? (inLight ? (crowded ? labelOpacity(node, fadeScale) : 1) : 0)
+    : Math.max(labelOpacity(node, fadeScale), isSelected ? 1 : 0);
   if (opacity > 0.02) {
     const emphasis = node.type === 'brand' || isFocus;
     // Text grows as you zoom in, and more slowly than the graph does, so it
