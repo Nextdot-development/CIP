@@ -71,6 +71,11 @@ export class FakeBrainProvider implements BrainProvider {
    * and it can only be tested against findings chosen on purpose.
    */
   checkFindings: CheckFinding[] | null = null;
+  /**
+   * What each of the next checks reports, one list per check, in order. Used
+   * up as checks run; once empty, checkFindings answers.
+   */
+  checkFindingsQueue: CheckFinding[][] | null = null;
   /** What the page is, when a test needs it to be something else. */
   checkAssetKind: AssetKind | null = null;
   /** The last check's input, so a test can see what the Brain was given. */
@@ -124,6 +129,7 @@ export class FakeBrainProvider implements BrainProvider {
     this.lastIdeationInput = null;
     this.failWith = null;
     this.checkFindings = null;
+    this.checkFindingsQueue = null;
     this.checkAssetKind = null;
     this.lastCheckInput = null;
     this.frameTexts = null;
@@ -441,13 +447,15 @@ export class FakeBrainProvider implements BrainProvider {
     // The same rule the real provider follows: only a page of a document may
     // say it is not a creative.
     const assetKind = input.fromDocument ? (this.checkAssetKind ?? 'creative') : 'creative';
+    const queued = this.checkFindingsQueue?.shift();
+    const findings = queued ?? this.checkFindings;
 
     return {
       assetKind,
       summary: `Checked "${input.filename}" against ${input.rules.length} rule(s).`,
       findings:
-        assetKind === 'creative' && this.checkFindings
-          ? this.checkFindings.map((f) => ({ ...f }))
+        assetKind === 'creative' && findings
+          ? findings.map((f) => ({ ...f }))
           : [],
       usage: { durationMs: 1 },
     };

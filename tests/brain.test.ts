@@ -2429,6 +2429,107 @@ describe('generation integration', () => {
     assert.ok(rows[0]!.prompt.length > 'An Instagram promo'.length);
   });
 
+  /** A rule every picture this company makes is checked against. */
+  async function houseRule(text = 'Carry the statutory warning.'): Promise<void> {
+    await adminSql`
+      insert into compliance_rules (company_id, category, requirement, rule, source)
+      values (${mm.companyId}, 'disclaimer', 'required', ${text}, 'regulation')
+    `;
+  }
+
+  const missingWarning = { ref: 'R1', dimension: 'compliance' as const, severity: 'critical' as const, message: 'No statutory warning.' };
+
+  // Nothing CIP makes is called right until the checker has looked at it -
+  // and it is looked at before the person sees it, not on the next worker run.
+  it('checks a picture before handing it over, and says it passed', async () => {
+    await houseRule();
+    mediaProviders.__setProviders(null, null);
+
+    const result = await brainGenerate.generateWithBrain(mm, { requestText: 'A Diwali post', mediaType: 'image' });
+
+    assert.equal(result.status, 'generated');
+    if (result.status !== 'generated') return;
+    assert.equal(result.qc!.verdict, 'passed', JSON.stringify(result.qc));
+    assert.equal(result.qc!.attempts, 1);
+    assert.ok(result.qc!.checkId);
+    const checks = await adminSql`select id from creative_checks where generation_id = ${result.generation.id}`;
+    assert.equal(checks.length, 1);
+  });
+
+  it('makes it again when it breaks a rule, telling the generator which', async () => {
+    await houseRule();
+    mediaProviders.__setProviders(null, null);
+    fake.checkFindingsQueue = [[missingWarning], []];
+    const progress: string[] = [];
+
+    const result = await brainGenerate.generateWithBrain(mm, {
+      requestText: 'A Diwali post',
+      mediaType: 'image',
+      onQc: (p) => progress.push(`${p.stage} ${p.attempt}`),
+    });
+
+    assert.equal(result.status, 'generated');
+    if (result.status !== 'generated') return;
+    assert.equal(result.qc!.verdict, 'passed');
+    assert.equal(result.qc!.attempts, 2);
+    assert.deepEqual(progress, ['checking 1', 'fixing 2', 'checking 2']);
+    assert.equal(result.qc!.earlier.length, 1);
+    assert.deepEqual(result.qc!.earlier[0]!.broke, ['Carry the statutory warning.']);
+
+    const first = result.qc!.earlier[0]!.generationId;
+    const [second] = await adminSql<{ prompt: string; input_metadata: { basedOn: string | null } }[]>`
+      select prompt, input_metadata from media_generations where id = ${result.generation.id}
+    `;
+    assert.ok(second!.prompt.includes('Carry the statutory warning.'), 'the generator was not told what to fix');
+    assert.equal(second!.input_metadata.basedOn, first, 'the fix was not built on the picture that failed');
+    // The brief points at what was handed over, so rating it teaches.
+    const linked = await adminSql`select id from generation_briefs where id = ${result.briefId} and generation_id = ${result.generation.id}`;
+    assert.equal(linked.length, 1);
+  });
+
+  it('stops after its tries and hands over the closest, saying what it still breaks', async () => {
+    await houseRule();
+    mediaProviders.__setProviders(null, null);
+    fake.checkFindings = [missingWarning];
+
+    const result = await brainGenerate.generateWithBrain(mm, { requestText: 'A Diwali post', mediaType: 'image' });
+
+    assert.equal(result.status, 'generated');
+    if (result.status !== 'generated') return;
+    assert.equal(result.qc!.verdict, 'failed', 'a picture that breaks a rule was called fine');
+    assert.equal(result.qc!.attempts, 3);
+    assert.equal(result.qc!.stopped, 'out_of_tries');
+    assert.equal(result.qc!.broke[0]!.rule, 'Carry the statutory warning.');
+  });
+
+  it('does not start another version it has no time to finish', async () => {
+    await houseRule();
+    mediaProviders.__setProviders(null, null);
+    fake.checkFindings = [missingWarning];
+    process.env.CIP_QC_BUDGET_MS = '1';
+    try {
+      const result = await brainGenerate.generateWithBrain(mm, { requestText: 'A Diwali post', mediaType: 'image' });
+      if (result.status !== 'generated') return assert.fail('not generated');
+      assert.equal(result.qc!.attempts, 1);
+      assert.equal(result.qc!.stopped, 'out_of_time');
+      assert.equal(result.qc!.verdict, 'failed');
+    } finally {
+      delete process.env.CIP_QC_BUDGET_MS;
+    }
+  });
+
+  it('a note is not a failure, and is never made again for', async () => {
+    await houseRule();
+    mediaProviders.__setProviders(null, null);
+    fake.checkFindings = [{ ...missingWarning, severity: 'note', message: 'The warning could be larger.' }];
+
+    const result = await brainGenerate.generateWithBrain(mm, { requestText: 'A Diwali post', mediaType: 'image' });
+
+    if (result.status !== 'generated') return assert.fail('not generated');
+    assert.equal(result.qc!.verdict, 'passed');
+    assert.equal(result.qc!.attempts, 1);
+  });
+
   it('the brief is linked to the generation it produced', async () => {
     mediaProviders.__setProviders(null, null);
     const result = await brainGenerate.generateWithBrain(mm, {

@@ -91,7 +91,20 @@ function shapesFor(
   ];
 }
 
-type Phase = 'idle' | 'planning' | 'making' | 'done';
+type Phase = 'idle' | 'planning' | 'making' | 'checking' | 'done';
+
+/** Where the check-and-fix loop is, as the stream reports it. */
+type QcStep = { attempt: number; fixing: string[] | null };
+
+/** What the checker said about a picture CIP just made. See generate.ts. */
+type GenerationQc = {
+  verdict: 'passed' | 'failed' | 'unchecked';
+  checkId: string | null;
+  broke: { rule: string; message: string; severity: 'critical' | 'warning' }[];
+  attempts: number;
+  stopped: 'passed' | 'out_of_tries' | 'out_of_time' | 'generation_failed' | 'check_failed';
+  earlier: { generationId: string; broke: string[] }[];
+};
 
 type PlanSummary = {
   taskType: string | null;
@@ -118,11 +131,13 @@ type PlanSummary = {
 type StreamEvent =
   | { stage: 'planning' }
   | { stage: 'planned'; plan: PlanSummary; briefId: string }
+  | { stage: 'checking'; attempt: number }
+  | { stage: 'fixing'; attempt: number; broke: string[] }
   | { stage: 'done'; result: BrainResult }
   | { stage: 'failed'; message: string };
 
 type BrainResult =
-  | { status: 'generated'; generation: MediaGenerationDTO; briefId: string; plan: PlanSummary }
+  | { status: 'generated'; generation: MediaGenerationDTO; briefId: string; plan: PlanSummary; qc: GenerationQc | null }
   | { status: 'needs_clarification'; briefId: string; question: string; plan: PlanSummary };
 
 export function AskSection({
@@ -157,6 +172,7 @@ export function AskSection({
   // sat next to it.
   const [provider, setProvider] = useState<ImageProviderChoice>(providers.defaultImageProvider);
   const [phase, setPhase] = useState<Phase>('idle');
+  const [qcStep, setQcStep] = useState<QcStep | null>(null);
   const [result, setResult] = useState<BrainResult | null>(null);
   // Held separately from `result` so the brief can be shown while the picture
   // is still being made.
@@ -207,6 +223,7 @@ export function AskSection({
     setResult(null);
     setPlanned(null);
     setFailure(null);
+    setQcStep(null);
     setPhase('planning');
     setStartedAt(Date.now());
 
@@ -257,6 +274,14 @@ export function AskSection({
             // explains the other half.
             setPlanned(event.plan);
             setPhase('making');
+          } else if (event.stage === 'checking') {
+            setQcStep({ attempt: event.attempt, fixing: null });
+            setPhase('checking');
+          } else if (event.stage === 'fixing') {
+            // Back to making: the picture broke a rule and is being made
+            // again, and the page says which rule rather than just waiting.
+            setQcStep({ attempt: event.attempt, fixing: event.broke });
+            setPhase('making');
           } else if (event.stage === 'done') {
             settled = true;
             setResult(event.result);
@@ -289,7 +314,7 @@ export function AskSection({
     }
   };
 
-  const busy = phase === 'planning' || phase === 'making';
+  const busy = phase === 'planning' || phase === 'making' || phase === 'checking';
 
   return (
     <div className="rise">
@@ -441,7 +466,7 @@ export function AskSection({
         </div>
       </Card>
 
-      {busy && <Working phase={phase} mediaType={mediaType} startedAt={startedAt} />}
+      {busy && <Working phase={phase} mediaType={mediaType} startedAt={startedAt} qcStep={qcStep} />}
 
       {/* What CIP decided, before what it produced. Shown either way, because
           the reasoning is what makes a bad result correctable — and shown as
@@ -487,6 +512,8 @@ export function AskSection({
           </div>
         </Card>
       )}
+
+      {result?.status === 'generated' && result.qc && <QcOutcome qc={result.qc} />}
 
       {result?.status === 'generated' && (
         <Result
@@ -565,11 +592,12 @@ export function AskSection({
  * picture is about a minute, a video several, and neither provider will say.
  */
 function Working({
-  phase, mediaType, startedAt,
+  phase, mediaType, startedAt, qcStep,
 }: {
   phase: Phase;
   mediaType: MediaType;
   startedAt: number;
+  qcStep: QcStep | null;
 }) {
   const [elapsed, setElapsed] = useState(0);
 
@@ -584,9 +612,17 @@ function Working({
     { id: 'planning', label: 'Reading what it knows about you', done: 'Read your brand' },
     {
       id: 'making',
-      label: mediaType === 'video' ? 'Sending it to the video generator' : 'Making the picture',
-      done: 'Sent to the generator',
+      label: mediaType === 'video'
+        ? 'Sending it to the video generator'
+        : qcStep?.fixing
+          ? `Making it again, fixing what broke the rules (try ${qcStep.attempt})`
+          : 'Making the picture',
+      done: mediaType === 'video' ? 'Sent to the generator' : 'Made the picture',
     },
+    // A video is checked by the worker once it exists, minutes from now.
+    ...(mediaType === 'image'
+      ? [{ id: 'checking' as Phase, label: 'Checking it against every QC rule', done: 'Checked' }]
+      : []),
   ];
 
   return (
@@ -613,6 +649,12 @@ function Working({
         })}
       </ol>
 
+      {qcStep?.fixing && (
+        <p className="tiny" style={{ marginTop: 8 }}>
+          <Icon name="alert" size={13} /> The last version broke: {qcStep.fixing.join('; ')}
+        </p>
+      )}
+
       {/* A placeholder in the shape of what is coming, so the page does not
           jump when it arrives. */}
       <div className="work-skeleton" aria-hidden />
@@ -620,7 +662,7 @@ function Working({
       <p className="tiny muted">
         {mediaType === 'video'
           ? 'Video takes a few minutes. You can leave this page — it keeps going.'
-          : 'Usually about a minute.'}
+          : 'Usually about a minute, and more when a version has to be made again to pass QC.'}
       </p>
     </Card>
   );
@@ -756,7 +798,7 @@ type GenerationCheckState =
   | { state: 'waiting' }
   | { state: 'unchecked' }
   | { state: 'failed' }
-  | { state: 'ready'; id: string; score: number | null; flags: number };
+  | { state: 'ready'; id: string; score: number | null; flags: number; broke: string[] };
 
 /**
  * The checker's verdict on a generated image.
@@ -777,7 +819,10 @@ function GenerationCheck({ generationId, live }: { generationId: string; live: b
       const res = await fetch(`/api/brain/checks?generationId=${encodeURIComponent(generationId)}`, { cache: 'no-store' }).catch(() => null);
       const body = res?.ok
         ? ((await res.json().catch(() => null)) as {
-            check: { id: string; status: string; score: number | null; flags?: { status: string }[] } | null;
+            check: {
+              id: string; status: string; score: number | null;
+              flags?: { status: string; severity?: string; citedRule?: { rule: string } | null }[];
+            } | null;
           } | null)
         : null;
       if (stopped) return;
@@ -794,6 +839,11 @@ function GenerationCheck({ generationId, live }: { generationId: string; live: b
           id: found.id,
           score: found.score,
           flags: flags.filter((f) => f.status !== 'disputed').length,
+          // The same test the generator's own loop uses: a rule, not a
+          // pattern, found broken, and not disputed. See rulesBroken.
+          broke: flags
+            .filter((f) => f.status !== 'disputed' && f.citedRule && f.severity !== 'note')
+            .map((f) => f.citedRule!.rule),
         });
         return;
       }
@@ -839,12 +889,78 @@ function GenerationCheck({ generationId, live }: { generationId: string; live: b
   }
   const tone = check.score === null ? 'neutral' : check.score >= 80 ? 'ok' : check.score >= 50 ? 'warn' : 'stop';
   return (
-    <p className="gencheck">
+    <div className="gencheck">
       <Icon name="shield" size={13} />
+      {check.broke.length === 0 ? (
+        <Pill tone="ok">Passed QC</Pill>
+      ) : (
+        <Pill tone="stop">Did not pass QC</Pill>
+      )}
       <Pill tone={tone}>{check.score === null ? 'Not judged' : `${check.score} / 100`}</Pill>
       <span>{check.flags === 0 ? 'No flags' : `${check.flags} flag${check.flags === 1 ? '' : 's'}`}</span>
       <a href={`/check?check=${check.id}`}>See the check</a>
-    </p>
+      {check.broke.length > 0 && (
+        <p className="gencheck-broke">Breaks: {check.broke.join('; ')}</p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * How the picture got to where it is: made once and passed, or made again
+ * because a version broke a rule - and, when it never passed, why it stopped.
+ */
+function QcOutcome({ qc }: { qc: GenerationQc }) {
+  const fixed = qc.earlier.filter((e) => e.broke.length > 0);
+  const why: Record<GenerationQc['stopped'], string> = {
+    passed: '',
+    out_of_tries: `It was made ${qc.attempts} times and every version broke a rule.`,
+    out_of_time: 'It ran out of time to make another version.',
+    generation_failed: 'Making another version failed.',
+    check_failed: 'The check itself could not run.',
+  };
+
+  return (
+    <Card className="pad">
+      <p className="strong" style={{ marginBottom: 4 }}>
+        <Icon name={qc.verdict === 'passed' ? 'check' : 'alert'} size={15} />{' '}
+        {qc.verdict === 'passed'
+          ? qc.attempts === 1
+            ? 'Passed every QC rule first time'
+            : `Passed QC on version ${qc.attempts}`
+          : qc.verdict === 'failed'
+            ? 'This does not pass QC yet'
+            : 'This has not been checked'}
+      </p>
+      {fixed.length > 0 && (
+        <ul className="small" style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+          {fixed.map((e, i) => (
+            <li key={e.generationId}>
+              Version {i + 1} broke: {e.broke.join('; ')}
+              {qc.verdict === 'passed' ? ' — fixed.' : '.'}
+            </li>
+          ))}
+        </ul>
+      )}
+      {qc.verdict === 'failed' && (
+        <>
+          <p className="small" style={{ marginTop: 6 }}>
+            {why[qc.stopped]} This is the closest version. It still breaks:
+          </p>
+          <ul className="small" style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+            {qc.broke.map((b, i) => (
+              <li key={i}><strong>{b.rule}</strong> — {b.message}</li>
+            ))}
+          </ul>
+          <p className="tiny muted" style={{ marginTop: 6 }}>
+            Fix it with &ldquo;Build on this&rdquo;, or dispute a flag on the check if the rule does not apply.
+          </p>
+        </>
+      )}
+      {qc.verdict === 'unchecked' && (
+        <p className="small" style={{ marginTop: 6 }}>{why[qc.stopped]} Do not treat it as approved until it has been checked.</p>
+      )}
+    </Card>
   );
 }
 

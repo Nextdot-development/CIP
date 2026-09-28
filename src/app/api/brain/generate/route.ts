@@ -16,6 +16,11 @@ import { IMAGE_GENERATION_LIMIT, VIDEO_GENERATION_LIMIT } from '@/server/rateLim
  * not a cheaper way through.
  */
 export const dynamic = 'force-dynamic';
+/**
+ * Long enough to plan, make, check and - when a rule is broken - make it again.
+ * The attempts stop starting well inside this; see checkAndFix.
+ */
+export const maxDuration = 300;
 
 type Body = {
   request?: unknown;
@@ -86,6 +91,7 @@ export async function POST(request: Request) {
             const result = await generateWithBrain(scope, {
               ...options,
               onPlanned: (plan, briefId) => send({ stage: 'planned', plan, briefId }),
+              onQc: (progress) => send(progress),
             });
     
             send({ stage: 'done', result });

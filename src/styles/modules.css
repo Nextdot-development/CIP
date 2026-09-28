@@ -332,6 +332,7 @@ a.gtag:hover { color: var(--ink-900); border-color: var(--ink-400); }
 /* ---------- A generated image's check ---------- */
 .gencheck { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--ink-500); margin-top: 10px; }
 .gencheck a { color: var(--brand); }
+.gencheck-broke { flex-basis: 100%; margin: 2px 0 0; color: var(--ink-700); }
 
 /* ---------- Upload: which brand ---------- */
 .modalfield { display: flex; flex-direction: column; gap: 5px; margin-bottom: 12px; }

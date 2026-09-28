@@ -4,6 +4,8 @@ import { generateImage, generateVideo } from '../media/generation';
 import type { MediaGenerationDTO } from '../media/types';
 import { ANALYSABLE_IMAGE_TYPES, BRAIN_LIMITS } from './providers/types';
 import { linkBriefToGeneration, planGeneration, promptFromBrief } from './planner';
+import { runCheck } from './checker';
+import type { CreativeCheck } from './checker';
 import type { PlannedGeneration } from './planner';
 import { FORMAT_ASPECT, FORMAT_LABELS, closestAspectRatio } from './providers/types';
 import type { CreativeFormat } from './providers/types';
@@ -36,6 +38,8 @@ export type BrainGenerationResult =
       briefId: string;
       /** Safe to show: what the Brain decided, minus its reasoning. */
       plan: BrainPlanSummary;
+      /** What the checker said about it. Null for a video, which is made later. */
+      qc: GenerationQc | null;
     }
   | {
       status: 'needs_clarification';
@@ -97,6 +101,36 @@ export type BrainPlanSummary = {
   confidence: number;
 };
 
+/** A rule a generated picture was found to break. */
+export type BrokenRule = { rule: string; message: string; severity: 'critical' | 'warning' };
+
+/**
+ * Whether what CIP made passed its own checker, and what it took.
+ *
+ * Nothing CIP makes is called right until the checker has looked at it. A
+ * picture that breaks a rule is made again with the fault named, a couple of
+ * times, and if it still breaks one it is handed over saying which - never
+ * as if it were fine.
+ */
+export type GenerationQc = {
+  verdict: 'passed' | 'failed' | 'unchecked';
+  /** The check of the picture handed back. */
+  checkId: string | null;
+  /** What the picture handed back still breaks. Empty when it passed. */
+  broke: BrokenRule[];
+  /** Pictures made in all, the first included. */
+  attempts: number;
+  /** Why it stopped where it did. */
+  stopped: 'passed' | 'out_of_tries' | 'out_of_time' | 'generation_failed' | 'check_failed';
+  /** The versions made before the one handed back, and what each broke. */
+  earlier: { generationId: string; broke: string[] }[];
+};
+
+/** Progress through the check, for a caller that streams it. */
+export type QcProgress =
+  | { stage: 'checking'; attempt: number }
+  | { stage: 'fixing'; attempt: number; broke: string[] };
+
 export type BrainGenerateInput = {
   requestText: string;
   mediaType: 'image' | 'video';
@@ -129,12 +163,15 @@ export type BrainGenerateInput = {
    * a timer.
    */
   onPlanned?: (plan: BrainPlanSummary, briefId: string) => void;
+  /** Called as the picture is checked and, when it breaks a rule, made again. */
+  onQc?: (progress: QcProgress) => void;
 };
 
 export async function generateWithBrain(
   scope: CompanyScope,
   input: BrainGenerateInput,
 ): Promise<BrainGenerationResult> {
+  const started = Date.now();
   // Read before planning, because the brief is composed for the shape. The
   // answer to a question counts as much as the request: a square said only in
   // reply used to be dropped, and the banner came back 3:1.
@@ -233,7 +270,153 @@ export async function generateWithBrain(
   // always be traced back to the decision that produced it.
   await linkBriefToGeneration(scope, plan.briefId, generation.id);
 
-  return { status: 'generated', generation, briefId: plan.briefId, plan: summary };
+  // A video is made by the worker, minutes from now; it is checked there.
+  if (input.mediaType !== 'image' || generation.status !== 'completed') {
+    return { status: 'generated', generation, briefId: plan.briefId, plan: summary, qc: null };
+  }
+
+  const checked = await checkAndFix(scope, {
+    first: generation,
+    briefId: plan.briefId,
+    started,
+    onQc: input.onQc,
+    remake: (from, broke) =>
+      generateImage(scope, {
+        prompt: withNotes(prompt, [fixNote(broke)]),
+        provider: generator.choice ?? input.provider,
+        referenceFileIds,
+        aspectRatio: shape.aspectRatio,
+        imageSize: input.imageSize,
+        // Never the first one's key: that would hand back the same picture.
+        idempotencyKey: undefined,
+        deliverShape: shape.deliver,
+        // Built on the picture that failed, so what was right about it stays
+        // and only the fault is changed.
+        basedOnGenerationId: from.id,
+      }),
+  });
+
+  return {
+    status: 'generated',
+    generation: checked.generation,
+    briefId: plan.briefId,
+    plan: summary,
+    qc: checked.qc,
+  };
+}
+
+/** Times a picture is made again to fix what the checker found. */
+function maxFixes(): number {
+  const value = Number(process.env.CIP_QC_MAX_FIXES);
+  return Number.isInteger(value) && value >= 0 ? value : 2;
+}
+
+/**
+ * How long into a request another attempt may still start.
+ *
+ * A request has five minutes before the platform kills it with nothing
+ * anybody can read. An attempt - make, then check - is about a minute and a
+ * half, so one is not started past this.
+ */
+function qcBudgetMs(): number {
+  const value = Number(process.env.CIP_QC_BUDGET_MS);
+  return Number.isFinite(value) && value > 0 ? value : 150_000;
+}
+
+/**
+ * The rules a checked picture breaks.
+ *
+ * Rules, not patterns: a picture unlike the brand's usual work is a matter of
+ * taste and a person's call, and remaking it for that would chase a style.
+ * Only critical and warning findings - a note is not a failure - and never
+ * one a person has already disputed.
+ */
+export function rulesBroken(check: CreativeCheck): BrokenRule[] {
+  return check.flags
+    .filter((f) => f.status !== 'disputed' && f.citedRule && f.severity !== 'note')
+    .map((f) => ({ rule: f.citedRule!.rule, message: f.message, severity: f.severity as BrokenRule['severity'] }));
+}
+
+/** What the generator is told the last version got wrong. */
+function fixNote(broke: BrokenRule[]): string {
+  const faults = broke
+    .slice(0, 6)
+    .map((b) => `"${b.rule}" (${b.message.replace(/\s+/g, ' ').slice(0, 160)})`)
+    .join('; ');
+  return (
+    `IMPORTANT - the previous version was rejected by brand compliance review for breaking: ${faults}. ` +
+    'Keep everything else about it, and make sure this version obeys every one of these rules.'
+  );
+}
+
+/**
+ * Checks a picture CIP just made, and makes it again while it breaks a rule.
+ *
+ * Each attempt is checked by the same checker a person would use, so "passed"
+ * means exactly what it means on the QC page. The picture handed back is the
+ * first that passed, or failing that the one that broke the fewest rules -
+ * and it says what it still breaks.
+ */
+async function checkAndFix(
+  scope: CompanyScope,
+  input: {
+    first: MediaGenerationDTO;
+    briefId: string;
+    started: number;
+    onQc?: (progress: QcProgress) => void;
+    remake: (from: MediaGenerationDTO, broke: BrokenRule[]) => Promise<MediaGenerationDTO>;
+  },
+): Promise<{ generation: MediaGenerationDTO; qc: GenerationQc }> {
+  const tried: { generation: MediaGenerationDTO; check: CreativeCheck | null; broke: BrokenRule[] }[] = [];
+  let current = input.first;
+  let stopped: GenerationQc['stopped'];
+
+  for (let attempt = 1; ; attempt += 1) {
+    input.onQc?.({ stage: 'checking', attempt });
+    const check = await runCheck(scope, { generationId: current.id }).catch(() => null);
+    const broke = check && check.status === 'ready' ? rulesBroken(check) : [];
+    tried.push({ generation: current, check: check?.status === 'ready' ? check : null, broke });
+
+    if (!check || check.status !== 'ready') { stopped = 'check_failed'; break; }
+    if (broke.length === 0) { stopped = 'passed'; break; }
+    if (attempt > maxFixes()) { stopped = 'out_of_tries'; break; }
+    if (Date.now() - input.started > qcBudgetMs()) { stopped = 'out_of_time'; break; }
+
+    input.onQc?.({ stage: 'fixing', attempt: attempt + 1, broke: broke.map((b) => b.rule) });
+    const next = await input.remake(current, broke).catch(() => null);
+    if (!next || next.status !== 'completed') { stopped = 'generation_failed'; break; }
+    // Pointed at the brief as it is made, so the check reads the brand and
+    // market the brief was written for.
+    await linkBriefToGeneration(scope, input.briefId, next.id);
+    current = next;
+  }
+
+  // The first that passed; otherwise the checked one breaking the fewest
+  // rules, criticals counted heavier, the later one winning a tie. An
+  // unchecked picture is only handed back when nothing was checked.
+  const weight = (b: BrokenRule[]) => b.reduce((n, r) => n + (r.severity === 'critical' ? 10 : 1), 0);
+  const checked = tried.filter((t) => t.check !== null);
+  const best =
+    checked.find((t) => t.broke.length === 0) ??
+    checked.reduce<(typeof tried)[number] | null>((a, t) => (a === null || weight(t.broke) <= weight(a.broke) ? t : a), null) ??
+    tried.at(-1)!;
+
+  // The brief points at what was handed back, so a rating of it teaches.
+  if (best.generation.id !== current.id) await linkBriefToGeneration(scope, input.briefId, best.generation.id);
+
+  return {
+    generation: best.generation,
+    qc: {
+      verdict: best.check === null ? 'unchecked' : best.broke.length === 0 ? 'passed' : 'failed',
+      checkId: best.check?.id ?? null,
+      broke: best.broke,
+      attempts: tried.length,
+      stopped: best.check !== null && best.broke.length === 0 ? 'passed' : stopped,
+      earlier: tried
+        .filter((t) => t.generation.id !== best.generation.id)
+        .map((t) => ({ generationId: t.generation.id, broke: t.broke.map((b) => b.rule) })),
+    },
+  };
 }
 
 type ChosenShape = {
