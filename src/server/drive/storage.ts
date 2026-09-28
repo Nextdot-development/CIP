@@ -81,6 +81,9 @@ const SAFE_KEY = new RegExp(
     // A small copy of an image, for grids. The size is one of a fixed few, so
     // a URL cannot ask for a thousand different files.
     `|thumbs\\/${UUID}-(?:160|320|640|1280)` +
+    // A frame a video check was judged on, kept small so a flag can show the
+    // moment it is about. Numbered, never named: 1 to 99, nothing a caller chose.
+    `|check-frames\\/${UUID}\\/(?:[1-9]|[1-9][0-9])` +
     `)${EXTENSION}$`,
   'i',
 );
@@ -92,6 +95,11 @@ export type ThumbnailEdge = (typeof THUMBNAIL_EDGES)[number];
 /** Where the thumbnail of one uploaded image lives. */
 export function thumbnailKeyFor(companyId: string, fileId: string, edge: ThumbnailEdge): string {
   return `companies/${companyId}/thumbs/${fileId}-${edge}.webp`;
+}
+
+/** Where frame `n` (from 1) of a video check lives. */
+export function checkFrameKeyFor(companyId: string, checkId: string, n: number): string {
+  return `companies/${companyId}/check-frames/${checkId}/${n}.jpg`;
 }
 
 /** Where one rendered page of a PDF lives. */

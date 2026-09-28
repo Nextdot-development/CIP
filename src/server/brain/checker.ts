@@ -2,7 +2,7 @@ import 'server-only';
 import { withCompanyScope } from '../db';
 import type { CompanyScope } from '../db';
 import { adminSql } from '../db-admin';
-import { driveStorage } from '../drive/storage';
+import { checkFrameKeyFor, driveStorage } from '../drive/storage';
 import { renderPdfPages } from '../drive/extraction/pdfRender';
 import { readAsset } from '../media/generation';
 import { readBrandDna } from './brandDna';
@@ -627,6 +627,40 @@ async function readTimeline(
   }
 }
 
+/** The long edge a kept frame is shrunk to: enough to see the fault, small enough to keep. */
+const KEPT_FRAME_EDGE = 480;
+
+async function keepFrames(scope: CompanyScope, checkId: string, frames: SampledFrame[]): Promise<void> {
+  const { createCanvas, loadImage } = await import('@napi-rs/canvas');
+  const storage = driveStorage();
+  await Promise.all(
+    frames.slice(0, 99).map(async (frame, i) => {
+      try {
+        const image = await loadImage(frame.bytes);
+        const scale = Math.min(1, KEPT_FRAME_EDGE / Math.max(image.width, image.height));
+        const canvas = createCanvas(Math.max(1, Math.round(image.width * scale)), Math.max(1, Math.round(image.height * scale)));
+        canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
+        await storage.put(checkFrameKeyFor(scope.companyId, checkId, i + 1), canvas.toBuffer('image/jpeg', 80), 'image/jpeg');
+      } catch {
+        // Shown without its picture.
+      }
+    }),
+  );
+}
+
+/**
+ * Frame `n` of a video check, as it was kept. Null when the check is not this
+ * company's, or the frame was never kept.
+ */
+export async function checkFrame(scope: CompanyScope, checkId: string, n: number): Promise<Buffer | null> {
+  if (!UUID.test(checkId) || !Number.isInteger(n) || n < 1 || n > 99) return null;
+  const rows = await withCompanyScope(scope, (tx) =>
+    tx<{ id: string }[]>`select id from creative_checks where id = ${checkId} and company_id = ${scope.companyId}`,
+  );
+  if (rows.length === 0) return null;
+  return driveStorage().get(checkFrameKeyFor(scope.companyId, checkId, n)).catch(() => null);
+}
+
 /** Frames searched in one call. More, and each one gets less of the model's attention. */
 const FRAMES_PER_SEARCH = 4;
 
@@ -1093,6 +1127,10 @@ export async function runCheck(
         ? 'This page is blank. Nothing here to check.'
         : 'This is a page of a document rather than a creative, so the advertising rules were not applied to it.';
   }
+
+  // The frames kept small, so each flag can show the moment it is about. A
+  // failed write only means a flag shows its time without a picture.
+  if (video && frames.length > 0) await keepFrames(scope, checkId, frames);
 
   await withCompanyScope(scope, async (tx) => {
     for (const finding of grounded) {

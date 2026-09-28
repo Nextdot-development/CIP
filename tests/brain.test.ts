@@ -1289,6 +1289,27 @@ describe('THE CHECKER: a creative judged against the brand, and nothing else', (
     assert.equal(check.flags[0]!.atSeconds.length, 2, 'the frames either named were not both kept');
   });
 
+  // "At 0:04" sent a reviewer off to scrub through the film. The frame itself
+  // is kept, small, so the flag can show it.
+  it('keeps each frame small so a flag can show its moment, to this company only', async () => {
+    await rule('required', 'Carry the statutory warning.');
+    const { runCheck, checkFrame } = await import('../src/server/brain/checker');
+
+    const check = await runCheck(mm, { fileId: (await uploadVideo()).id });
+
+    for (let n = 1; n <= check.video!.framesAt.length; n += 1) {
+      const frame = await checkFrame(mm, check.id, n);
+      assert.ok(frame, `frame ${n} was not kept`);
+      assert.equal(frame[0], 0xff, 'not a JPEG');
+      const { loadImage } = await import('@napi-rs/canvas');
+      const image = await loadImage(frame);
+      assert.ok(Math.max(image.width, image.height) <= 480, 'kept at full size');
+    }
+    assert.equal(await checkFrame(mm, check.id, check.video!.framesAt.length + 1), null);
+    assert.equal(await checkFrame(nh, check.id, 1), null, "another company saw this company's frame");
+    assert.equal(await checkFrame(mm, check.id, 0), null);
+  });
+
   it('does not search the frames when no rule forbids anything', async () => {
     await rule('required', 'Carry the statutory warning.');
     const { runCheck } = await import('../src/server/brain/checker');

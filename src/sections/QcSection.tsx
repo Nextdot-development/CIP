@@ -310,7 +310,7 @@ export function QcSection({
 
   return (
     <>
-      <div className="page-head">
+      <div className="page-head no-print">
         <p className="eyebrow">Creative QC</p>
         <h1>Check it before it goes out</h1>
         <p className="lede">
@@ -322,7 +322,7 @@ export function QcSection({
 
       {/* What the verdict will rest on, said before anything is judged rather
           than left to be inferred from a clean report. */}
-      <div className="card pad" style={{ marginBottom: 16 }}>
+      <div className="card pad no-print" style={{ marginBottom: 16 }}>
         <p className="tiny muted" style={{ marginBottom: 6 }}>
           What CIP is judging against{brand ? `, for ${brand}` : ''}
         </p>
@@ -517,126 +517,102 @@ export function QcSection({
   );
 }
 
-/**
- * What a video's verdict rests on: the moments looked at, and the words heard.
- *
- * A clean verdict on every shot and a clean verdict on a sample that skipped
- * three of them look identical otherwise, and so do "nothing was said" and
- * "nobody could hear it". The transcript is shown in full because it is the
- * part most likely to be wrong, and a reviewer can only catch a mishearing by
- * reading it.
- */
-function VideoNote({ video }: { video: NonNullable<Report['check']['video']> }) {
-  const heard =
-    video.heardStatus === 'heard'
-      ? null
-      : video.heardStatus === 'nothing_said'
-        ? 'It has sound, but no speech CIP could make out.'
-        : video.heardStatus === 'no_audio'
-          ? 'It has no sound.'
-          : 'Its sound could not be transcribed, so the voiceover was not checked. Listen to it yourself.';
-
-  return (
-    <div className="tiny muted" style={{ marginTop: 8 }}>
-      <p>
-        Watched {video.framesAt.length} moments from {video.shots} shot{video.shots === 1 ? '' : 's'}
-        {' '}({video.framesAt.map((t) => `${t.toFixed(1)}s`).join(', ')}).
-        {video.complete ? ' Every shot was looked at.' : ' Some short shots did not fit and were not looked at.'}
-      </p>
-      {heard ? (
-        <p style={{ marginTop: 4 }}>{heard}</p>
-      ) : (
-        <details style={{ marginTop: 4 }}>
-          <summary>
-            What CIP heard{video.heardLanguage ? ` (as ${video.heardLanguage})` : ''} (automatic, can mishear)
-          </summary>
-          <p style={{ marginTop: 4, whiteSpace: 'pre-wrap' }}>{video.heard}</p>
-        </details>
-      )}
-      {video.onScreen ? (
-        video.onScreen.some((text) => text.length > 0) && (
-          <details style={{ marginTop: 4 }}>
-            <summary>What CIP read on screen (each frame at full size)</summary>
-            <ul style={{ marginTop: 4, paddingLeft: 16 }}>
-              {video.onScreen.map((text, i) =>
-                text ? (
-                  <li key={i} style={{ whiteSpace: 'pre-wrap' }}>
-                    <strong>{(video.framesAt[i] ?? 0).toFixed(1)}s</strong> — {text}
-                  </li>
-                ) : null,
-              )}
-            </ul>
-          </details>
-        )
-      ) : (
-        <p style={{ marginTop: 4 }}>
-          The text on the frames could not be read at full size, so small print was judged from the thumbnails.
-        </p>
-      )}
-      {video.timeline && (
-        <details style={{ marginTop: 4 }}>
-          <summary>How long each line of text was on screen (read every {video.timeline.step}s)</summary>
-          {video.timeline.spans.length === 0 ? (
-            <p style={{ marginTop: 4 }}>No text was on screen at any of those moments.</p>
-          ) : (
-            <ul style={{ marginTop: 4, paddingLeft: 16 }}>
-              {video.timeline.spans.map((span, i) => (
-                <li key={i}>
-                  &ldquo;{span.text}&rdquo; — {span.shown.map((s) => `${s.from.toFixed(0)}–${s.to.toFixed(0)}s`).join(', ')}
-                  {' '}<strong>({span.seconds}s of {video.durationSeconds.toFixed(0)}s)</strong>
-                </li>
-              ))}
-            </ul>
-          )}
-        </details>
-      )}
-      {video.closePass && (
-        <p style={{ marginTop: 4 }}>
-          {video.closePass.status === 'done'
-            ? `Searched all ${video.closePass.frames} frames at full size for anything a rule forbids` +
-              (video.closePass.found > 0 ? ` and found ${video.closePass.found} thing${video.closePass.found === 1 ? '' : 's'} to look at.` : ', and found nothing.')
-            : 'The frames could not be searched at full size, so forbidden things were looked for on the thumbnails only.'}
-        </p>
-      )}
-      {video.secondLook && <SecondLookNote look={video.secondLook} />}
-    </div>
-  );
+/** 83.4 seconds as "1:23". */
+function clock(seconds: number): string {
+  const whole = Math.max(0, Math.floor(seconds));
+  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`;
 }
 
 /**
- * What the closer look at a video's findings did.
- *
- * A flag it threw out is listed with what it saw, so a reviewer who thinks it
- * was right to be raised can watch that moment and raise it themselves.
+ * What a video's verdict rests on, in one line - and, on their own lines,
+ * only the things a reviewer must know because they weaken it. Everything
+ * else (the transcript, the text read, the timings, the flags thrown out) is
+ * one click away rather than a wall of text above the flags.
  */
-function SecondLookNote({ look }: { look: SecondLook }) {
-  if (look.status === 'failed') {
-    return (
-      <p style={{ marginTop: 4 }}>
-        The flags could not be looked at again close up, so every one of them is shown as first found.
-      </p>
-    );
-  }
-  const kept = look.reviewed - look.dropped.length;
+function VideoNote({ video }: { video: NonNullable<Report['check']['video']> }) {
+  const sound =
+    video.heardStatus === 'heard'
+      ? `voiceover heard${video.heardLanguage ? ` (${video.heardLanguage})` : ''}`
+      : video.heardStatus === 'nothing_said'
+        ? 'no speech'
+        : video.heardStatus === 'no_audio'
+          ? 'no sound'
+          : null;
+  const facts = [
+    `${clock(video.durationSeconds)} film`,
+    `${video.shots} shot${video.shots === 1 ? '' : 's'}, ${video.framesAt.length} frames`,
+    sound,
+    video.closePass?.status === 'done' ? 'every frame searched full size' : null,
+    video.secondLook?.status === 'done' && video.secondLook.dropped.length > 0
+      ? `${video.secondLook.dropped.length} false flag${video.secondLook.dropped.length === 1 ? '' : 's'} removed`
+      : null,
+  ].filter(Boolean);
+
+  // Only what makes a clean result less trustworthy.
+  const caveats = [
+    !video.complete && 'Some short shots were not looked at.',
+    video.heardStatus === 'failed' && 'Sound could not be transcribed — listen to it yourself.',
+    video.onScreen === null && 'Small print was read from thumbnails only.',
+    video.closePass?.status === 'failed' && 'Frames were not searched at full size.',
+    video.secondLook?.status === 'failed' && 'Flags were not double-checked.',
+    video.secondLook && video.secondLook.unsure > 0 &&
+      `${video.secondLook.unsure} flag${video.secondLook.unsure === 1 ? '' : 's'} uncertain — watch ${video.secondLook.unsure === 1 ? 'that moment' : 'those moments'}.`,
+  ].filter((c): c is string => typeof c === 'string');
+
+  const read = video.onScreen?.map((text, i) => ({ text, at: video.framesAt[i] ?? 0 })).filter((r) => r.text) ?? [];
+
   return (
-    <div style={{ marginTop: 4 }}>
-      <p>
-        Looked again, close up, at {look.reviewed} flag{look.reviewed === 1 ? '' : 's'}: {kept} held
-        {look.dropped.length > 0 ? `, ${look.dropped.length} turned out wrong and ${look.dropped.length === 1 ? 'was' : 'were'} removed` : ''}
-        {look.unsure > 0 ? `. ${look.unsure} could not be settled — watch ${look.unsure === 1 ? 'that moment' : 'those moments'} yourself` : ''}.
+    <div className="qc-video">
+      <p className="qc-video-line">
+        <Icon name="video" size={13} /> {facts.join(' · ')}
       </p>
-      {look.dropped.length > 0 && (
-        <details style={{ marginTop: 4 }}>
-          <summary>Removed on a closer look</summary>
-          <ul style={{ marginTop: 4, paddingLeft: 16 }}>
-            {look.dropped.map((d, i) => (
-              <li key={i}>
-                {d.message} <em>— {d.reason}</em>
-              </li>
-            ))}
-          </ul>
-        </details>
-      )}
+      {caveats.map((c) => (
+        <p key={c} className="qc-video-caveat">
+          <Icon name="alert" size={13} /> {c}
+        </p>
+      ))}
+      <details className="qc-video-more">
+        <summary>Details</summary>
+        {video.heardStatus === 'heard' && video.heard && (
+          <div className="qc-video-block">
+            <p className="qc-video-head">Voiceover (automatic, can mishear)</p>
+            <p style={{ whiteSpace: 'pre-wrap' }}>{video.heard}</p>
+          </div>
+        )}
+        {read.length > 0 && (
+          <div className="qc-video-block">
+            <p className="qc-video-head">Text on screen</p>
+            <ul>
+              {read.map((r, i) => (
+                <li key={i}><strong>{clock(r.at)}</strong> {r.text.replace(/\s*\n\s*/g, ' / ')}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {video.timeline && video.timeline.spans.length > 0 && (
+          <div className="qc-video-block">
+            <p className="qc-video-head">How long each line stayed up</p>
+            <ul>
+              {video.timeline.spans.map((span, i) => (
+                <li key={i}>
+                  <strong>{span.seconds}s</strong> {span.text}{' '}
+                  <span className="muted">({span.shown.map((x) => `${clock(x.from)}–${clock(x.to)}`).join(', ')})</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {video.secondLook && video.secondLook.dropped.length > 0 && (
+          <div className="qc-video-block">
+            <p className="qc-video-head">Removed on a closer look</p>
+            <ul>
+              {video.secondLook.dropped.map((d, i) => (
+                <li key={i}>{d.message} <span className="muted">— {d.reason}</span></li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </details>
     </div>
   );
 }
@@ -674,6 +650,16 @@ function Deck({
               ? `${queries.length} page${queries.length === 1 ? '' : 's'} worth a look`
               : 'Nothing to fix'}
         </p>
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm no-print"
+          style={{ float: 'right' }}
+          // The browser's own "Save as PDF": the report as it is on screen,
+          // without the page around it. See the print rules in check.css.
+          onClick={() => window.print()}
+        >
+          <Icon name="download" size={14} /> Download PDF
+        </button>
         <p className="tiny muted">
           {judged.length} creative{judged.length === 1 ? '' : 's'} checked · {clean} clean
           {queries.length > 0 ? ` · ${queries.length} to review` : ''}
@@ -754,10 +740,12 @@ function QcReport({
       )}
 
       {report.mustFix.length > 0 && (
-        <FlagList title="Fix these" tone="tone-stop" flags={report.mustFix} />
+        <FlagList title="Fix these" tone="tone-stop" flags={report.mustFix}
+          checkId={report.check.id} framesAt={report.check.video?.framesAt ?? []} />
       )}
       {report.toReview.length > 0 && (
-        <FlagList title="Worth a look" tone="tone-warn" flags={report.toReview} />
+        <FlagList title="Worth a look" tone="tone-warn" flags={report.toReview}
+          checkId={report.check.id} framesAt={report.check.video?.framesAt ?? []} />
       )}
 
       {report.passed.length > 0 && (
@@ -782,32 +770,72 @@ function QcReport({
   );
 }
 
-function FlagList({ title, tone, flags }: { title: string; tone: string; flags: CheckFlag[] }) {
+function FlagList({
+  title, tone, flags, checkId, framesAt,
+}: {
+  title: string;
+  tone: string;
+  flags: CheckFlag[];
+  checkId: string;
+  /** For a video: when each kept frame was taken, so a flag's moment finds its picture. */
+  framesAt: number[];
+}) {
   return (
     <div style={{ marginTop: 18 }}>
-      <p className={`qc-list-title ${tone}`}>{title}</p>
+      <p className={`qc-list-title ${tone}`}>{title} · {flags.length}</p>
       <ul className="qc-flags">
-        {flags.map((flag) => (
-          <li key={flag.id} className={`is-${flag.severity}`}>
-            <p className="qc-flag-message">{flag.message}</p>
-            {flag.atSeconds.length > 0 && (
-              <p className="tiny muted">
-                At {flag.atSeconds.map((t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`).join(', ')}
-              </p>
-            )}
-            {/* What it was judged against. A finding with nothing here would
-                have been thrown away before it reached this screen. */}
-            {flag.citedRule && (
-              <p className="tiny muted">Rule: {flag.citedRule.rule}</p>
-            )}
-            {flag.citedFact && (
-              <p className="tiny muted">
-                {flag.citedFact.brand ? `${flag.citedFact.brand} usually — ` : 'This brand usually — '}
-                {flag.citedFact.attribute}: {flag.citedFact.value}
-              </p>
-            )}
-          </li>
-        ))}
+        {flags.map((flag) => {
+          // A flag names moments; the kept frame for each is the one taken then.
+          const shots = flag.atSeconds.slice(0, 3).map((t) => ({
+            t,
+            n: framesAt.findIndex((f) => Math.abs(f - t) < 0.05) + 1,
+          }));
+          // What it was judged against. A finding with nothing here would
+          // have been thrown away before it reached this screen.
+          const against = flag.citedRule
+            ? flag.citedRule.rule
+            : flag.citedFact
+              ? `${flag.citedFact.brand ?? 'This brand'} usually — ${flag.citedFact.attribute}: ${flag.citedFact.value}`
+              : null;
+          return (
+            <li key={flag.id} className={`is-${flag.severity}`}>
+              <div className="qc-flag-body">
+                <p className="qc-flag-message">{flag.message}</p>
+                {against && (
+                  <p className="qc-flag-rule" title={against}>
+                    {flag.citedRule ? 'Rule' : 'Pattern'}: {against}
+                  </p>
+                )}
+              </div>
+              {shots.length > 0 && (
+                <div className="qc-flag-frames">
+                  {shots.map(({ t, n }) =>
+                    n > 0 ? (
+                      <a
+                        key={t}
+                        href={`/api/brain/checks/${checkId}/frames/${n}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        title={`Open the frame at ${clock(t)}`}
+                      >
+                        <img
+                          src={`/api/brain/checks/${checkId}/frames/${n}`}
+                          alt={`The frame at ${clock(t)}`}
+                          loading="lazy"
+                          // An older check kept no pictures; its time still says where.
+                          onError={(event) => { event.currentTarget.style.display = 'none'; }}
+                        />
+                        <span>{clock(t)}</span>
+                      </a>
+                    ) : (
+                      <span key={t} className="qc-flag-time">{clock(t)}</span>
+                    ),
+                  )}
+                </div>
+              )}
+            </li>
+          );
+        })}
       </ul>
     </div>
   );

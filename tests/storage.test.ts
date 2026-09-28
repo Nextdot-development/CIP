@@ -56,6 +56,21 @@ describe('storage keys', () => {
     assert.equal(key, 'companies/11111111-1111-1111-1111-111111111111/33333333-3333-3333-3333-333333333333.pdf');
     assert.doesNotThrow(() => storage.assertSafeKey(key));
   });
+
+  it('keeps a video check frame under its company and check, numbered 1 to 99 only', () => {
+    const company = '11111111-1111-1111-1111-111111111111';
+    const check = '44444444-4444-4444-4444-444444444444';
+    assert.doesNotThrow(() => storage.assertSafeKey(storage.checkFrameKeyFor(company, check, 1)));
+    assert.doesNotThrow(() => storage.assertSafeKey(storage.checkFrameKeyFor(company, check, 99)));
+    for (const bad of [
+      `companies/${company}/check-frames/${check}/0.jpg`,
+      `companies/${company}/check-frames/${check}/100.jpg`,
+      `companies/${company}/check-frames/${check}/../x.jpg`,
+      `companies/${company}/check-frames/not-a-check/1.jpg`,
+    ]) {
+      assert.throws(() => storage.assertSafeKey(bad), /unexpected storage key/i, `accepted "${bad}"`);
+    }
+  });
 });
 
 describe('local disk driver', () => {

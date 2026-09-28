@@ -572,6 +572,19 @@ const REVIEW_SCHEMA = {
   },
 } as const;
 
+/**
+ * How a finding is worded. Short, because a reviewer reads a dozen of them;
+ * without the rule, because the rule is printed beside each one; and with the
+ * fix, because that is what they do next.
+ */
+const MESSAGE_STYLE =
+  'Write each message as a crisp one-liner of at most 12 words: what is wrong and where, and ' +
+  'the fix when it is not obvious. Do not restate or quote the rule - it is shown beside the ' +
+  'message - and do not explain why it matters. Good: "No \'Drink Responsibly\' line anywhere." ' +
+  '"Logo bottom-right on end card; move top-right." "Headline not in capitals." ' +
+  '"Smirnoff bottle on back shelf, frame 5." Bad: "Ghana requirement missing: the creative does ' +
+  'not display the required ...".\n\n';
+
 /** Frames read in one call. More, and which text belongs to which frame blurs. */
 const FRAMES_PER_READ = 6;
 
@@ -1075,8 +1088,11 @@ export class OpenAIBrainProvider implements BrainProvider {
           'consistently does something. note is minor. A rule marked "observed" is what the ' +
           'brand has usually done, not what it must do, so departing from one is never ' +
           'critical.\n\n' +
-          'Each message says what is wrong in plain language a reviewer can act on. If ' +
-          'nothing is wrong, return no findings - an empty list is a real answer.\n\n' +
+          // A reviewer reads a dozen of these. The rule is printed beside each
+          // one, so a message that restates it is the same thing said twice.
+          MESSAGE_STYLE +
+          'Write summary as one short sentence. If nothing is wrong, return no findings - an ' +
+          'empty list is a real answer.\n\n' +
           (input.sequence
             ? 'For each finding, list in frames the numbers of the frames it is about - ' +
               'where the forbidden thing is, or where the missing thing should have been. ' +
@@ -1375,7 +1391,8 @@ export class OpenAIBrainProvider implements BrainProvider {
             ? `These brands all belong to this same company, and none is a competitor: ${input.houseBrands.join(', ')}.\n\n`
             : '') +
           'Severity: critical when a forbidden thing is plainly present, warning when it probably ' +
-          'is, note when it is borderline. Each message says what is where, in plain words.\n\n' +
+          'is, note when it is borderline.\n\n' +
+          MESSAGE_STYLE +
           `Rules:\n${rules}`,
       },
     ];
@@ -1418,7 +1435,7 @@ export class OpenAIBrainProvider implements BrainProvider {
           'A missed fault is far worse than a wrong one. Reject only when the evidence in front ' +
           'of you shows the finding is wrong, never because you cannot see the fault yourself in ' +
           'the frames given - something missing from the whole film cannot be seen in a frame. ' +
-          'Say in reason what you saw, in one sentence a reviewer can check.\n\n' +
+          'Say in reason what you saw, in at most 12 words a reviewer can check.\n\n' +
           `Findings:\n${findings}\n\n` +
           `Text read off each frame:\n${input.onScreen || '(none read)'}\n\n` +
           `Soundtrack: ${input.heard}`,
