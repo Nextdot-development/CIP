@@ -181,6 +181,9 @@ describe('a video becomes one sheet of its shots', () => {
       assert.ok(sheet.sequence.at.some((t) => t > 7), 'the last shot');
       assert.ok(sheet.sequence.at.at(-1)! >= 11, 'the end card');
       assert.equal(sheet.sequence.heard.status, 'failed');
+      // The same frames at full size, for reading small print and looking again.
+      assert.deepEqual(sheet.frames.map((f) => f.atSeconds), sheet.sequence.at);
+      assert.ok(sheet.frames.every((f) => f.bytes.byteLength > 0));
       assert.equal(await tempArtefactsRemaining(), before, 'nothing left behind in the temp directory');
     } finally {
       if (saved !== undefined) process.env.OPENAI_API_KEY = saved;

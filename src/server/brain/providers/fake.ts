@@ -20,6 +20,11 @@ import type {
   IdeationResult,
   TranscribeInput,
   Transcription,
+  FrameReading,
+  ReadFramesInput,
+  ReviewAnalysis,
+  ReviewInput,
+  ReviewVerdict,
   DocumentInput,
   MarketDocumentInput,
   MarketReading,
@@ -55,7 +60,7 @@ export class FakeBrainProvider implements BrainProvider {
   /** Set by tests to exercise a failure path. */
   failWith: BrainFailed | null = null;
   /** Counts calls, so idempotency can be proved rather than assumed. */
-  calls = { image: 0, frames: 0, document: 0, pdfPage: 0, feedback: 0, brief: 0, check: 0, identify: 0, market: 0, chat: 0, ideas: 0, ocr: 0 };
+  calls = { image: 0, frames: 0, document: 0, pdfPage: 0, feedback: 0, brief: 0, check: 0, identify: 0, market: 0, chat: 0, ideas: 0, ocr: 0, frameText: 0, review: 0 };
 
   /**
    * What the next checks report. Null means a clean pass.
@@ -70,6 +75,17 @@ export class FakeBrainProvider implements BrainProvider {
   checkAssetKind: AssetKind | null = null;
   /** The last check's input, so a test can see what the Brain was given. */
   lastCheckInput: CheckInput | null = null;
+  /** What each video frame says, in order. Null: no frame has any text. */
+  frameTexts: string[] | null = null;
+  /** Set to make reading the frames fail, as a network error would. */
+  frameReadFails = false;
+  /**
+   * What the second look says about each finding, by its position. Null: it
+   * confirms every one, which is what an honest first look deserves.
+   */
+  reviewVerdicts: ReviewVerdict['verdict'][] | null = null;
+  /** The last second look's input. */
+  lastReviewInput: ReviewInput | null = null;
 
   /**
    * What the next market readings report. Null means: every sentence in the
@@ -110,11 +126,15 @@ export class FakeBrainProvider implements BrainProvider {
     this.checkFindings = null;
     this.checkAssetKind = null;
     this.lastCheckInput = null;
+    this.frameTexts = null;
+    this.frameReadFails = false;
+    this.reviewVerdicts = null;
+    this.lastReviewInput = null;
     this.identified = null;
     this.marketSignals = null;
     this.chatAnswer = null;
     this.lastChatInput = null;
-    this.calls = { image: 0, frames: 0, document: 0, pdfPage: 0, feedback: 0, brief: 0, check: 0, identify: 0, market: 0, chat: 0, ideas: 0, ocr: 0 };
+    this.calls = { image: 0, frames: 0, document: 0, pdfPage: 0, feedback: 0, brief: 0, check: 0, identify: 0, market: 0, chat: 0, ideas: 0, ocr: 0, frameText: 0, review: 0 };
   }
 
   private check(): void {
@@ -509,6 +529,29 @@ export class FakeBrainProvider implements BrainProvider {
           groundedIn: [source.ref],
         }));
     return { concepts, usage: { durationMs: 1 } };
+  }
+
+  async readFrames(input: ReadFramesInput): Promise<FrameReading> {
+    this.calls.frameText += 1;
+    this.check();
+    if (this.frameReadFails) {
+      throw new BrainFailed('PROVIDER_ERROR', 'transient', 'Reading the frames failed.');
+    }
+    return { texts: input.frames.map((_, i) => this.frameTexts?.[i] ?? ''), usage: { durationMs: 1 } };
+  }
+
+  async reviewFindings(input: ReviewInput): Promise<ReviewAnalysis> {
+    this.calls.review += 1;
+    this.check();
+    this.lastReviewInput = input;
+    return {
+      verdicts: input.findings.map((finding, i) => ({
+        id: finding.id,
+        verdict: this.reviewVerdicts?.[i] ?? 'confirmed',
+        reason: `Looked again at "${finding.message}".`,
+      })),
+      usage: { durationMs: 1 },
+    };
   }
 
   async transcribePage(input: TranscribeInput): Promise<Transcription> {

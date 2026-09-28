@@ -33,6 +33,12 @@ export type ContactSheet = {
   bytes: Buffer;
   mimeType: 'image/jpeg';
   sequence: VideoSequence;
+  /**
+   * The same frames at full size, in the same order. The sheet is for seeing
+   * the film whole; these are for reading its small print and for looking
+   * again, close up, at whatever the check found.
+   */
+  frames: SampledFrame[];
 };
 
 export async function videoContactSheet(
@@ -130,6 +136,7 @@ async function layOut(
   return {
     bytes: canvas.toBuffer('image/jpeg', 88),
     mimeType: 'image/jpeg',
+    frames,
     sequence: {
       ...video,
       at: frames.map((f) => f.atSeconds),

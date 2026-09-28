@@ -34,6 +34,7 @@ import type {
   MarketSignalDraft,
   FeedbackAnalysis,
   FeedbackInput,
+  FrameReading,
   FramesInput,
   GenerationBrief,
   ImageInput,
@@ -41,6 +42,10 @@ import type {
   PdfPageInput,
   PdfPost,
   ProposedRule,
+  ReadFramesInput,
+  ReviewAnalysis,
+  ReviewInput,
+  ReviewVerdict,
   VideoSequence,
 } from './types';
 
@@ -419,12 +424,15 @@ const CHECK_SCHEMA = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['ref', 'dimension', 'severity', 'message'],
+        required: ['ref', 'dimension', 'severity', 'message', 'frames'],
         properties: {
           ref: { type: 'string' },
           dimension: { type: 'string', enum: ['visual', 'verbal', 'compliance'] },
           severity: { type: 'string', enum: ['critical', 'warning', 'note'] },
           message: { type: 'string' },
+          // For a video, which frames the finding is about, so it can be
+          // looked at again close up. Empty for a single picture.
+          frames: { type: 'array', items: { type: 'integer' } },
         },
       },
     },
@@ -521,6 +529,50 @@ const IDEAS_SCHEMA = {
 } as const;
 
 /** The words on a page, and nothing else. */
+const FRAME_TEXT_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['frames'],
+  properties: {
+    frames: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['frame', 'text'],
+        properties: {
+          frame: { type: 'integer' },
+          text: { type: 'string' },
+        },
+      },
+    },
+  },
+} as const;
+
+const REVIEW_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['verdicts'],
+  properties: {
+    verdicts: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['id', 'verdict', 'reason'],
+        properties: {
+          id: { type: 'string' },
+          verdict: { type: 'string', enum: ['confirmed', 'rejected', 'unsure'] },
+          reason: { type: 'string' },
+        },
+      },
+    },
+  },
+} as const;
+
+/** Frames read in one call. More, and which text belongs to which frame blurs. */
+const FRAMES_PER_READ = 6;
+
 const TRANSCRIPT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
@@ -1023,6 +1075,11 @@ export class OpenAIBrainProvider implements BrainProvider {
           'critical.\n\n' +
           'Each message says what is wrong in plain language a reviewer can act on. If ' +
           'nothing is wrong, return no findings - an empty list is a real answer.\n\n' +
+          (input.sequence
+            ? 'For each finding, list in frames the numbers of the frames it is about - ' +
+              'where the forbidden thing is, or where the missing thing should have been. ' +
+              'Leave it empty only when it is about the film as a whole.\n\n'
+            : 'Leave frames empty: this is a single picture.\n\n') +
           `Rules:\n${rules || '(none)'}`,
       },
       {
@@ -1032,6 +1089,13 @@ export class OpenAIBrainProvider implements BrainProvider {
         image_url: { url: dataUri(input.mimeType, input.bytes), detail: 'high' },
       },
     ];
+
+    for (const closeUp of input.closeUps ?? []) {
+      content.push(
+        { type: 'text', text: `\n${closeUp.label}` },
+        { type: 'image_url', image_url: { url: dataUri(closeUp.mimeType, closeUp.bytes), detail: 'high' } },
+      );
+    }
 
     /**
      * The approved pack, after the creative and clearly labelled as such.
@@ -1223,6 +1287,126 @@ export class OpenAIBrainProvider implements BrainProvider {
 
     const { parsed, usage } = await this.call<{ text: string }>(content, TRANSCRIPT_SCHEMA, 'page_transcript', 10_000);
     return { text: typeof parsed.text === 'string' ? parsed.text.trim() : '', usage };
+  }
+
+  async readFrames(input: ReadFramesInput): Promise<FrameReading> {
+    const texts: string[] = input.frames.map(() => '');
+    let durationMs = 0;
+    let inputTokens = 0;
+    let outputTokens = 0;
+
+    // The batches are independent, so they are read side by side: a video
+    // check already spends most of its time waiting on calls.
+    const starts: number[] = [];
+    for (let start = 0; start < input.frames.length; start += FRAMES_PER_READ) starts.push(start);
+    const read = async (start: number) => {
+      const batch = input.frames.slice(start, start + FRAMES_PER_READ);
+      const content: Content[] = [
+        {
+          type: 'text',
+          text:
+            `These are ${batch.length} frames from a video named "${input.filename}", each labelled ` +
+            'with its number and time.\n\n' +
+            'For each frame, transcribe every piece of text visible in it, exactly as written. This is ' +
+            'OCR: copy it, do not interpret it.\n' +
+            '- Include the small print: statutory and health warnings, age lines, disclaimers, legal ' +
+            'lines, hashtags, handles, prices. These matter most.\n' +
+            '- Include text on packs, labels and signs in the scene.\n' +
+            '- Keep the original language and spelling. Do not translate or correct.\n' +
+            '- Put separate pieces of text on separate lines.\n' +
+            '- Write [illegible] for a word you cannot read, and [partly visible] after text that ' +
+            'is cut off or still animating on.\n' +
+            '- A frame with no text gets an empty string. Never describe the picture.\n' +
+            'Return one entry per frame, with the frame number it is labelled with.',
+        },
+      ];
+      batch.forEach((frame, i) => {
+        content.push(
+          { type: 'text', text: `Frame ${start + i + 1} (${frame.atSeconds.toFixed(1)}s):` },
+          { type: 'image_url', image_url: { url: dataUri(frame.mimeType, frame.bytes), detail: 'high' } },
+        );
+      });
+
+      return { start, batch, ...(await this.call<{ frames: { frame: number; text: string }[] }>(
+        content,
+        FRAME_TEXT_SCHEMA,
+        'frame_text',
+        4_000,
+      )) };
+    };
+
+    for (const { start, batch, parsed, usage } of await Promise.all(starts.map(read))) {
+      durationMs = Math.max(durationMs, usage.durationMs ?? 0);
+      inputTokens += usage.inputTokens ?? 0;
+      outputTokens += usage.outputTokens ?? 0;
+      // Placed by the number it was labelled with, and only inside this
+      // batch: a frame number outside it is a misreading, not a frame.
+      for (const entry of Array.isArray(parsed.frames) ? parsed.frames : []) {
+        const index = Number(entry.frame) - 1;
+        if (index >= start && index < start + batch.length && typeof entry.text === 'string') {
+          texts[index] = entry.text.trim().slice(0, 1_000);
+        }
+      }
+    }
+
+    return { texts, usage: { durationMs, inputTokens, outputTokens } };
+  }
+
+  async reviewFindings(input: ReviewInput): Promise<ReviewAnalysis> {
+    const findings = input.findings
+      .map((f) => `${f.id} [${f.severity}] Rule: ${f.rule}\n   Found: ${f.message}`)
+      .join('\n');
+
+    const content: Content[] = [
+      {
+        type: 'text',
+        text:
+          `A first check of the video "${input.filename}"` +
+          (input.brand ? ` for ${input.brand}` : '') +
+          ' looked at small thumbnails of its frames and reported the findings below. You now ' +
+          'have the frames at full size, the text read off every frame, and what the soundtrack ' +
+          'says. Decide, for each finding, whether it is really there.\n\n' +
+          '- confirmed: what you can now see or read shows the finding is right.\n' +
+          '- rejected: what you can now see or read plainly shows it is wrong - the required ' +
+          'thing is there after all (in a frame, in the text read off the frames, or in the ' +
+          'soundtrack where the rule allows it to be spoken), or the forbidden thing is not ' +
+          'what it was taken for.\n' +
+          '- unsure: neither. A person should look.\n\n' +
+          'A missed fault is far worse than a wrong one. Reject only when the evidence in front ' +
+          'of you shows the finding is wrong, never because you cannot see the fault yourself in ' +
+          'the frames given - something missing from the whole film cannot be seen in a frame. ' +
+          'Say in reason what you saw, in one sentence a reviewer can check.\n\n' +
+          `Findings:\n${findings}\n\n` +
+          `Text read off each frame:\n${input.onScreen || '(none read)'}\n\n` +
+          `Soundtrack: ${input.heard}`,
+      },
+    ];
+    for (const frame of input.frames) {
+      content.push(
+        { type: 'text', text: frame.label },
+        { type: 'image_url', image_url: { url: dataUri(frame.mimeType, frame.bytes), detail: 'high' } },
+      );
+    }
+
+    const { parsed, usage } = await this.call<{ verdicts: ReviewVerdict[] }>(
+      content,
+      REVIEW_SCHEMA,
+      'finding_review',
+      2_000,
+    );
+    const verdicts = (Array.isArray(parsed.verdicts) ? parsed.verdicts : []).filter(
+      (v) =>
+        typeof v.id === 'string' &&
+        (v.verdict === 'confirmed' || v.verdict === 'rejected' || v.verdict === 'unsure'),
+    );
+    return {
+      verdicts: verdicts.map((v) => ({
+        id: v.id,
+        verdict: v.verdict,
+        reason: typeof v.reason === 'string' ? v.reason.trim().slice(0, 300) : '',
+      })),
+      usage,
+    };
   }
 
   private async call<T>(
@@ -1562,7 +1746,29 @@ function videoSheetNote(sequence: VideoSequence): string {
     'on can look misspelt. Do not ignore it - it may be a real error - but report it as ' +
     'a note that names the frame and says it may be mid-animation, so a person watches ' +
     'that moment rather than rejecting the film for it.\n\n' +
+    onScreenNote(sequence) +
     heardNote(sequence.heard)
+  );
+}
+
+/**
+ * The words on each frame, read at full size before the check.
+ *
+ * On the sheet the statutory warning is a few pixels tall. Read off the frame
+ * itself it is a line of text, and that is what "is the warning there" turns
+ * on. Where the frames could not be read, the model is told so rather than
+ * given nothing, so it does not take silence for "no text".
+ */
+function onScreenNote(sequence: VideoSequence): string {
+  if (!sequence.onScreen) return '';
+  const lines = sequence.onScreen
+    .map((text, i) => `frame ${i + 1} (${(sequence.at[i] ?? 0).toFixed(1)}s): ${text ? text.replace(/\s*\n\s*/g, ' / ') : '(no text)'}`)
+    .join('\n');
+  return (
+    'The text on each frame was read beforehand, from the frame at full size - far ' +
+    'sharper than this sheet. Where the sheet is too small to read, trust this. A ' +
+    'required line that appears here is present.\n' +
+    `${lines}\n\n`
   );
 }
 

@@ -11,9 +11,17 @@ import { marketsCovering } from './markets';
 import { productShots } from './retrieval';
 import { fitForVision } from './fitImage';
 import { videoContactSheet } from './contactSheet';
+import type { SampledFrame } from './media';
 import { brain } from './providers';
 import { ANALYSABLE_VIDEO_TYPES, BRAIN_LIMITS, BrainFailed } from './providers/types';
-import type { AssetKind, CheckDimension, CheckFinding, CheckRule, VideoSequence } from './providers/types';
+import type {
+  AssetKind,
+  BrainProvider,
+  CheckDimension,
+  CheckFinding,
+  CheckRule,
+  VideoSequence,
+} from './providers/types';
 
 /**
  * The Consistency & Compliance Checker.
@@ -86,6 +94,8 @@ export type CheckFlag = {
   status: 'open' | 'accepted' | 'disputed';
   disputeReason: 'exception' | 'wrong_rule' | null;
   correction: string | null;
+  /** For a video: the moments it is about, in seconds. Empty for the whole film. */
+  atSeconds: number[];
 };
 
 export type CreativeCheck = {
@@ -134,6 +144,25 @@ export type VideoCheck = {
   complete: boolean;
   heardStatus: 'heard' | 'nothing_said' | 'no_audio' | 'failed';
   heard: string | null;
+  /** The words read off each frame at full size, in order. Null when they could not be read. */
+  onScreen: string[] | null;
+  /** What the closer look at the findings decided. Null when there was nothing to look at. */
+  secondLook: SecondLook | null;
+};
+
+/**
+ * The closer look at a video's findings, kept beside the verdict.
+ *
+ * A flag the second look threw out is not silently gone: it is listed with
+ * what was seen, so a reviewer who disagrees can watch that moment.
+ */
+export type SecondLook = {
+  status: 'done' | 'failed';
+  /** How many findings were looked at again. */
+  reviewed: number;
+  /** Findings kept, but which the closer look could not settle either way. */
+  unsure: number;
+  dropped: { rule: string; message: string; reason: string }[];
 };
 
 /**
@@ -231,8 +260,10 @@ type RefTarget =
 export function groundFindings(
   findings: CheckFinding[],
   refs: Map<string, RefTarget>,
-): (CheckFinding & { target: RefTarget })[] {
-  const kept = new Map<string, CheckFinding & { target: RefTarget }>();
+  /** Frames on a video's sheet. A frame number outside them is not a frame. */
+  frameCount = 0,
+): (CheckFinding & { target: RefTarget; frames: number[] })[] {
+  const kept = new Map<string, CheckFinding & { target: RefTarget; frames: number[] }>();
 
   for (const raw of findings) {
     const ref = typeof raw.ref === 'string' ? raw.ref.trim() : '';
@@ -264,6 +295,10 @@ export function groundFindings(
     if (target.kind === 'rule' && target.permits) continue;
     if (target.kind === 'rule' && target.soft) severity = 'note';
 
+    const frames = [...new Set((Array.isArray(raw.frames) ? raw.frames : []).map(Number))]
+      .filter((n) => Number.isInteger(n) && n >= 1 && n <= frameCount)
+      .sort((a, b) => a - b);
+
     const finding = {
       ref,
       // The dimension comes from what the ref is, never from what the model
@@ -272,12 +307,17 @@ export function groundFindings(
       severity,
       message,
       target,
+      frames,
     };
 
-    // One flag per rule, the most severe of whatever was said about it.
+    // One flag per rule, the most severe of whatever was said about it, and
+    // every frame anything said about it pointed at.
     const existing = kept.get(ref);
     if (!existing || SEVERITY_RANK[severity] > SEVERITY_RANK[existing.severity]) {
-      kept.set(ref, finding);
+      const union = existing ? [...new Set([...existing.frames, ...frames])].sort((a, b) => a - b) : frames;
+      kept.set(ref, { ...finding, frames: union });
+    } else {
+      existing.frames = [...new Set([...existing.frames, ...frames])].sort((a, b) => a - b);
     }
   }
 
@@ -391,6 +431,8 @@ async function resolveSubject(
   fromDocument: boolean;
   /** Set when the image is a video laid out frame by frame. */
   sequence?: VideoSequence | null;
+  /** The sheet's frames at full size, in order. */
+  frames?: SampledFrame[];
 }> {
   const fileId = input.fileId?.trim() || null;
   const generationId = input.generationId?.trim() || null;
@@ -467,6 +509,7 @@ async function resolveSubject(
         market: file.market,
         fromDocument: false,
         sequence: sheet.sequence,
+        frames: sheet.frames,
       };
     }
 
@@ -516,6 +559,147 @@ async function resolveSubject(
     brand: briefs[0]?.brand ?? null,
     market: briefs[0]?.market ?? null,
   };
+}
+
+/** Frames looked at again, at most. Past this each close-up costs more than it settles. */
+const MAX_CLOSE_UPS = 6;
+
+/**
+ * The words on every frame, read at full size. Null when they could not be
+ * read - the check goes on from the sheet, as it did before, and the model is
+ * not told there is no text when nobody looked.
+ */
+async function readOnScreen(
+  provider: BrainProvider,
+  filename: string,
+  frames: SampledFrame[],
+): Promise<string[] | null> {
+  try {
+    const fitted = await Promise.all(frames.map((f) => fitForVision(f.bytes, f.mimeType)));
+    const reading = await provider.readFrames({
+      filename,
+      frames: fitted.map((f, i) => ({ bytes: f.bytes, mimeType: f.mimeType, atSeconds: frames[i]!.atSeconds })),
+    });
+    return frames.map((_, i) => reading.texts[i] ?? '');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A second look at a video's findings, close up.
+ *
+ * The first look saw a dozen thumbnails on one sheet, where a health warning is
+ * a smudge and "missing" and "too small to read" look the same. Every finding
+ * that would cost the film anything - critical or warning - is held up against
+ * its own frames at full size, the text read off every frame, and the
+ * soundtrack.
+ *
+ * Only a plain "this is wrong" removes a finding. "Not sure" keeps it, and so
+ * does a second look that fails: a missed fault goes out to the public, a
+ * wrong flag only costs a reviewer a minute. What was removed is kept, with the
+ * reason, so the reviewer can see it and disagree.
+ */
+export async function lookAgain<F extends { ref: string; severity: CheckFinding['severity']; message: string; frames: number[] }>(
+  provider: BrainProvider,
+  input: {
+    filename: string;
+    brand: string | null;
+    findings: F[];
+    rules: Map<string, CheckRule>;
+    frames: SampledFrame[];
+    video: VideoSequence;
+  },
+): Promise<{ kept: F[]; secondLook: SecondLook | null }> {
+  const serious = input.findings.filter((f) => f.severity !== 'note');
+  if (serious.length === 0) return { kept: input.findings, secondLook: null };
+
+  // The frames the findings point at, then the end card, then an even spread
+  // for findings about the film as a whole.
+  const count = input.frames.length;
+  const wanted: number[] = [];
+  const add = (n: number) => {
+    if (n >= 1 && n <= count && !wanted.includes(n) && wanted.length < MAX_CLOSE_UPS) wanted.push(n);
+  };
+  serious.forEach((f) => f.frames.forEach(add));
+  add(count);
+  for (let i = 0; i < MAX_CLOSE_UPS && wanted.length < MAX_CLOSE_UPS; i += 1) {
+    add(1 + Math.round((i * (count - 1)) / Math.max(1, MAX_CLOSE_UPS - 1)));
+  }
+  wanted.sort((a, b) => a - b);
+
+  const heard =
+    input.video.heard.status === 'heard'
+      ? input.video.heard.text
+      : input.video.heard.status === 'nothing_said'
+        ? '(it has sound, but nothing is said)'
+        : input.video.heard.status === 'no_audio'
+          ? '(it has no sound)'
+          : '(the soundtrack could not be transcribed; what is said is unknown)';
+  const onScreen = input.video.onScreen
+    ? input.video.onScreen
+        .map((text, i) => `frame ${i + 1} (${(input.video.at[i] ?? 0).toFixed(1)}s): ${text || '(no text)'}`)
+        .join('\n')
+    : '';
+
+  const ruleText = (ref: string): string => {
+    const rule = input.rules.get(ref);
+    if (!rule) return ref;
+    let line = `${rule.kind ?? rule.requirement}: ${rule.statement}`;
+    if (rule.allowed && rule.allowed.length > 0) line += ` (allows: ${rule.allowed.join(', ')})`;
+    if (rule.prohibited && rule.prohibited.length > 0) line += ` (forbids: ${rule.prohibited.join(', ')})`;
+    return line;
+  };
+
+  let verdicts;
+  try {
+    const closeUps = await Promise.all(
+      wanted.map(async (n) => {
+        const frame = input.frames[n - 1]!;
+        const fitted = await fitForVision(frame.bytes, frame.mimeType);
+        return {
+          bytes: fitted.bytes,
+          mimeType: fitted.mimeType,
+          label: `Frame ${n} (${frame.atSeconds.toFixed(1)}s)${n === count ? ', the end card' : ''}:`,
+        };
+      }),
+    );
+    const review = await provider.reviewFindings({
+      filename: input.filename,
+      brand: input.brand,
+      findings: serious.map((f) => ({
+        id: f.ref,
+        rule: ruleText(f.ref),
+        severity: f.severity,
+        message: f.frames.length > 0 ? `${f.message} (frames ${f.frames.join(', ')})` : f.message,
+      })),
+      frames: closeUps,
+      onScreen,
+      heard,
+    });
+    verdicts = new Map(review.verdicts.map((v) => [v.id, v]));
+  } catch {
+    return {
+      kept: input.findings,
+      secondLook: { status: 'failed', reviewed: 0, unsure: 0, dropped: [] },
+    };
+  }
+
+  const dropped: SecondLook['dropped'] = [];
+  let unsure = 0;
+  const kept = input.findings.filter((f) => {
+    if (f.severity === 'note') return true;
+    const verdict = verdicts.get(f.ref);
+    if (verdict?.verdict === 'rejected') {
+      dropped.push({ rule: input.rules.get(f.ref)?.statement ?? f.ref, message: f.message, reason: verdict.reason });
+      return false;
+    }
+    // No answer about it is not an answer: it stays.
+    if (!verdict || verdict.verdict === 'unsure') unsure += 1;
+    return true;
+  });
+
+  return { kept, secondLook: { status: 'done', reviewed: serious.length, unsure, dropped } };
 }
 
 /**
@@ -667,10 +851,28 @@ export async function runCheck(
   );
   const checkId = created[0]!.id;
 
-  const video = subject.sequence ?? null;
+  const frames = subject.frames ?? [];
+  let video = subject.sequence ?? null;
 
   let analysis;
+  let closeUps: { bytes: Buffer; mimeType: string; label: string }[] = [];
   try {
+    if (video && frames.length > 0) {
+      video = { ...video, onScreen: await readOnScreen(provider, subject.subject, frames) };
+      // The end card again, at full size: on the sheet it is one thumbnail
+      // among a dozen, and it carries the warning, the logo and the pack.
+      const end = frames.at(-1)!;
+      const fittedEnd = await fitForVision(end.bytes, end.mimeType);
+      closeUps = [{
+        bytes: fittedEnd.bytes,
+        mimeType: fittedEnd.mimeType,
+        label:
+          `The next image is frame ${frames.length} (${end.atSeconds.toFixed(1)}s), the end card, ` +
+          'at full size. It is the same frame as the last one on the sheet - judge its small ' +
+          'print from here.',
+      }];
+    }
+
     const fitted = await fitForVision(subject.bytes, subject.mimeType);
     analysis = await provider.checkCreative({
       bytes: fitted.bytes,
@@ -682,7 +884,8 @@ export async function runCheck(
       houseBrands: (await companyBrands(scope)).map((b) => b.name),
       references: await packReferences(scope, brand),
       fromDocument: subject.fromDocument,
-      sequence: subject.sequence ?? null,
+      sequence: video,
+      closeUps,
     });
   } catch (error) {
     const failure =
@@ -698,7 +901,24 @@ export async function runCheck(
     throw failure;
   }
 
-  const grounded = groundFindings(analysis.findings, refs);
+  let grounded = groundFindings(analysis.findings, refs, frames.length);
+
+  // A video's findings were made from thumbnails. Each one that would cost the
+  // film anything is looked at again, close up, before it is reported.
+  let secondLook: SecondLook | null = null;
+  if (video && frames.length > 0 && analysis.assetKind === 'creative') {
+    const looked = await lookAgain(provider, {
+      filename: subject.subject,
+      brand,
+      findings: grounded,
+      rules: new Map(sent.map((r) => [r.ref, r])),
+      frames,
+      video,
+    });
+    grounded = looked.kept;
+    secondLook = looked.secondLook;
+  }
+
   const scores = scoreFrom(grounded, judged);
 
   let summary = analysis.summary.slice(0, 600) || null;
@@ -718,11 +938,12 @@ export async function runCheck(
     for (const finding of grounded) {
       await tx`
         insert into check_flags
-          (company_id, check_id, dimension, severity, message, fact_id, rule_id)
+          (company_id, check_id, dimension, severity, message, fact_id, rule_id, at_seconds)
         values
           (${scope.companyId}, ${checkId}, ${finding.dimension}, ${finding.severity}, ${finding.message},
            ${finding.target.kind === 'fact' ? finding.target.id : null},
-           ${finding.target.kind === 'rule' ? finding.target.id : null})
+           ${finding.target.kind === 'rule' ? finding.target.id : null},
+           ${finding.frames.map((n) => frames[n - 1]!.atSeconds)}::real[])
       `;
     }
     await tx`
@@ -739,6 +960,8 @@ export async function runCheck(
              video_complete = ${video ? video.complete : null}::boolean,
              heard = ${video?.heard.status === 'heard' ? video.heard.text : null}::text,
              heard_status = ${video?.heard.status ?? null}::text,
+             video_text = ${video?.onScreen ?? null}::text[],
+             second_look = ${secondLook ? tx.json(secondLook) : null},
              completed_at = now()
        where id = ${checkId} and company_id = ${scope.companyId}
     `;
@@ -754,6 +977,8 @@ type VideoColumns = {
   video_complete: boolean | null;
   heard: string | null;
   heard_status: VideoCheck['heardStatus'] | null;
+  video_text: string[] | null;
+  second_look: SecondLook | null;
 };
 
 function videoOf(row: VideoColumns): VideoCheck | null {
@@ -765,6 +990,8 @@ function videoOf(row: VideoColumns): VideoCheck | null {
     complete: row.video_complete ?? true,
     heardStatus: row.heard_status,
     heard: row.heard,
+    onScreen: row.video_text,
+    secondLook: row.second_look,
   };
 }
 
@@ -786,7 +1013,8 @@ export async function getCheck(scope: CompanyScope, checkId: string): Promise<Cr
              c.score, c.visual_score, c.verbal_score, c.compliance_score, c.summary,
              c.facts_considered, c.rules_considered, c.error_message, c.created_at,
              c.asset_kind, c.detected_product, c.detected_confidence, c.detected_evidence,
-             c.video_seconds, c.video_shots, c.video_frames, c.video_complete, c.heard, c.heard_status
+             c.video_seconds, c.video_shots, c.video_frames, c.video_complete, c.heard, c.heard_status,
+             c.video_text, c.second_look
         from creative_checks c
         left join drive_files f on f.id = c.file_id and f.company_id = c.company_id
        where c.id = ${checkId} and c.company_id = ${scope.companyId}
@@ -799,11 +1027,12 @@ export async function getCheck(scope: CompanyScope, checkId: string): Promise<Cr
       fact_id: string | null; fact_attribute: string | null; fact_value: string | null; fact_brand: string | null;
       rule_id: string | null; rule_text: string | null; rule_source: RuleSource | null; rule_url: string | null;
       status: CheckFlag['status']; dispute_reason: CheckFlag['disputeReason']; correction: string | null;
+      at_seconds: number[] | null;
     }[]>`
       select g.id, g.dimension, g.severity, g.message,
              g.fact_id, b.attribute as fact_attribute, b.value as fact_value, b.brand as fact_brand,
              g.rule_id, r.rule as rule_text, r.source as rule_source, r.reference_url as rule_url,
-             g.status, g.dispute_reason, g.correction
+             g.status, g.dispute_reason, g.correction, g.at_seconds
         from check_flags g
         left join brand_dna_facts b on b.id = g.fact_id and b.company_id = g.company_id
         left join compliance_rules r on r.id = g.rule_id and r.company_id = g.company_id
@@ -852,6 +1081,7 @@ export async function getCheck(scope: CompanyScope, checkId: string): Promise<Cr
           : null,
         status: g.status,
         disputeReason: g.dispute_reason,
+        atSeconds: (g.at_seconds ?? []).map(Number),
         correction: g.correction,
       })),
     };
@@ -877,7 +1107,8 @@ export async function listChecks(
              c.score, c.visual_score, c.verbal_score, c.compliance_score, c.summary,
              c.facts_considered, c.rules_considered, c.error_message, c.created_at,
              c.asset_kind, c.detected_product, c.detected_confidence, c.detected_evidence,
-             c.video_seconds, c.video_shots, c.video_frames, c.video_complete, c.heard, c.heard_status
+             c.video_seconds, c.video_shots, c.video_frames, c.video_complete, c.heard, c.heard_status,
+             c.video_text, c.second_look
         from creative_checks c
         left join drive_files f on f.id = c.file_id and f.company_id = c.company_id
        where c.company_id = ${scope.companyId}

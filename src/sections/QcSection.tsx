@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
-import type { CheckFlag } from '@/server/brain/checker';
+import type { CheckFlag, SecondLook } from '@/server/brain/checker';
 
 /**
  * Creative QC.
@@ -50,6 +50,8 @@ type Report = {
       complete: boolean;
       heardStatus: 'heard' | 'nothing_said' | 'no_audio' | 'failed';
       heard: string | null;
+      onScreen: string[] | null;
+      secondLook: SecondLook | null;
     } | null;
   };
   verdict: 'pass' | 'fix' | 'review' | 'nothing_to_check' | 'not_a_creative';
@@ -546,6 +548,65 @@ function VideoNote({ video }: { video: NonNullable<Report['check']['video']> }) 
           <p style={{ marginTop: 4, whiteSpace: 'pre-wrap' }}>{video.heard}</p>
         </details>
       )}
+      {video.onScreen ? (
+        video.onScreen.some((text) => text.length > 0) && (
+          <details style={{ marginTop: 4 }}>
+            <summary>What CIP read on screen (each frame at full size)</summary>
+            <ul style={{ marginTop: 4, paddingLeft: 16 }}>
+              {video.onScreen.map((text, i) =>
+                text ? (
+                  <li key={i} style={{ whiteSpace: 'pre-wrap' }}>
+                    <strong>{(video.framesAt[i] ?? 0).toFixed(1)}s</strong> — {text}
+                  </li>
+                ) : null,
+              )}
+            </ul>
+          </details>
+        )
+      ) : (
+        <p style={{ marginTop: 4 }}>
+          The text on the frames could not be read at full size, so small print was judged from the thumbnails.
+        </p>
+      )}
+      {video.secondLook && <SecondLookNote look={video.secondLook} />}
+    </div>
+  );
+}
+
+/**
+ * What the closer look at a video's findings did.
+ *
+ * A flag it threw out is listed with what it saw, so a reviewer who thinks it
+ * was right to be raised can watch that moment and raise it themselves.
+ */
+function SecondLookNote({ look }: { look: SecondLook }) {
+  if (look.status === 'failed') {
+    return (
+      <p style={{ marginTop: 4 }}>
+        The flags could not be looked at again close up, so every one of them is shown as first found.
+      </p>
+    );
+  }
+  const kept = look.reviewed - look.dropped.length;
+  return (
+    <div style={{ marginTop: 4 }}>
+      <p>
+        Looked again, close up, at {look.reviewed} flag{look.reviewed === 1 ? '' : 's'}: {kept} held
+        {look.dropped.length > 0 ? `, ${look.dropped.length} turned out wrong and ${look.dropped.length === 1 ? 'was' : 'were'} removed` : ''}
+        {look.unsure > 0 ? `. ${look.unsure} could not be settled — watch ${look.unsure === 1 ? 'that moment' : 'those moments'} yourself` : ''}.
+      </p>
+      {look.dropped.length > 0 && (
+        <details style={{ marginTop: 4 }}>
+          <summary>Removed on a closer look</summary>
+          <ul style={{ marginTop: 4, paddingLeft: 16 }}>
+            {look.dropped.map((d, i) => (
+              <li key={i}>
+                {d.message} <em>— {d.reason}</em>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
     </div>
   );
 }
@@ -699,6 +760,11 @@ function FlagList({ title, tone, flags }: { title: string; tone: string; flags: 
         {flags.map((flag) => (
           <li key={flag.id} className={`is-${flag.severity}`}>
             <p className="qc-flag-message">{flag.message}</p>
+            {flag.atSeconds.length > 0 && (
+              <p className="tiny muted">
+                At {flag.atSeconds.map((t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`).join(', ')}
+              </p>
+            )}
             {/* What it was judged against. A finding with nothing here would
                 have been thrown away before it reached this screen. */}
             {flag.citedRule && (

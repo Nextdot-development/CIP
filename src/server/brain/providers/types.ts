@@ -466,6 +466,26 @@ export interface BrainProvider {
   checkCreative(input: CheckInput): Promise<CheckAnalysis>;
 
   /**
+   * The words on each frame of a video, read at full size.
+   *
+   * Copying, not judging - the same job as transcribePage. On a sheet of a
+   * dozen frames each one is a few hundred pixels wide, and the statutory
+   * warning is the smallest text in the film. Read here from the frames
+   * themselves, it reaches the checker as words it does not have to squint at.
+   */
+  readFrames(input: ReadFramesInput): Promise<FrameReading>;
+
+  /**
+   * A second, closer look at what a check found.
+   *
+   * Each finding is held up against the frames it is about, at full size, and
+   * against what was read and heard. The first look saw a sheet of thumbnails
+   * and could mistake a blurred word for a missing one; this one decides
+   * whether the finding is really there.
+   */
+  reviewFindings(input: ReviewInput): Promise<ReviewAnalysis>;
+
+  /**
    * Which brand a creative is for, read off the creative itself.
    *
    * Asked before the rules are fetched, because which rules apply depends on
@@ -643,6 +663,54 @@ export type IdeationResult = {
   usage: BrainUsage;
 };
 
+/** Frames of one video, in order, to read the words off. */
+export type ReadFramesInput = {
+  /** The display name only. Never a path, never an id. */
+  filename: string;
+  frames: { bytes: Buffer; mimeType: string; atSeconds: number }[];
+};
+
+export type FrameReading = {
+  /** One per frame, in the order sent. Empty where a frame has no text. */
+  texts: string[];
+  usage: BrainUsage;
+};
+
+/** Findings of a video check, and the close-ups to judge them from. */
+export type ReviewInput = {
+  /** The display name only. Never a path, never an id. */
+  filename: string;
+  brand: string | null;
+  findings: {
+    id: string;
+    /** The rule, as the checker read it: kind, statement, lists. */
+    rule: string;
+    severity: CheckFinding['severity'];
+    message: string;
+  }[];
+  /** Full-size frames, each labelled with its number and time. */
+  frames: { bytes: Buffer; mimeType: string; label: string }[];
+  /** Text read off every frame, in order, labelled. */
+  onScreen: string;
+  /** The soundtrack in words, or a line saying why there are none. */
+  heard: string;
+};
+
+export type ReviewVerdict = {
+  id: string;
+  /**
+   * confirmed: the close-up shows it. rejected: the close-up plainly shows
+   * it is wrong. unsure: neither, and a person should look.
+   */
+  verdict: 'confirmed' | 'rejected' | 'unsure';
+  reason: string;
+};
+
+export type ReviewAnalysis = {
+  verdicts: ReviewVerdict[];
+  usage: BrainUsage;
+};
+
 /** One page image to transcribe. */
 export type TranscribeInput = {
   bytes: Buffer;
@@ -743,6 +811,13 @@ export type CheckInput = {
    * frame alone - a warning on the end card is then "missing" from the rest.
    */
   sequence?: VideoSequence | null;
+  /**
+   * Parts of the creative shown again at full size, after the main image.
+   *
+   * For a video, the end card: the packshot, the logo and the statutory
+   * warning are on it, and on the sheet it is a thumbnail.
+   */
+  closeUps?: { bytes: Buffer; mimeType: string; label: string }[];
 };
 
 /** Frames of one video, side by side in order, and when each was taken. */
@@ -762,6 +837,11 @@ export type VideoSequence = {
     | { status: 'nothing_said' }
     | { status: 'no_audio' }
     | { status: 'failed' };
+  /**
+   * The words on each frame, read at full size, one per frame in order. Null
+   * when they could not be read, which is not the same as there being none.
+   */
+  onScreen?: string[] | null;
 };
 
 export type IdentifyInput = {
@@ -798,6 +878,8 @@ export type CheckFinding = {
   severity: 'critical' | 'warning' | 'note';
   /** Plain language a reviewer can act on. */
   message: string;
+  /** For a video: the frames it is about, numbered from 1. Empty for the whole film. */
+  frames?: number[];
 };
 
 /**

@@ -1076,6 +1076,136 @@ describe('THE CHECKER: a creative judged against the brand, and nothing else', (
     assert.ok(check.score !== null && check.score > 49, `an informational rule failed the creative at ${check.score}`);
   });
 
+  /** A real three-shot film with no sound, made by the bundled ffmpeg. */
+  async function uploadVideo(name = 'film.mp4') {
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    const { readFileSync } = await import('node:fs');
+    const ffmpeg = (await import('ffmpeg-static')).default!;
+    const out = join(tmpdir(), `cip-film-${crypto.randomUUID()}.mp4`);
+    await promisify(execFile)(ffmpeg, [
+      '-f', 'lavfi', '-i', 'color=c=red:s=320x568:d=2:r=10',
+      '-f', 'lavfi', '-i', 'color=c=blue:s=320x568:d=2:r=10',
+      '-f', 'lavfi', '-i', 'testsrc=s=320x568:d=2:r=10',
+      '-filter_complex', '[0:v][1:v][2:v]concat=n=3:v=1:a=0[v]',
+      '-map', '[v]', '-pix_fmt', 'yuv420p', '-y', out,
+    ], { timeout: 60_000 });
+    return drive.uploadFile(mm, { folderId: null, filename: name, mimeType: 'video/mp4', body: readFileSync(out) });
+  }
+
+  // On a sheet of a dozen frames the statutory warning is a few pixels tall,
+  // and "missing" and "too small to read" look the same to the checker.
+  it('reads the words off every frame at full size, and shows the end card close up', async () => {
+    await rule('required', 'Carry the statutory warning.');
+    fake.frameTexts = ['', '', 'CONSUME RESPONSIBLY. FOR 25+ ONLY'];
+    const { runCheck } = await import('../src/server/brain/checker');
+    const film = await uploadVideo();
+
+    const check = await runCheck(mm, { fileId: film.id });
+
+    const sent = fake.lastCheckInput!;
+    assert.equal(sent.sequence!.onScreen!.length, sent.sequence!.at.length, 'one reading per frame');
+    assert.ok(sent.sequence!.onScreen!.includes('CONSUME RESPONSIBLY. FOR 25+ ONLY'));
+    assert.equal(sent.closeUps!.length, 1, 'the end card was not shown close up');
+    assert.match(sent.closeUps![0]!.label, /end card/);
+    // Kept with the verdict, so a reviewer can read what CIP took it to say.
+    assert.ok(check.video!.onScreen!.includes('CONSUME RESPONSIBLY. FOR 25+ ONLY'));
+  });
+
+  it('checks from the sheet as before when the frames cannot be read', async () => {
+    await rule('required', 'Carry the statutory warning.');
+    fake.frameReadFails = true;
+    const { runCheck } = await import('../src/server/brain/checker');
+
+    const check = await runCheck(mm, { fileId: (await uploadVideo()).id });
+
+    assert.equal(check.status, 'ready');
+    // Unknown, not empty: "no text" would tell the checker the warning is missing.
+    assert.equal(check.video!.onScreen, null);
+    assert.equal(fake.lastCheckInput!.sequence!.onScreen, null);
+  });
+
+  // A flag raised from thumbnails is looked at again before it can fail a film.
+  it('drops a finding a closer look shows is wrong, and says why', async () => {
+    await rule('required', 'Carry the statutory warning.');
+    await rule('forbidden', 'Never show a person drinking.', 'regulation', null, 'other');
+    fake.checkFindings = [
+      { ref: 'R1', dimension: 'compliance', severity: 'critical', message: 'No statutory warning.', frames: [] },
+      { ref: 'R2', dimension: 'compliance', severity: 'critical', message: 'Someone is drinking.', frames: [2, 99] },
+    ];
+    // The warning was there all along, too small to read on the sheet.
+    fake.reviewVerdicts = ['rejected', 'confirmed'];
+    const { runCheck } = await import('../src/server/brain/checker');
+
+    const check = await runCheck(mm, { fileId: (await uploadVideo()).id });
+
+    assert.equal(check.flags.length, 1);
+    assert.equal(check.flags[0]!.message, 'Someone is drinking.');
+    // Frame 2 is a moment in the film; frame 99 was never on the sheet.
+    assert.equal(check.flags[0]!.atSeconds.length, 1);
+    assert.equal(check.flags[0]!.atSeconds[0], check.video!.framesAt[1]);
+
+    const look = check.video!.secondLook!;
+    assert.equal(look.status, 'done');
+    assert.equal(look.reviewed, 2);
+    assert.equal(look.dropped.length, 1);
+    assert.equal(look.dropped[0]!.message, 'No statutory warning.');
+    assert.ok(look.dropped[0]!.reason.length > 0, 'a dropped flag must say why');
+
+    // The frames a finding was about were among those looked at again.
+    const labels = fake.lastReviewInput!.frames.map((f) => f.label);
+    assert.ok(labels.some((l) => l.startsWith('Frame 2 ')), `frame 2 was not looked at again: ${labels}`);
+  });
+
+  it('keeps a finding the closer look cannot settle, and a note is never looked at again', async () => {
+    await rule('required', 'Carry the statutory warning.');
+    await rule('forbidden', 'Never show a person drinking.', 'regulation', null, 'other');
+    fake.checkFindings = [
+      { ref: 'R1', dimension: 'compliance', severity: 'critical', message: 'No statutory warning.', frames: [] },
+      { ref: 'R2', dimension: 'compliance', severity: 'note', message: 'A glass may be in shot.', frames: [1] },
+    ];
+    fake.reviewVerdicts = ['unsure'];
+    const { runCheck } = await import('../src/server/brain/checker');
+
+    const check = await runCheck(mm, { fileId: (await uploadVideo()).id });
+
+    assert.equal(check.flags.length, 2, 'an unsettled finding was dropped');
+    assert.equal(fake.lastReviewInput!.findings.length, 1, 'a note was sent for a second look');
+    assert.equal(check.video!.secondLook!.unsure, 1);
+  });
+
+  it('keeps every finding when the second look fails', async () => {
+    await rule('required', 'Carry the statutory warning.');
+    fake.checkFindings = [
+      { ref: 'R1', dimension: 'compliance', severity: 'critical', message: 'No statutory warning.', frames: [] },
+    ];
+    const { runCheck } = await import('../src/server/brain/checker');
+    const film = await uploadVideo();
+    const original = fake.reviewFindings.bind(fake);
+    fake.reviewFindings = async () => {
+      throw new Error('network down');
+    };
+    try {
+      const check = await runCheck(mm, { fileId: film.id });
+      assert.equal(check.flags.length, 1, 'a failed second look must never pass a film');
+      assert.equal(check.video!.secondLook!.status, 'failed');
+    } finally {
+      fake.reviewFindings = original;
+    }
+  });
+
+  it('does not look twice at a picture, only at a film', async () => {
+    await rule('required', 'Carry the statutory warning.');
+    fake.checkFindings = [
+      { ref: 'R1', dimension: 'compliance', severity: 'critical', message: 'No statutory warning.' },
+    ];
+    const check = await checkedImage();
+    assert.equal(fake.calls.review, 0);
+    assert.equal(fake.calls.frameText, 0);
+    assert.equal(check.video, null);
+    assert.deepEqual(check.flags[0]!.atSeconds, []);
+  });
+
   /** A rule of a stated kind, the way one kept from Chat with the Brain is written. */
   async function kindRule(
     kind: 'allowed' | 'preferred',
