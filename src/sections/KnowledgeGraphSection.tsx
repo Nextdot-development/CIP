@@ -85,6 +85,9 @@ type ForceGraphProps = {
   linkDirectionalParticleColor?: (link: SimLink) => string;
   linkCurvature?: number;
   autoPauseRedraw?: boolean;
+  linkDirectionalArrowLength?: number;
+  linkDirectionalArrowRelPos?: number;
+  linkDirectionalArrowColor?: (link: SimLink) => string;
   onEngineStop?: () => void;
   nodeCanvasObject?: (node: SimNode, ctx: CanvasRenderingContext2D, scale: number) => void;
   nodePointerAreaPaint?: (node: SimNode, color: string, ctx: CanvasRenderingContext2D) => void;
@@ -258,6 +261,89 @@ const FILE_ICON: Record<string, IconName> = {
   pptx: 'slides', ppt: 'slides', key: 'slides',
 };
 
+/**
+ * How the graph is filtered, drawn and laid out - Obsidian's graph settings,
+ * with Obsidian's names, so anyone who has used that panel knows this one.
+ *
+ * Kept in this browser like pinned nodes are: a preference about somebody's
+ * screen, not a fact about the company.
+ */
+type GraphSettings = {
+  /** How far the light, and an isolated cluster, reach from a node. */
+  depth: 1 | 2 | 3;
+  /** Whether nodes with no line to anything are drawn. */
+  orphans: boolean;
+  /** Below 0 names wait for a closer zoom; above 0 they appear from further out. */
+  textFade: number;
+  nodeSize: number;
+  linkThickness: number;
+  arrows: boolean;
+  /** The pull to the middle. */
+  centerForce: number;
+  /** How hard nodes push each other away. */
+  repelForce: number;
+  /** How hard a line pulls its two ends together. 0 leaves it to the library, which weighs busy nodes less. */
+  linkForce: number;
+  linkDistance: number;
+};
+
+/** The layout the portfolio was tuned to, and what Restore puts back. */
+const DEFAULT_SETTINGS: GraphSettings = {
+  depth: 1,
+  orphans: true,
+  textFade: 0,
+  nodeSize: 1,
+  linkThickness: 1,
+  arrows: false,
+  centerForce: 0.07,
+  repelForce: 520,
+  linkForce: 0,
+  linkDistance: 110,
+};
+
+const SETTINGS_KEY = 'cip.graph.settings.v1';
+
+function readSettings(): GraphSettings {
+  if (typeof window === 'undefined') return DEFAULT_SETTINGS;
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(SETTINGS_KEY) ?? '{}') as Partial<GraphSettings>;
+    return { ...DEFAULT_SETTINGS, ...saved };
+  } catch {
+    return DEFAULT_SETTINGS;
+  }
+}
+
+/** One of the panel's sliders: a name, its value as a person reads it, the track. */
+function SettingSlider({
+  label, value, min, max, step, shown, onChange,
+}: {
+  label: string; value: number; min: number; max: number; step: number;
+  shown: string; onChange: (value: number) => void;
+}) {
+  return (
+    <label className="gs-row">
+      <span className="gs-name">{label}<span className="gs-value">{shown}</span></span>
+      <input
+        type="range" min={min} max={max} step={step} value={value}
+        onChange={(event) => onChange(Number(event.target.value))}
+      />
+    </label>
+  );
+}
+
+/** One of the panel's switches. */
+function SettingSwitch({
+  label, on, onChange, hint,
+}: { label: string; on: boolean; onChange: (on: boolean) => void; hint?: string }) {
+  return (
+    <button type="button" className="gs-switch-row" role="switch" aria-checked={on} title={hint}
+      onClick={() => onChange(!on)}>
+      <span>{label}</span>
+      <i className={`gs-switch${on ? ' is-on' : ''}`} />
+    </button>
+  );
+}
+
 /** The chips along the top of the portfolio, in the order a reader wants them. */
 const GROUPS: { key: string; label: string; color: string }[] = [
   { key: 'brand', label: 'Brands', color: TYPE_COLOR.brand },
@@ -339,10 +425,32 @@ export function KnowledgeGraphSection({
 
   const savePin = useCallback((node: SimNode) => rememberPin(view, node), [view]);
 
-  /** How far the light spreads from what is pointed at: its neighbours, or theirs too. */
-  const [depth, setDepth] = useState<1 | 2>(1);
-  /** How far apart the graph is laid out. 1 is the tuned default. */
-  const [spacing, setSpacing] = useState(1);
+  /** Obsidian's graph settings: filters, display and forces. */
+  const [settings, setSettings] = useState<GraphSettings>(readSettings);
+  const tune = useCallback(<K extends keyof GraphSettings>(key: K, value: GraphSettings[K]) => {
+    setSettings((current) => ({ ...current, [key]: value }));
+  }, []);
+  const depth = settings.depth;
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+    } catch {
+      // Not kept past this visit; nothing else depends on it.
+    }
+  }, [settings]);
+  /** Whether the settings panel is open, and which of its sections are. */
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [openSections, setOpenSections] = useState<Set<string>>(() => new Set(['filters', 'display', 'forces']));
+  const toggleSection = (name: string) => setOpenSections((current) => {
+    const next = new Set(current);
+    if (next.has(name)) next.delete(name); else next.add(name);
+    return next;
+  });
+  /**
+   * Obsidian's Animate: the graph rebuilt one node at a time, so it can be
+   * watched growing. Null when not animating; otherwise how many are shown.
+   */
+  const [revealed, setRevealed] = useState<number | null>(null);
   /** Chips switched off: kinds of node not drawn at all. */
   const [hiddenGroups, setHiddenGroups] = useState<Set<string>>(() => new Set());
   /** A node whose neighbourhood is all that is drawn, when somebody isolates one. */
@@ -400,19 +508,25 @@ export function KnowledgeGraphSection({
     // file tree is hundreds of nodes and the same spacing would fling them
     // off the canvas.
     const roomy = view === 'brands';
-    handle.d3Force('charge')?.strength?.((roomy ? -520 : -260) * spacing);
-    handle.d3Force('link')?.distance?.((roomy ? 110 : 70) * spacing);
+    handle.d3Force('charge')?.strength?.(-settings.repelForce * (roomy ? 1 : 0.5));
+    handle.d3Force('link')?.distance?.(settings.linkDistance * (roomy ? 1 : 0.64));
+    // Left to the library unless somebody set it: its default weighs a line to
+    // a busy node less, which is what keeps a hub from swallowing its brands.
+    if (settings.linkForce > 0) handle.d3Force('link')?.strength?.(settings.linkForce);
     // Repulsion alone let thirty labelled nodes settle in a knot with every
     // name on top of the next. Collision gives each one room for its name.
-    handle.d3Force('collide', collide());
+    handle.d3Force('collide', collide(settings.nodeSize));
     // And a gentle pull to the middle, so a brand that shares nothing with
     // the others stays on screen instead of dragging the whole view out.
-    handle.d3Force('gravity', gravity(size.width / Math.max(1, size.height)));
+    handle.d3Force('gravity', gravity(size.width / Math.max(1, size.height), settings.centerForce));
     // The layout changes shape under new forces, so it is fitted again once it
     // settles rather than left framed for the one it replaced.
     hasFitted.current = false;
     handle.d3ReheatSimulation();
-  }, [graphReady, nodes.length, view, size.width, size.height, spacing]);
+  }, [
+    graphReady, nodes.length, view, size.width, size.height,
+    settings.repelForce, settings.linkDistance, settings.linkForce, settings.centerForce, settings.nodeSize,
+  ]);
 
   useEffect(() => {
     const wanted = nodes
@@ -679,12 +793,38 @@ export function KnowledgeGraphSection({
    * An edge with nothing at one end is not drawable anyway, so it is dropped
    * here rather than guessed at further in.
    */
+  /**
+   * The order Animate brings nodes in: the most connected brands first, then
+   * what they share, widest first - the portfolio assembling around its
+   * centre of gravity rather than in whatever order the rows came back.
+   */
+  const revealOrder = useMemo(() => {
+    const degree = new Map<string, number>();
+    for (const edge of visibleEdges) {
+      for (const end of [endId(edge.source as string), endId(edge.target as string)]) {
+        degree.set(end, (degree.get(end) ?? 0) + 1);
+      }
+    }
+    const rank = (n: SimNode) => (n.type === 'brand' ? 0 : n.type === 'trait' && n.dimension ? 1 : 2);
+    return [...nodes]
+      .sort((a, b) => rank(a) - rank(b) || (degree.get(b.id) ?? 0) - (degree.get(a.id) ?? 0))
+      .map((n) => n.id);
+  }, [nodes, visibleEdges]);
+
   const graphData = useMemo(() => {
-    let shown = nodes.filter((n) => !hiddenGroups.has(groupOf(n)));
+    const allowed = revealed === null ? null : new Set(revealOrder.slice(0, revealed));
+    let shown = nodes.filter((n) => !hiddenGroups.has(groupOf(n)) && (!allowed || allowed.has(n.id)));
     let present = new Set(shown.map((n) => n.id));
     let links = (visibleEdges as unknown as SimLink[]).filter(
       (edge) => present.has(endId(edge.source)) && present.has(endId(edge.target)),
     );
+    // Orphans: nodes nothing on screen connects to. Obsidian's switch, and the
+    // one that tidies away a brand that shares nothing with the rest.
+    if (!settings.orphans) {
+      const joined = new Set(links.flatMap((edge) => [endId(edge.source), endId(edge.target)]));
+      shown = shown.filter((n) => joined.has(n.id));
+      present = new Set(shown.map((n) => n.id));
+    }
     // Isolating a node draws its neighbourhood and nothing else, to the depth
     // the light reaches - the same set a hover would light.
     if (isolated && present.has(isolated)) {
@@ -693,7 +833,7 @@ export function KnowledgeGraphSection({
       links = links.filter((edge) => present.has(endId(edge.source)) && present.has(endId(edge.target)));
     }
     return { nodes: shown, links };
-  }, [nodes, visibleEdges, hiddenGroups, isolated, depth]);
+  }, [nodes, visibleEdges, hiddenGroups, isolated, depth, settings.orphans, revealed, revealOrder]);
 
   // Isolating a cluster or switching a kind off changes what is drawn, and the
   // view is fitted to the new shape once it settles - an isolated cluster left
@@ -704,7 +844,29 @@ export function KnowledgeGraphSection({
     hasFitted.current = false;
     const timer = window.setTimeout(() => fitView(), 120);
     return () => window.clearTimeout(timer);
-  }, [isolated, hiddenGroups, fitView]);
+  }, [isolated, hiddenGroups, settings.orphans, fitView]);
+
+  /**
+   * Plays Animate: every node hidden, then brought in a few at a time while
+   * the layout settles around them, and fitted once they are all back.
+   */
+  const animate = useCallback(() => {
+    if (revealed !== null) return;
+    const total = revealOrder.length;
+    const step = Math.max(1, Math.ceil(total / 45));
+    let shown = 0;
+    setRevealed(0);
+    const timer = window.setInterval(() => {
+      shown += step;
+      if (shown >= total) {
+        window.clearInterval(timer);
+        setRevealed(null);
+        window.setTimeout(() => fitView(800), 400);
+      } else {
+        setRevealed(shown);
+      }
+    }, 90);
+  }, [fitView, revealOrder.length, revealed]);
 
   const lit = useMemo(
     () => (focusId ? neighbourhood(focusId, graphData.links, depth) : new Set<string>()),
@@ -966,9 +1128,17 @@ export function KnowledgeGraphSection({
             }}
             linkWidth={(edge) => {
               const on = focusId !== null && (endId(edge.source) === focusId || endId(edge.target) === focusId);
-              if (on) return 1.8;
-              return edge.kind === 'resembles' ? 0.6 + 1.4 * (edge.score ?? 0) : 0.7;
+              const base = on ? 1.8 : edge.kind === 'resembles' ? 0.6 + 1.4 * (edge.score ?? 0) : 0.7;
+              return base * settings.linkThickness;
             }}
+            // Obsidian's arrows: which way a line runs - from a brand to what
+            // it shares, from a folder to what it holds.
+            linkDirectionalArrowLength={settings.arrows ? 5 : 0}
+            linkDirectionalArrowRelPos={0.72}
+            linkDirectionalArrowColor={(edge) =>
+              focusId !== null && lit.has(endId(edge.source)) && lit.has(endId(edge.target))
+                ? hexWithAlpha(farColor(edge), 0.9)
+                : 'rgba(200,200,215,0.35)'}
             nodeCanvasObject={(node, ctx, scale) => {
               drawNode(node, ctx, scale, {
                 focusId,
@@ -977,12 +1147,14 @@ export function KnowledgeGraphSection({
                 matches,
                 expanded,
                 images,
+                nodeSize: settings.nodeSize,
+                textFade: settings.textFade,
               });
             }}
             nodePointerAreaPaint={(node, color, ctx) => {
               ctx.fillStyle = color;
               ctx.beginPath();
-              ctx.arc(node.x ?? 0, node.y ?? 0, radiusFor(node) + 4, 0, 2 * Math.PI);
+              ctx.arc(node.x ?? 0, node.y ?? 0, radiusFor(node, settings.nodeSize) + 4, 0, 2 * Math.PI);
               ctx.fill();
             }}
           />
@@ -1016,25 +1188,90 @@ export function KnowledgeGraphSection({
             </div>
           )}
 
-          {view === 'brands' && (
-            <div className="graph-controls">
-              <span className="graph-control-label">Depth</span>
-              {([1, 2] as const).map((d) => (
-                <button key={d} type="button" className={depth === d ? 'is-on' : ''}
-                  title={d === 1 ? 'Light what is directly connected' : 'Light what those connect to as well'}
-                  onClick={() => setDepth(d)}>
-                  {d}
+          {/* Obsidian's graph settings, in the corner where Obsidian keeps
+              them: closed to a single button until wanted. */}
+          <div className={`graph-settings${settingsOpen ? ' is-open' : ''}`}>
+            <button type="button" className="gs-toggle" title="Graph settings"
+              aria-expanded={settingsOpen} onClick={() => setSettingsOpen((v) => !v)}>
+              <Icon name={settingsOpen ? 'close' : 'sliders'} size={16} />
+            </button>
+
+            {settingsOpen && (
+              <div className="gs-panel">
+                <section>
+                  <button type="button" className="gs-head" onClick={() => toggleSection('filters')}>
+                    <Icon name={openSections.has('filters') ? 'chevron-down' : 'chevron-right'} size={13} />
+                    Filters
+                  </button>
+                  {openSections.has('filters') && (
+                    <div className="gs-body">
+                      <SettingSlider label="Depth" value={settings.depth} min={1} max={3} step={1}
+                        shown={`${settings.depth}`} onChange={(v) => tune('depth', v as 1 | 2 | 3)} />
+                      <SettingSwitch label="Orphans" on={settings.orphans}
+                        hint="Nodes nothing on screen connects to"
+                        onChange={(v) => tune('orphans', v)} />
+                      {(groupCounts.get('shared') ?? 0) > 0 && (
+                        <SettingSwitch label="Untyped shared traits" on={!hiddenGroups.has('shared')}
+                          hint="Things brands share that CIP cannot name a kind for"
+                          onChange={(v) => setHiddenGroups((current) => {
+                            const next = new Set(current);
+                            if (v) next.delete('shared'); else next.add('shared');
+                            return next;
+                          })} />
+                      )}
+                    </div>
+                  )}
+                </section>
+
+                <section>
+                  <button type="button" className="gs-head" onClick={() => toggleSection('display')}>
+                    <Icon name={openSections.has('display') ? 'chevron-down' : 'chevron-right'} size={13} />
+                    Display
+                  </button>
+                  {openSections.has('display') && (
+                    <div className="gs-body">
+                      <SettingSwitch label="Arrows" on={settings.arrows} onChange={(v) => tune('arrows', v)} />
+                      <SettingSlider label="Text fade threshold" value={settings.textFade} min={-1} max={1} step={0.1}
+                        shown={settings.textFade === 0 ? 'default' : settings.textFade > 0 ? 'more names' : 'fewer names'}
+                        onChange={(v) => tune('textFade', v)} />
+                      <SettingSlider label="Node size" value={settings.nodeSize} min={0.6} max={1.6} step={0.05}
+                        shown={`${Math.round(settings.nodeSize * 100)}%`} onChange={(v) => tune('nodeSize', v)} />
+                      <SettingSlider label="Link thickness" value={settings.linkThickness} min={0.3} max={3} step={0.1}
+                        shown={`${settings.linkThickness.toFixed(1)}×`} onChange={(v) => tune('linkThickness', v)} />
+                      <button type="button" className="gs-animate" disabled={revealed !== null} onClick={animate}>
+                        <Icon name="play" size={13} />
+                        {revealed !== null ? 'Building…' : 'Animate'}
+                      </button>
+                    </div>
+                  )}
+                </section>
+
+                <section>
+                  <button type="button" className="gs-head" onClick={() => toggleSection('forces')}>
+                    <Icon name={openSections.has('forces') ? 'chevron-down' : 'chevron-right'} size={13} />
+                    Forces
+                  </button>
+                  {openSections.has('forces') && (
+                    <div className="gs-body">
+                      <SettingSlider label="Center force" value={settings.centerForce} min={0} max={0.25} step={0.01}
+                        shown={settings.centerForce.toFixed(2)} onChange={(v) => tune('centerForce', v)} />
+                      <SettingSlider label="Repel force" value={settings.repelForce} min={80} max={1400} step={20}
+                        shown={`${settings.repelForce}`} onChange={(v) => tune('repelForce', v)} />
+                      <SettingSlider label="Link force" value={settings.linkForce} min={0} max={1} step={0.05}
+                        shown={settings.linkForce === 0 ? 'auto' : settings.linkForce.toFixed(2)}
+                        onChange={(v) => tune('linkForce', v)} />
+                      <SettingSlider label="Link distance" value={settings.linkDistance} min={40} max={280} step={5}
+                        shown={`${settings.linkDistance}`} onChange={(v) => tune('linkDistance', v)} />
+                    </div>
+                  )}
+                </section>
+
+                <button type="button" className="gs-restore" onClick={() => setSettings(DEFAULT_SETTINGS)}>
+                  Restore default settings
                 </button>
-              ))}
-              <span className="graph-control-sep" />
-              <span className="graph-control-label">Spacing</span>
-              <button type="button" title="Closer together" disabled={spacing <= 0.6}
-                onClick={() => setSpacing((v) => Math.max(0.6, +(v - 0.2).toFixed(1)))}>−</button>
-              <span className="graph-control-value">{Math.round(spacing * 100)}%</span>
-              <button type="button" title="Further apart" disabled={spacing >= 2}
-                onClick={() => setSpacing((v) => Math.min(2, +(v + 0.2).toFixed(1)))}>+</button>
-            </div>
-          )}
+              </div>
+            )}
+          </div>
 
           {isolated && nodeById.get(isolated) && (
             <div className="graph-isolated">
@@ -1446,10 +1683,10 @@ type NodeImage = CanvasImageSource & { width: number; height: number };
  * A brand is a badge with its logo in it, so it is drawn a good deal larger
  * than a dot has to be: a logo at the size of a dot is not a logo.
  */
-function radiusFor(node: SimNode): number {
-  if (node.type === 'brand') return Math.min(18 + Math.sqrt(node.weight) * 2.5, 28);
-  if (node.type === 'trait' && !node.dimension) return Math.min(2.5 + Math.sqrt(node.weight) * 1.1, 6);
-  return Math.min(3 + Math.sqrt(node.weight) * 1.9, 13);
+function radiusFor(node: SimNode, size = 1): number {
+  if (node.type === 'brand') return Math.min(18 + Math.sqrt(node.weight) * 2.5, 28) * size;
+  if (node.type === 'trait' && !node.dimension) return Math.min(2.5 + Math.sqrt(node.weight) * 1.1, 6) * size;
+  return Math.min(3 + Math.sqrt(node.weight) * 1.9, 13) * size;
 }
 
 /**
@@ -1461,8 +1698,8 @@ function radiusFor(node: SimNode): number {
  * width: "Royal Ranthambore" needs far more than "rum". Measured roughly, at
  * the size names are drawn when the graph is fitted to the screen.
  */
-function roomFor(node: SimNode): number {
-  const radius = radiusFor(node);
+function roomFor(node: SimNode, size = 1): number {
+  const radius = radiusFor(node, size);
   const name = (node.label ?? '').length;
   if (node.type === 'brand') return Math.max(radius + 22, name * 3.6 + 8);
   if (node.type === 'trait' && node.dimension) return Math.max(radius + 16, name * 3.2 + 6);
@@ -1477,7 +1714,7 @@ function roomFor(node: SimNode): number {
  * size these graphs are - a few dozen brands, a few hundred files - and saves
  * pulling in d3-force for the one function.
  */
-function collide(strength = 0.7) {
+function collide(size = 1, strength = 0.7) {
   let nodes: SimNode[] = [];
   const force = (alpha: number) => {
     for (let i = 0; i < nodes.length; i += 1) {
@@ -1486,7 +1723,7 @@ function collide(strength = 0.7) {
         const b = nodes[j]!;
         let dx = (b.x ?? 0) - (a.x ?? 0);
         let dy = (b.y ?? 0) - (a.y ?? 0);
-        const min = roomFor(a) + roomFor(b);
+        const min = roomFor(a, size) + roomFor(b, size);
         let d2 = dx * dx + dy * dy;
         if (d2 >= min * min) continue;
         if (d2 === 0) {
@@ -1686,6 +1923,8 @@ function drawNode(
     matches: Set<string>;
     expanded: Set<string>;
     images: Map<string, NodeImage>;
+    nodeSize: number;
+    textFade: number;
   },
 ): void {
   const x = node.x ?? 0;
@@ -1697,7 +1936,7 @@ function drawNode(
   const isSelected = state.selectedId === node.id;
   const isMatch = state.matches.has(node.id);
   const inLight = !focused || state.lit.has(node.id);
-  const radius = radiusFor(node) * (isFocus ? 1.25 : 1);
+  const radius = radiusFor(node, state.nodeSize) * (isFocus ? 1.25 : 1);
 
   ctx.globalAlpha = inLight || isMatch ? 1 : 0.1;
 
@@ -1755,7 +1994,10 @@ function drawNode(
 
   // With something lit, exactly its neighbourhood is named and nothing else.
   // Otherwise the zoom decides.
-  const opacity = focused ? (inLight ? 1 : 0) : Math.max(labelOpacity(node, scale), isSelected ? 1 : 0);
+  // The text fade threshold moves every kind's fade-in nearer or further, as
+  // if the graph were zoomed that much more or less.
+  const fadeScale = scale * Math.pow(2, state.textFade * 1.5);
+  const opacity = focused ? (inLight ? 1 : 0) : Math.max(labelOpacity(node, fadeScale), isSelected ? 1 : 0);
   if (opacity > 0.02) {
     const emphasis = node.type === 'brand' || isFocus;
     // Text grows as you zoom in, and more slowly than the graph does, so it

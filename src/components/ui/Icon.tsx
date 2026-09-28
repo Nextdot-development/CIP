@@ -10,7 +10,7 @@ export type IconName =
   | 'x' | 'signout'
   | 'drive' | 'folder' | 'folder-plus' | 'upload' | 'download' | 'trash'
   | 'restore' | 'music' | 'sheet' | 'slides' | 'search' | 'chevron-right' | 'dots'
-  | 'chat' | 'graph' | 'compass' | 'bars' | 'calendar';
+  | 'chat' | 'graph' | 'compass' | 'bars' | 'calendar' | 'sliders' | 'play';
 
 const P: Record<IconName, string> = {
   home: 'M3 10.2 12 3l9 7.2V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z',
@@ -63,6 +63,9 @@ const P: Record<IconName, string> = {
   compass: 'M12 3.8a8.2 8.2 0 1 0 0 16.4 8.2 8.2 0 0 0 0-16.4z M15 9l-2.2 4.6L9 15l2.2-4.6z',
   bars: 'M6 19v-6.5 M12 19V7.5 M18 19v-8.8',
   calendar: 'M6 5.6h12a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-10a2 2 0 0 1 2-2z M4 9.6h16 M8 3.6V7 M16 3.6V7',
+  // Three tracks, each with its knob: settings that are tuned rather than switched.
+  sliders: 'M4 7h8 M16 7h4 M4 17h3 M11 17h9 M4 12h12 M20 12h0 M14 5v4 M9 15v4 M18 10v4',
+  play: 'M8 5.5v13l10.5-6.5z',
   unlock: 'M7 10.5V8a5 5 0 0 1 9.6-2 M5.5 10.5h13a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1h-13a1 1 0 0 1-1-1v-8a1 1 0 0 1 1-1z',
 };
 
