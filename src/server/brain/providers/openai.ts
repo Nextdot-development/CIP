@@ -18,6 +18,7 @@ import type {
   CheckAnalysis,
   CheckFinding,
   CheckInput,
+  CheckRule,
   CreativeContext,
   IdentifyInput,
   ChatAnswer,
@@ -39,6 +40,7 @@ import type {
   PdfPageAnalysis,
   PdfPageInput,
   PdfPost,
+  ProposedRule,
   VideoSequence,
 } from './types';
 
@@ -468,11 +470,30 @@ const MARKET_SCHEMA = {
 const CHAT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['answer', 'citations', 'followUps'],
+  required: ['answer', 'citations', 'followUps', 'proposedRules'],
   properties: {
     answer: { type: 'string' },
     citations: { type: 'array', items: { type: 'string' } },
     followUps: { type: 'array', items: { type: 'string' } },
+    // Rules the person stated in their own message - never ones read off a
+    // source, which are already CIP's knowledge.
+    proposedRules: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['brand', 'market', 'kind', 'statement', 'allowed', 'prohibited', 'quote'],
+        properties: {
+          brand: { type: ['string', 'null'] },
+          market: { type: ['string', 'null'] },
+          kind: { type: 'string', enum: ['mandatory', 'prohibited', 'preferred', 'allowed'] },
+          statement: { type: 'string' },
+          allowed: { type: 'array', items: { type: 'string' } },
+          prohibited: { type: 'array', items: { type: 'string' } },
+          quote: { type: 'string' },
+        },
+      },
+    },
   },
 } as const;
 
@@ -800,8 +821,15 @@ export class OpenAIBrainProvider implements BrainProvider {
       sections.push(
         'Rules this creative will be judged against:\n' +
           input.complianceRules
-            .map((rule) => `- ${rule.requirement}: ${rule.rule}`)
+            .map((rule) => {
+              let line = `- ${rule.kind ?? rule.requirement}: ${rule.rule}`;
+              if (rule.allowed && rule.allowed.length > 0) line += ` (allows: ${rule.allowed.join(', ')})`;
+              if (rule.prohibited && rule.prohibited.length > 0) line += ` (forbids: ${rule.prohibited.join(', ')})`;
+              return line;
+            })
             .join('\n') +
+          '\n\nmandatory: must be in the creative. prohibited: must not be. preferred: do it unless ' +
+          'the request asks otherwise. allowed: an approved choice that may be used freely.' +
           '\n\nA required disclaimer has to be visible in the creative itself: say where the ' +
           'line sits and keep it clear of the product and the logo. A forbidden thing is ' +
           'only forbidden where it applies to what was asked for; do not drop the product ' +
@@ -937,9 +965,7 @@ export class OpenAIBrainProvider implements BrainProvider {
   }
 
   async checkCreative(input: CheckInput): Promise<CheckAnalysis> {
-    const rules = input.rules
-      .map((rule) => `${rule.ref} [${rule.dimension} - ${rule.requirement}] ${rule.statement}`)
-      .join('\n');
+    const rules = input.rules.map(describeRule).join('\n');
 
     const content: Content[] = [
       {
@@ -985,6 +1011,11 @@ export class OpenAIBrainProvider implements BrainProvider {
           'listed, and never report something you cannot see in the image itself - a rule ' +
           'about when an advert may be broadcast cannot be judged from a picture, so leave ' +
           'it out rather than guess.\n\n' +
+          'Each rule says what kind it is. mandatory: must be visibly present. prohibited: must ' +
+          'not appear. preferred: what the brand would rather see - departing from it is at most ' +
+          'a note. allowed: an approved choice - never report it as a fault and never require ' +
+          'it; it exists so that what it permits is not flagged. A rule may list what it allows ' +
+          'and what it forbids; the lists are the boundary.\n\n' +
           'Severity: critical is a required compliance element that is missing, or a ' +
           'forbidden one that is present. warning is a clear departure from how the brand ' +
           'consistently does something. note is minor. A rule marked "observed" is what the ' +
@@ -1098,13 +1129,28 @@ export class OpenAIBrainProvider implements BrainProvider {
             : '') +
           ' Keep it short - a few sentences or a short list. Suggest up to three follow-up questions these ' +
           'sources could answer.\n\n' +
+          // A brand team tells the Brain things as well as asking it. Those
+          // are proposed back as rules, for the person to keep or not.
+          'If their latest message states a rule for the brand\'s creative work - something that must ' +
+          'appear, must never appear, is preferred, or is approved and must not be flagged - put it in ' +
+          'proposedRules as one plain sentence a reviewer could check an image against. kind is ' +
+          'mandatory (must appear), prohibited (must never appear), preferred (should, but not required) ' +
+          'or allowed (approved; never a fault). Name the brand only from this list, or null for every ' +
+          `brand: ${input.brands.length > 0 ? input.brands.join(', ') : '(none)'}. market is null unless ` +
+          'they named one. List any things the rule names as permitted in allowed and as forbidden in ' +
+          'prohibited. quote is the exact words from their message the rule comes from, copied ' +
+          'character for character. A question, an opinion about one image, or something only in the ' +
+          'sources is not a rule: leave proposedRules empty. When you propose a rule, say in the answer ' +
+          'that it can be added to the QC rules below.\n\n' +
           (history ? `Conversation so far:\n${history}\n\n` : '') +
           `Sources:\n${sources || '(none - CIP has nothing stored that matches)'}\n\n` +
           `Question: ${input.question}`,
       },
     ];
 
-    const { parsed, usage } = await this.call<{ answer: string; citations: string[]; followUps: string[] }>(
+    const { parsed, usage } = await this.call<{
+      answer: string; citations: string[]; followUps: string[]; proposedRules: ProposedRule[];
+    }>(
       content,
       CHAT_SCHEMA,
       'brain_answer',
@@ -1115,6 +1161,9 @@ export class OpenAIBrainProvider implements BrainProvider {
       answer: typeof parsed.answer === 'string' ? parsed.answer.trim() : '',
       citations: Array.isArray(parsed.citations) ? parsed.citations.filter((c) => typeof c === 'string') : [],
       followUps: Array.isArray(parsed.followUps) ? parsed.followUps.filter((f) => typeof f === 'string') : [],
+      // Shape only; whether each is grounded in what was said is decided by
+      // the caller, which has the question and the roster.
+      proposedRules: Array.isArray(parsed.proposedRules) ? parsed.proposedRules : [],
       usage,
     };
   }
@@ -1549,4 +1598,18 @@ function heardNote(heard: VideoSequence['heard']): string {
         'judge only what is shown.\n\n'
       );
   }
+}
+
+/**
+ * One rule as the checker reads it: its ref, its kind and what it lists.
+ *
+ * The kind is said in words, because "[compliance - required] Tiger imagery is
+ * an approved association" told the model a permission was a requirement.
+ */
+function describeRule(rule: CheckRule): string {
+  const kind = rule.kind ?? rule.requirement;
+  let line = `${rule.ref} [${rule.dimension} - ${kind}] ${rule.statement}`;
+  if (rule.allowed && rule.allowed.length > 0) line += ` (allows: ${rule.allowed.join(', ')})`;
+  if (rule.prohibited && rule.prohibited.length > 0) line += ` (forbids: ${rule.prohibited.join(', ')})`;
+  return line;
 }

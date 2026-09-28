@@ -211,6 +211,13 @@ type RefTarget =
       requirement: 'required' | 'forbidden';
       /** A rule CIP suggested that no person has verified. It can warn; it cannot fail. */
       advisory?: boolean;
+      /**
+       * An approved choice. Nothing can break a permission, so a finding that
+       * cites one is the model misreading it and is dropped.
+       */
+      permits?: boolean;
+      /** A preference, not a requirement: departing from it is at most a note. */
+      soft?: boolean;
       /** How serious the rule's author said breaking it is. */
       graded?: CheckFinding['severity'];
     };
@@ -251,6 +258,11 @@ export function groundFindings(
     // A rule CIP suggested and no person has verified is a question, not a
     // ruling: it can raise a flag, but it cannot fail a creative on its own.
     if (target.kind === 'rule' && target.advisory && severity === 'critical') severity = 'warning';
+    // "The black logo is approved" cannot be broken. A flag citing it is the
+    // model reading a permission as a requirement, which is the flag the rule
+    // exists to prevent.
+    if (target.kind === 'rule' && target.permits) continue;
+    if (target.kind === 'rule' && target.soft) severity = 'note';
 
     const finding = {
       ref,
@@ -618,6 +630,8 @@ export async function runCheck(
       requirement: rule.requirement,
       advisory: rule.source === 'suggested' && rule.verifiedAt === null,
       graded: rule.ruleCode && rule.severity ? FROM_RULE[rule.severity] : undefined,
+      permits: rule.ruleType === 'allowed',
+      soft: rule.ruleType === 'preferred',
     });
     // Named, once more than one country's rules are in play: a West African
     // creative is judged against Ghana's rules and Nigeria's, and "the
@@ -627,6 +641,9 @@ export async function runCheck(
       dimension: 'compliance',
       requirement: rule.requirement,
       statement: rule.market ? `(${rule.market}) ${rule.rule}` : rule.rule,
+      kind: rule.ruleType,
+      allowed: rule.allowed ?? [],
+      prohibited: rule.prohibited ?? [],
     });
   });
 
@@ -1120,6 +1137,9 @@ export type BriefRule = {
   ruleType: RuleType;
   /** The country or region whose rule this is. Null for one that applies everywhere. */
   market: string | null;
+  /** Things the rule explicitly permits and forbids. */
+  allowed: string[];
+  prohibited: string[];
 };
 
 export type RuleSeverity = 'critical' | 'major' | 'minor' | 'informational';
@@ -1172,7 +1192,8 @@ export async function rulesForBrief(
   return withCompanyScope(scope, (tx) =>
     tx<BriefRule[]>`
       select id, rule, requirement, category, source, verified_at as "verifiedAt",
-             rule_code as "ruleCode", severity, rule_type as "ruleType", market
+             rule_code as "ruleCode", severity, rule_type as "ruleType", market,
+             allowed, prohibited
         from compliance_rules
        where company_id = ${scope.companyId}
          and active
@@ -1209,6 +1230,60 @@ export async function listRules(scope: CompanyScope): Promise<ComplianceRule[]> 
       active: r.active,
       verifiedAt: r.verified_at ? r.verified_at.toISOString() : null,
     }));
+  });
+}
+
+/**
+ * Keeps a rule a person stated, in the chat or anywhere else they say one.
+ *
+ * Verified as it is kept: the person who said it is the one confirming it, and
+ * a brand's own team saying "the black logo is approved" is the authority on
+ * that. Idempotent on the wording, brand and market, like every rule; saying it
+ * again refreshes it, and brings back a rule that had been retired.
+ */
+export async function addStatedRule(
+  scope: CompanyScope,
+  input: {
+    brand: string | null;
+    market: string | null;
+    kind: 'mandatory' | 'prohibited' | 'preferred' | 'allowed';
+    statement: string;
+    allowed: string[];
+    prohibited: string[];
+    note: string;
+  },
+): Promise<string> {
+  const rule = input.statement.trim().slice(0, 500);
+  if (rule.length === 0) throw new CheckRejected('A rule needs some words in it.');
+  const requirement = input.kind === 'prohibited' ? 'forbidden' : 'required';
+  const severity = { mandatory: 'major', prohibited: 'major', preferred: 'minor', allowed: 'informational' }[input.kind];
+  const list = (values: string[]) => values.map((v) => v.trim().slice(0, 120)).filter(Boolean).slice(0, 12);
+
+  return withCompanyScope(scope, async (tx) => {
+    const rows = await tx<{ id: string }[]>`
+      insert into compliance_rules
+        (company_id, brand, market, category, requirement, rule, note, source, created_by,
+         rule_type, severity, allowed, prohibited, verified_at, verified_by)
+      values
+        (${scope.companyId}, ${input.brand}, ${input.market}, 'other', ${requirement}, ${rule},
+         ${input.note.slice(0, 1000)}, 'manual', ${scope.userId},
+         ${input.kind}, ${severity}, ${list(input.allowed)}::text[], ${list(input.prohibited)}::text[],
+         now(), ${scope.userId})
+      on conflict (company_id, rule, coalesce(brand, ''), coalesce(market, ''))
+        do update set
+          requirement = excluded.requirement,
+          rule_type = excluded.rule_type,
+          severity = excluded.severity,
+          allowed = excluded.allowed,
+          prohibited = excluded.prohibited,
+          note = excluded.note,
+          active = true,
+          verified_at = now(),
+          verified_by = excluded.verified_by,
+          updated_at = now()
+      returning id
+    `;
+    return rows[0]!.id;
   });
 }
 

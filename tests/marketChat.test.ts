@@ -394,6 +394,112 @@ describe('CHAT WITH THE BRAIN: answers from what CIP stores, and says which', ()
   });
 });
 
+describe('A RULE SAID IN CHAT: proposed back, kept only when the person keeps it', () => {
+  const said = 'Magic Moments ka black logo bhi approved hai, usko flag mat karna.';
+  const blackLogo = {
+    brand: 'Magic Moments',
+    market: null,
+    kind: 'allowed' as const,
+    statement: 'The black version of the Magic Moments logo is approved.',
+    allowed: ['Black logo'],
+    prohibited: [],
+    quote: 'Magic Moments ka black logo bhi approved hai',
+  };
+
+  it('offers a stated rule back, in the words it was said in', async () => {
+    await roster(mm, 'Magic Moments', '8PM');
+    fake.chatAnswer = { answer: 'Noted.', citations: [], followUps: [], proposedRules: [blackLogo] };
+
+    const { messages } = await chat.askBrain(mm, { threadId: null, message: said, activeBrand: null });
+    const answer = messages.find((m) => m.role === 'assistant')!;
+    assert.equal(answer.proposedRules.length, 1);
+    assert.equal(answer.proposedRules[0]!.status, 'proposed');
+    assert.equal(answer.proposedRules[0]!.kind, 'allowed');
+    // The Brain is told the roster, so it can file the rule under the right brand.
+    assert.deepEqual([...fake.lastChatInput!.brands].sort(), ['8PM', 'Magic Moments']);
+    // Proposing is not keeping: nothing reaches the checker until the person decides.
+    const rules = await adminSql`select id from compliance_rules where company_id = ${mm.companyId}`;
+    assert.equal(rules.length, 0);
+  });
+
+  it('drops a proposal that quotes words the person never wrote', async () => {
+    await roster(mm, 'Magic Moments');
+    fake.chatAnswer = {
+      answer: 'Noted.', citations: [], followUps: [],
+      proposedRules: [{ ...blackLogo, quote: 'the gold logo must never be used' }],
+    };
+    const { messages } = await chat.askBrain(mm, { threadId: null, message: said, activeBrand: null });
+    assert.equal(messages.find((m) => m.role === 'assistant')!.proposedRules.length, 0);
+  });
+
+  it('never files a rule under a brand the company does not have', async () => {
+    await roster(mm, 'Magic Moments');
+    fake.chatAnswer = {
+      answer: 'Noted.', citations: [], followUps: [],
+      proposedRules: [{ ...blackLogo, brand: 'Smirnoff' }],
+    };
+    const { messages } = await chat.askBrain(mm, { threadId: null, message: said, activeBrand: null });
+    assert.equal(messages.find((m) => m.role === 'assistant')!.proposedRules[0]!.brand, null);
+  });
+
+  it('keeps it as a verified QC rule, with where it came from', async () => {
+    await roster(mm, 'Magic Moments');
+    fake.chatAnswer = { answer: 'Noted.', citations: [], followUps: [], proposedRules: [blackLogo] };
+    const { messages, thread } = await chat.askBrain(mm, { threadId: null, message: said, activeBrand: null });
+    const answer = messages.find((m) => m.role === 'assistant')!;
+
+    const decided = await chat.decideProposedRule(mm, { messageId: answer.id, index: 0, keep: true });
+    assert.equal(decided.proposedRules[0]!.status, 'added');
+    assert.ok(decided.proposedRules[0]!.ruleId);
+
+    const [rule] = await adminSql<{
+      rule: string; brand: string | null; rule_type: string; requirement: string; source: string;
+      verified_at: Date | null; allowed: string[]; note: string;
+    }[]>`
+      select rule, brand, rule_type, requirement, source, verified_at, allowed, note
+        from compliance_rules where id = ${decided.proposedRules[0]!.ruleId}
+    `;
+    assert.equal(rule!.rule, blackLogo.statement);
+    assert.equal(rule!.brand, 'Magic Moments');
+    assert.equal(rule!.rule_type, 'allowed');
+    assert.equal(rule!.source, 'manual');
+    assert.ok(rule!.verified_at, 'a rule the person kept is confirmed by them');
+    assert.deepEqual(rule!.allowed, ['Black logo']);
+    assert.ok(rule!.note.includes(blackLogo.quote), 'the rule remembers what was said');
+
+    // Deciding twice changes nothing: the first answer stands.
+    const again = await chat.decideProposedRule(mm, { messageId: answer.id, index: 0, keep: false });
+    assert.equal(again.proposedRules[0]!.status, 'added');
+
+    // And it survives the conversation being opened again.
+    const reopened = await chat.getThread(mm, thread.id);
+    assert.equal(reopened!.messages.find((m) => m.id === answer.id)!.proposedRules[0]!.status, 'added');
+  });
+
+  it('keeps nothing when the person says it is not a rule', async () => {
+    await roster(mm, 'Magic Moments');
+    fake.chatAnswer = { answer: 'Noted.', citations: [], followUps: [], proposedRules: [blackLogo] };
+    const { messages } = await chat.askBrain(mm, { threadId: null, message: said, activeBrand: null });
+    const answer = messages.find((m) => m.role === 'assistant')!;
+
+    const decided = await chat.decideProposedRule(mm, { messageId: answer.id, index: 0, keep: false });
+    assert.equal(decided.proposedRules[0]!.status, 'dismissed');
+    const rules = await adminSql`select id from compliance_rules where company_id = ${mm.companyId}`;
+    assert.equal(rules.length, 0);
+  });
+
+  it('only the person whose conversation it is can decide', async () => {
+    await roster(mm, 'Magic Moments');
+    fake.chatAnswer = { answer: 'Noted.', citations: [], followUps: [], proposedRules: [blackLogo] };
+    const { messages } = await chat.askBrain(mm, { threadId: null, message: said, activeBrand: null });
+    const answer = messages.find((m) => m.role === 'assistant')!;
+    await assert.rejects(
+      () => chat.decideProposedRule(nh, { messageId: answer.id, index: 0, keep: true }),
+      (error: unknown) => error instanceof chat.ChatNotFound,
+    );
+  });
+});
+
 describe('CAMPAIGN IDEATION: concepts that stand on what CIP knows', () => {
   it('drops a grounding nobody sent, and a concept left standing on nothing', async () => {
     await fact(mm, null, 'tone', 'warm and unhurried');

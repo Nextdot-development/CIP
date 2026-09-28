@@ -7,7 +7,7 @@ import { EmptyState } from '../components/ui/Bits';
 import { useToast } from '@/context/toast';
 import { useWorkspace } from '@/context/workspace';
 import { useAskSeed } from '@/context/NavContext';
-import type { ChatMessageDTO, ChatSourceDTO, ChatThreadDTO } from '@/server/brain/chat';
+import type { ChatMessageDTO, ChatProposalDTO, ChatSourceDTO, ChatThreadDTO } from '@/server/brain/chat';
 
 /**
  * Chat with the Brain, in the prototype's shape: bubbles, the sources each
@@ -34,6 +34,94 @@ async function post<T>(url: string, body: unknown): Promise<T> {
   const data = (await res.json().catch(() => ({}))) as { message?: string };
   if (!res.ok) throw new Error(data.message ?? 'That did not work. Try again in a moment.');
   return data as T;
+}
+
+const RULE_KIND_LABEL: Record<ChatProposalDTO['kind'], string> = {
+  mandatory: 'Must have',
+  prohibited: 'Never',
+  preferred: 'Preferred',
+  allowed: 'Approved',
+};
+
+/**
+ * Rules the Brain heard in the question, offered back to keep.
+ *
+ * Shown with the words they came from, so the person can see the Brain heard
+ * what they meant before it becomes something every creative is checked
+ * against. Nothing is kept until they say so: a misheard rule would fail good
+ * work, and the person who said it is the one who knows.
+ */
+function RuleProposals({
+  message,
+  onDecided,
+}: {
+  message: ChatMessageDTO;
+  onDecided: (message: ChatMessageDTO) => void;
+}) {
+  const { note } = useToast();
+  const [deciding, setDeciding] = useState<number | null>(null);
+  if (message.proposedRules.length === 0) return null;
+
+  const decide = async (index: number, keep: boolean) => {
+    setDeciding(index);
+    try {
+      const result = await post<{ message: ChatMessageDTO }>('/api/brain/chat/rules', {
+        messageId: message.id,
+        index,
+        keep,
+      });
+      onDecided(result.message);
+      if (keep) note('Added to the QC rules. Checks and new creatives now follow it.');
+    } catch (error) {
+      note(error instanceof Error ? error.message : 'That could not be saved.');
+    } finally {
+      setDeciding(null);
+    }
+  };
+
+  return (
+    <div className="rulecards">
+      {message.proposedRules.map((rule, index) => (
+        <div key={index} className={`rulecard is-${rule.status}`}>
+          <p className="rulecard-head">
+            <Icon name="shield" size={13} />
+            CIP heard a rule
+            <span className={`rulekind kind-${rule.kind}`}>{RULE_KIND_LABEL[rule.kind]}</span>
+            <span className="rulescope">
+              {rule.brand ?? 'Every brand'}
+              {rule.market ? ` · ${rule.market}` : ''}
+            </span>
+          </p>
+          <p className="rulecard-text">{rule.statement}</p>
+          {(rule.allowed.length > 0 || rule.prohibited.length > 0) && (
+            <p className="rulecard-lists">
+              {rule.allowed.length > 0 && <span>Allows: {rule.allowed.join(', ')}</span>}
+              {rule.prohibited.length > 0 && <span>Forbids: {rule.prohibited.join(', ')}</span>}
+            </p>
+          )}
+          <p className="rulecard-quote">You said: &ldquo;{rule.quote}&rdquo;</p>
+          {rule.status === 'proposed' ? (
+            <div className="rulecard-actions">
+              <button type="button" className="btn btn-primary btn-sm" disabled={deciding !== null}
+                onClick={() => void decide(index, true)}>
+                {deciding === index ? 'Adding…' : 'Add to QC rules'}
+              </button>
+              <button type="button" className="btn btn-sm" disabled={deciding !== null}
+                onClick={() => void decide(index, false)}>
+                Not a rule
+              </button>
+            </div>
+          ) : rule.status === 'added' ? (
+            <p className="rulecard-done">
+              <Icon name="check" size={13} /> Added to the QC rules · <a href="/check">See it</a>
+            </p>
+          ) : (
+            <p className="rulecard-done muted">Not kept</p>
+          )}
+        </div>
+      ))}
+    </div>
+  );
 }
 
 /** An answer's text, with its [F1]-style refs as small numbered marks. */
@@ -128,6 +216,7 @@ export function ChatSection({
       followUps: [],
       grounded: null,
       createdAt: '',
+      proposedRules: [],
     };
     setMessages((list) => [...list, pending]);
     try {
@@ -247,6 +336,12 @@ export function ChatSection({
                       )}
                     </div>
                   )}
+                  <RuleProposals
+                    message={message}
+                    onDecided={(updated) =>
+                      setMessages((list) => list.map((m) => (m.id === updated.id ? updated : m)))
+                    }
+                  />
                   {message.grounded === false && (
                     <p className="ungrounded">
                       <Icon name="alert" size={12} /> Not grounded in anything CIP has stored.

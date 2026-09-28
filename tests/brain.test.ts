@@ -1076,6 +1076,50 @@ describe('THE CHECKER: a creative judged against the brand, and nothing else', (
     assert.ok(check.score !== null && check.score > 49, `an informational rule failed the creative at ${check.score}`);
   });
 
+  /** A rule of a stated kind, the way one kept from Chat with the Brain is written. */
+  async function kindRule(
+    kind: 'allowed' | 'preferred',
+    text: string,
+    allowed: string[] = [],
+  ): Promise<string> {
+    const rows = await adminSql<{ id: string }[]>`
+      insert into compliance_rules
+        (company_id, category, requirement, rule, source, rule_type, allowed)
+      values (${mm.companyId}, 'other', 'required', ${text}, 'manual', ${kind}, ${allowed}::text[])
+      returning id
+    `;
+    return rows[0]!.id;
+  }
+
+  // "The black logo is approved" was sent to the checker as a requirement, so
+  // a creative with the black logo could be flagged for it, and one without it
+  // for leaving it out. A permission is never a fault.
+  it('never reports an approved choice as a fault, and says what it permits', async () => {
+    await kindRule('allowed', 'The black version of the logo is approved.', ['Black logo']);
+    fake.checkFindings = [
+      { ref: 'R1', dimension: 'compliance', severity: 'critical', message: 'The logo is black.' },
+    ];
+
+    const check = await checkedImage();
+
+    assert.equal(check.flags.length, 0, 'an approved choice was reported as a fault');
+    const sent = fake.lastCheckInput!.rules[0]!;
+    assert.equal(sent.kind, 'allowed');
+    assert.deepEqual(sent.allowed, ['Black logo']);
+  });
+
+  it('holds a preference to a note, however loudly the model says it', async () => {
+    await kindRule('preferred', 'Warm evening light is preferred.');
+    fake.checkFindings = [
+      { ref: 'R1', dimension: 'compliance', severity: 'critical', message: 'The light is cold.' },
+    ];
+
+    const check = await checkedImage();
+
+    assert.equal(check.flags.length, 1);
+    assert.equal(check.flags[0]!.severity, 'note');
+  });
+
   it('leaves an ungraded rule to the model, because a column default is not a decision', async () => {
     await rule('required', 'Carry the statutory warning.');
     fake.checkFindings = [

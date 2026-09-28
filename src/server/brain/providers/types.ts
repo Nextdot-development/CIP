@@ -400,7 +400,15 @@ export type BriefInput = {
    * added to the brief's constraints by the planner, so they do not depend on
    * the model reading this.
    */
-  complianceRules?: { rule: string; requirement: 'required' | 'forbidden'; category: string }[];
+  complianceRules?: {
+    rule: string;
+    requirement: 'required' | 'forbidden';
+    category: string;
+    /** Mandatory, prohibited, preferred, allowed... - see CheckRule.kind. */
+    kind?: string;
+    allowed?: string[];
+    prohibited?: string[];
+  }[];
   /**
    * The shape the person named — "1:1", "1080x1350" — or null when they named
    * none and the format decides.
@@ -573,6 +581,33 @@ export type ChatInput = {
   brand: string | null;
   history: { role: 'user' | 'assistant'; content: string }[];
   sources: ChatSource[];
+  /** The company's brands, so a rule someone states can be filed under the right one. */
+  brands: string[];
+};
+
+/** The kinds of rule a person can state in a chat and have kept. */
+export type StatedRuleKind = 'mandatory' | 'prohibited' | 'preferred' | 'allowed';
+
+/**
+ * A brand rule somebody stated while talking to the Brain: "the black Magic
+ * Moments logo is approved too", "every 8PM post needs the age line".
+ *
+ * Proposed, never kept on the model's say-so: it is shown to the person who
+ * said it, and only their click makes it a rule. The quote is their own words,
+ * and a proposal whose quote is not in what they wrote is thrown away.
+ */
+export type ProposedRule = {
+  brand: string | null;
+  market: string | null;
+  kind: StatedRuleKind;
+  /** The rule, written as a rule: one plain sentence a checker can apply. */
+  statement: string;
+  /** Things the rule explicitly permits, where it names them. */
+  allowed: string[];
+  /** Things the rule explicitly forbids, where it names them. */
+  prohibited: string[];
+  /** The words in the person's message the rule was taken from, verbatim. */
+  quote: string;
 };
 
 export type ChatAnswer = {
@@ -580,6 +615,8 @@ export type ChatAnswer = {
   /** Refs the answer relies on. Only refs that were sent survive. */
   citations: string[];
   followUps: string[];
+  /** Rules the person stated in their message, for them to keep or not. */
+  proposedRules: ProposedRule[];
   usage: BrainUsage;
 };
 
@@ -646,6 +683,16 @@ export type CheckRule = {
    */
   requirement: 'required' | 'forbidden' | 'observed';
   statement: string;
+  /**
+   * What sort of rule it is, where it is one. "Required" alone could not tell
+   * a permission from a requirement: "tiger imagery is an approved association"
+   * reached the model as a thing required, and "preferred" styles as musts.
+   */
+  kind?: 'mandatory' | 'prohibited' | 'preferred' | 'allowed' | 'conditional' | 'contextual' | 'human_review';
+  /** Things the rule explicitly permits. */
+  allowed?: string[];
+  /** Things the rule explicitly forbids. */
+  prohibited?: string[];
 };
 
 export type CheckInput = {

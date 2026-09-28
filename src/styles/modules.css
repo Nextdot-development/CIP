@@ -198,6 +198,35 @@ a.refchip:hover { color: var(--ink-900); border-color: var(--ink-400); }
   padding: 0; font-size: 11.5px; color: var(--ink-400);
 }
 .bubbleaction:hover { color: var(--brand); }
+
+/* A rule the Brain heard, offered back to keep. Quiet until decided; a kept
+   one says so, a dismissed one steps back. */
+.rulecards { display: grid; gap: 8px; margin-top: 12px; }
+.rulecard {
+  border: 1px solid var(--line-strong); border-left: 3px solid var(--brand);
+  border-radius: 10px; padding: 10px 12px; background: var(--brand-tint);
+}
+.rulecard.is-added { border-left-color: var(--ok-700, #7fae8a); background: transparent; }
+.rulecard.is-dismissed { opacity: 0.55; background: transparent; border-left-color: var(--line-strong); }
+.rulecard-head {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 0 0 6px;
+  font-size: 11.5px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-500);
+}
+.rulekind {
+  font-size: 10.5px; padding: 2px 7px; border-radius: 999px; letter-spacing: 0.04em;
+  border: 1px solid var(--line-strong); color: var(--ink-800);
+}
+.rulekind.kind-mandatory { color: #d9bf86; border-color: rgba(217, 191, 134, 0.45); }
+.rulekind.kind-prohibited { color: #d99a8a; border-color: rgba(217, 154, 138, 0.45); }
+.rulekind.kind-preferred { color: #a996b8; border-color: rgba(169, 150, 184, 0.45); }
+.rulekind.kind-allowed { color: #94ae8c; border-color: rgba(148, 174, 140, 0.45); }
+.rulescope { margin-left: auto; text-transform: none; letter-spacing: 0; font-weight: 500; color: var(--ink-600); }
+.rulecard-text { margin: 0; font-size: 14px; line-height: 1.5; color: var(--ink-900); }
+.rulecard-lists { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 6px 0 0; font-size: 12px; color: var(--ink-600); }
+.rulecard-quote { margin: 6px 0 0; font-size: 12px; font-style: italic; color: var(--ink-500); }
+.rulecard-actions { display: flex; gap: 8px; margin-top: 10px; }
+.rulecard-done { display: flex; align-items: center; gap: 6px; margin: 8px 0 0; font-size: 12.5px; color: var(--ink-700); }
+.rulecard-done a { color: var(--brand); }
 .typing { display: flex; gap: 5px; align-items: center; min-height: 40px; }
 .typing span { width: 6px; height: 6px; border-radius: 50%; background: var(--ink-400); animation: shimmer 1.2s ease-in-out infinite; }
 .typing span:nth-child(2) { animation-delay: .2s; }

@@ -325,6 +325,9 @@ export async function planGeneration(
       rule: rule.rule,
       requirement: rule.requirement,
       category: rule.category,
+      kind: rule.ruleType,
+      allowed: rule.allowed ?? [],
+      prohibited: rule.prohibited ?? [],
     })),
   });
 

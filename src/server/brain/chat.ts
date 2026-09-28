@@ -3,11 +3,11 @@ import { withCompanyScope } from '../db';
 import type { CompanyScope } from '../db';
 import { semanticSearch } from '../drive/semanticSearch';
 import { brain } from './providers';
-import type { ChatSource } from './providers/types';
+import type { ChatSource, ProposedRule } from './providers/types';
 import { readBrandDna } from './brandDna';
 import { brandInRequest, companyBrands } from './brands';
 import { upcoming } from './calendar';
-import { listRules } from './checker';
+import { addStatedRule, listRules } from './checker';
 import { marketSignalsFor } from './market';
 import { searchMemory } from './retrieval';
 
@@ -57,6 +57,15 @@ export type ChatMessageDTO = {
   followUps: string[];
   grounded: boolean | null;
   createdAt: string;
+  /** Rules the person stated in the question this answers, and what they decided. */
+  proposedRules: ChatProposalDTO[];
+};
+
+/** A rule proposed back to the person who stated it, and what became of it. */
+export type ChatProposalDTO = ProposedRule & {
+  status: 'proposed' | 'added' | 'dismissed';
+  /** The rule it became, once added. */
+  ruleId: string | null;
 };
 
 export type ChatThreadDTO = {
@@ -189,6 +198,7 @@ export async function gatherSources(scope: CompanyScope, question: string, brand
 type MessageRow = {
   id: string; role: 'user' | 'assistant'; content: string; sources: ChatSourceDTO[] | null;
   follow_ups: string[] | null; grounded: boolean | null; created_at: Date;
+  proposed_rules: ChatProposalDTO[] | null;
 };
 
 const toMessage = (row: MessageRow): ChatMessageDTO => ({
@@ -199,6 +209,7 @@ const toMessage = (row: MessageRow): ChatMessageDTO => ({
   followUps: row.follow_ups ?? [],
   grounded: row.grounded,
   createdAt: row.created_at.toISOString(),
+  proposedRules: Array.isArray(row.proposed_rules) ? row.proposed_rules : [],
 });
 
 type ThreadRow = { id: string; title: string; brand: string | null; updated_at: Date };
@@ -236,7 +247,7 @@ export async function getThread(
     const thread = threads[0];
     if (!thread) return null;
     const messages = await tx<MessageRow[]>`
-      select id, role, content, sources, follow_ups, grounded, created_at from chat_messages
+      select id, role, content, sources, follow_ups, grounded, created_at, proposed_rules from chat_messages
        where company_id = ${scope.companyId} and thread_id = ${threadId}
        order by created_at, role desc
     `;
@@ -273,7 +284,9 @@ export async function askBrain(
     brand,
     history,
     sources: sources.map((s) => s.forModel),
+    brands: roster.map((b) => b.name),
   });
+  const proposals = groundProposals(answer.proposedRules ?? [], question, roster.map((b) => b.name));
 
   const sent = new Map(sources.map((s) => [s.forModel.ref, s.shown]));
   const cited = [...new Set([
@@ -300,15 +313,15 @@ export async function askBrain(
     const asked = await tx<MessageRow[]>`
       insert into chat_messages (company_id, thread_id, role, content)
       values (${scope.companyId}, ${threadId}, 'user', ${question})
-      returning id, role, content, sources, follow_ups, grounded, created_at
+      returning id, role, content, sources, follow_ups, grounded, created_at, proposed_rules
     `;
     const answered = await tx<MessageRow[]>`
       insert into chat_messages
-        (company_id, thread_id, role, content, sources, follow_ups, grounded, provider, model)
+        (company_id, thread_id, role, content, sources, follow_ups, grounded, provider, model, proposed_rules)
       values
         (${scope.companyId}, ${threadId}, 'assistant', ${content}, ${tx.json(shown)}, ${followUps},
-         ${shown.length > 0}, ${provider.name}, ${provider.model})
-      returning id, role, content, sources, follow_ups, grounded, created_at
+         ${shown.length > 0}, ${provider.name}, ${provider.model}, ${tx.json(proposals)})
+      returning id, role, content, sources, follow_ups, grounded, created_at, proposed_rules
     `;
     const threads = await tx<ThreadRow[]>`
       update chat_threads set updated_at = now(), brand = coalesce(brand, ${brand})
@@ -318,4 +331,112 @@ export async function askBrain(
 
     return { thread: toThread(threads[0]!), messages: [toMessage(asked[0]!), toMessage(answered[0]!)] };
   });
+}
+
+const KINDS = new Set(['mandatory', 'prohibited', 'preferred', 'allowed']);
+
+/** For comparing a quote with what was written: case, spacing and quote marks aside. */
+function normalise(text: string): string {
+  return text.toLowerCase().replace(/[\u2018\u2019\u201c\u201d"'`]/g, '').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Keeps only proposals that are really in what the person said.
+ *
+ * The same rule as everywhere else in CIP: a claim that cannot point at its
+ * evidence is not shown. A proposal must quote the person's own message; a
+ * quote they did not write is the model putting words in their mouth, and it
+ * goes. A brand not on the roster becomes no brand, never a new one.
+ */
+export function groundProposals(
+  proposals: ProposedRule[],
+  question: string,
+  roster: string[],
+): ChatProposalDTO[] {
+  const said = normalise(question);
+  const kept: ChatProposalDTO[] = [];
+  for (const raw of proposals) {
+    if (!raw || typeof raw !== 'object') continue;
+    const quote = typeof raw.quote === 'string' ? raw.quote.trim() : '';
+    const statement = typeof raw.statement === 'string' ? raw.statement.trim().slice(0, 500) : '';
+    if (quote.length < 4 || statement.length < 6) continue;
+    if (!said.includes(normalise(quote))) continue;
+    if (!KINDS.has(raw.kind)) continue;
+
+    const brand = roster.find((name) => name.toLowerCase() === (raw.brand ?? '').trim().toLowerCase()) ?? null;
+    const words = (values: unknown) =>
+      Array.isArray(values) ? values.filter((v): v is string => typeof v === 'string' && v.trim().length > 0).slice(0, 12) : [];
+
+    kept.push({
+      brand,
+      market: typeof raw.market === 'string' && raw.market.trim() ? raw.market.trim().slice(0, 60) : null,
+      kind: raw.kind,
+      statement,
+      allowed: words(raw.allowed),
+      prohibited: words(raw.prohibited),
+      quote: quote.slice(0, 400),
+      status: 'proposed',
+      ruleId: null,
+    });
+    if (kept.length === 3) break;
+  }
+  return kept;
+}
+
+/**
+ * The person's decision on a rule proposed in their conversation: keep it as a
+ * QC rule, or say it is not one.
+ *
+ * Only in their own thread - the same boundary as reading it - and only once:
+ * a proposal already decided keeps its first answer.
+ */
+export async function decideProposedRule(
+  scope: CompanyScope,
+  input: { messageId: string; index: number; keep: boolean },
+): Promise<ChatMessageDTO> {
+  if (!UUID.test(input.messageId)) throw new ChatNotFound();
+
+  const rows = await withCompanyScope(scope, (tx) =>
+    tx<(MessageRow & { thread_brand: string | null; asked_at: Date })[]>`
+      select m.id, m.role, m.content, m.sources, m.follow_ups, m.grounded, m.created_at, m.proposed_rules,
+             t.brand as thread_brand, m.created_at as asked_at
+        from chat_messages m
+        join chat_threads t on t.id = m.thread_id and t.company_id = m.company_id
+       where m.id = ${input.messageId} and m.company_id = ${scope.companyId}
+         and t.user_id = ${scope.userId} and m.role = 'assistant'
+    `,
+  );
+  const row = rows[0];
+  if (!row) throw new ChatNotFound();
+
+  const proposals = Array.isArray(row.proposed_rules) ? [...row.proposed_rules] : [];
+  const proposal = proposals[input.index];
+  if (!proposal) throw new ChatRejected('That rule is not on this answer.');
+  if (proposal.status !== 'proposed') return toMessage(row);
+
+  let ruleId: string | null = null;
+  if (input.keep) {
+    const day = row.asked_at.toISOString().slice(0, 10);
+    ruleId = await addStatedRule(scope, {
+      brand: proposal.brand,
+      market: proposal.market,
+      kind: proposal.kind,
+      statement: proposal.statement,
+      allowed: proposal.allowed,
+      prohibited: proposal.prohibited,
+      // Where it came from, in the words it was said in, so the rule on the
+      // Consistency Check page can be traced to the conversation.
+      note: `Added from Chat with the Brain on ${day}. Said: "${proposal.quote}"`,
+    });
+  }
+
+  proposals[input.index] = { ...proposal, status: input.keep ? 'added' : 'dismissed', ruleId };
+  const updated = await withCompanyScope(scope, (tx) =>
+    tx<MessageRow[]>`
+      update chat_messages set proposed_rules = ${tx.json(proposals)}
+       where id = ${row.id} and company_id = ${scope.companyId}
+      returning id, role, content, sources, follow_ups, grounded, created_at, proposed_rules
+    `,
+  );
+  return toMessage(updated[0]!);
 }

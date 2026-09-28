@@ -478,6 +478,7 @@ export class FakeBrainProvider implements BrainProvider {
         answer: this.chatAnswer.answer ?? '',
         citations: [...(this.chatAnswer.citations ?? [])],
         followUps: [...(this.chatAnswer.followUps ?? [])],
+        proposedRules: (this.chatAnswer.proposedRules ?? []).map((r) => ({ ...r })),
         usage: { durationMs: 1 },
       };
     }
@@ -489,6 +490,7 @@ export class FakeBrainProvider implements BrainProvider {
         : 'CIP has nothing stored that answers this yet.',
       citations: used.map((s) => s.ref),
       followUps: ['What else do we know about this?'],
+      proposedRules: [],
       usage: { durationMs: 1 },
     };
   }
