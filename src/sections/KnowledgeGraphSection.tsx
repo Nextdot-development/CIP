@@ -504,6 +504,40 @@ export function KnowledgeGraphSection({
   const [busy, setBusy] = useState(false);
   const [size, setSize] = useState({ width: 800, height: 600 });
 
+  /**
+   * The screen's pixel ratio, watched for change.
+   *
+   * The renderer sizes its canvas for the ratio it started with and only
+   * resizes when its width or height changes. Browser zoom, or dragging the
+   * window to another screen, changes the ratio under it: the canvas stays
+   * sized for the old one, each frame is wiped for the new one, and part of
+   * it is never wiped at all - zooming then smeared every node into a trail
+   * and left stale copies of the graph behind. A new ratio gets a new canvas.
+   * The nodes keep their places, which live on the node objects.
+   */
+  const [pixelRatio, setPixelRatio] = useState(() =>
+    typeof window === 'undefined' ? 1 : window.devicePixelRatio,
+  );
+  useEffect(() => {
+    // Two ways of hearing about it, because not every browser sends both: a
+    // media query on the current ratio, and the resize that browser zoom
+    // also causes. Either way the ratio is read afresh, and an unchanged one
+    // changes nothing.
+    let media: MediaQueryList | null = null;
+    const watch = () => {
+      setPixelRatio(window.devicePixelRatio);
+      media?.removeEventListener('change', watch);
+      media = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+      media.addEventListener('change', watch);
+    };
+    watch();
+    window.addEventListener('resize', watch);
+    return () => {
+      media?.removeEventListener('change', watch);
+      window.removeEventListener('resize', watch);
+    };
+  }, []);
+
   const hasFitted = useRef(false);
 
   /**
@@ -559,7 +593,7 @@ export function KnowledgeGraphSection({
     hasFitted.current = false;
     handle.d3ReheatSimulation();
   }, [
-    graphReady, nodes.length, view, size.width, size.height,
+    graphReady, pixelRatio, nodes.length, view, size.width, size.height,
     settings.repelForce, settings.linkDistance, settings.linkForce, settings.centerForce, settings.nodeSize,
   ]);
 
@@ -1093,6 +1127,7 @@ export function KnowledgeGraphSection({
       <div className="graph-body">
         <div className={`graph-canvas${hovered ? ' is-pointing' : ''}`} ref={shellRef}>
           <ForceGraph2D
+            key={pixelRatio}
             ref={attachGraph}
             graphData={graphData}
             width={size.width}
