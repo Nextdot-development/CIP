@@ -416,14 +416,6 @@ export function KnowledgeGraphSection({
    * a graph anybody can read.
    */
   const [view, setView] = useState<'brands' | 'files' | 'all'>('brands');
-  /**
-   * Each brand's logo or bottle, once it has loaded.
-   *
-   * Loaded by the page rather than drawn from a URL, because a canvas can only
-   * draw a picture it already has. A thumbnail, not the original: a badge is a
-   * few dozen pixels across and a logo file can be several megabytes.
-   */
-  const [images, setImages] = useState<Map<string, NodePicture>>(() => new Map());
 
   const savePin = useCallback((node: SimNode) => rememberPin(view, node), [view]);
 
@@ -529,28 +521,6 @@ export function KnowledgeGraphSection({
     graphReady, nodes.length, view, size.width, size.height,
     settings.repelForce, settings.linkDistance, settings.linkForce, settings.centerForce, settings.nodeSize,
   ]);
-
-  useEffect(() => {
-    const wanted = nodes
-      .map((n) => n.imageFileId)
-      .filter((id): id is string => Boolean(id) && !images.has(id!));
-    if (wanted.length === 0) return;
-    let cancelled = false;
-    for (const id of new Set(wanted)) {
-      const image = new Image();
-      image.decoding = 'async';
-      image.onload = () => {
-        if (cancelled) return;
-        const plate = backgroundOf(image, (w, h) => Object.assign(document.createElement('canvas'), { width: w, height: h }));
-        setImages((current) => new Map(current).set(id, { image, plate }));
-      };
-      // A brand whose picture will not load keeps its initials; nothing to say.
-      image.src = `/api/drive/files/${id}/content?disposition=inline&size=320`;
-    }
-    return () => {
-      cancelled = true;
-    };
-  }, [nodes, images]);
 
   // The canvas is sized from its container rather than the viewport, so the
   // sidebar and any future chrome are accounted for automatically.
@@ -1146,7 +1116,6 @@ export function KnowledgeGraphSection({
                 lit,
                 matches,
                 expanded,
-                images,
                 nodeSize: settings.nodeSize,
                 textFade: settings.textFade,
               });
@@ -1366,7 +1335,7 @@ export function KnowledgeGraphSection({
                     <div className="insp-brandlist">
                       {mostConnected.map(({ node, degree }) => (
                         <button key={node.id} type="button" onClick={() => goTo(node)}>
-                          <BrandBadge node={node} size={28} plate={node.imageFileId ? images.get(node.imageFileId)?.plate : null} />
+                          <BrandBadge size={12} />
                           <span className="grow truncate">{node.label}</span>
                           <span className="muted">{degree} shared</span>
                         </button>
@@ -1397,7 +1366,7 @@ export function KnowledgeGraphSection({
               /* A brand: what it is made of, what it holds, and who it is like. */
               <>
                 <div className="insp-hero">
-                  <BrandBadge node={selected} size={52} plate={selected.imageFileId ? images.get(selected.imageFileId)?.plate : null} />
+                  <BrandBadge size={34} />
                   <div className="stack">
                     <h3 className="insp-title">{selected.label}</h3>
                     <span className="insp-pill" style={{ ['--tag' as string]: colorFor(selected) }}>
@@ -1524,7 +1493,7 @@ export function KnowledgeGraphSection({
                       const node = nodeById.get(`brand:${name}`);
                       return (
                         <button key={name} type="button" onClick={() => goTo(node)}>
-                          {node && <BrandBadge node={node} size={28} plate={node.imageFileId ? images.get(node.imageFileId)?.plate : null} />}
+                          {node && <BrandBadge size={12} />}
                           <span className="grow truncate">{name}</span>
                         </button>
                       );
@@ -1620,40 +1589,9 @@ export function KnowledgeGraphSection({
   );
 }
 
-/**
- * A brand as a badge, for the inspector: the same picture its node carries,
- * or its initials where there is none.
- */
-function BrandBadge({ node, size, plate }: { node: GraphNodeDTO; size: number; plate?: string | null }) {
-  // A picture that will not load falls back to the initials rather than the
-  // browser's broken-image mark, which says nothing about whose it was. The
-  // page arrives rendered, so a picture can fail before React is listening;
-  // it is checked again once it is.
-  const [failed, setFailed] = useState(false);
-  const picture = useRef<HTMLImageElement | null>(null);
-  useEffect(() => {
-    const image = picture.current;
-    if (image?.complete && image.naturalWidth === 0) setFailed(true);
-  }, [node.imageFileId]);
-  return (
-    <span
-      className="insp-badge"
-      style={{ width: size, height: size, ...(plate ? { background: plate } : {}) }}
-    >
-      {node.imageFileId && !failed ? (
-        // A thumbnail of a file already in this workspace; next/image adds nothing here.
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          ref={picture}
-          src={`/api/drive/files/${node.imageFileId}/content?disposition=inline&size=320`}
-          alt=""
-          onError={() => setFailed(true)}
-        />
-      ) : (
-        <span style={{ fontSize: size * 0.38 }}>{initialsOf(node.label)}</span>
-      )}
-    </span>
-  );
+/** A brand in the inspector: the same gold orb its node is on the canvas. */
+function BrandBadge({ size }: { size: number }) {
+  return <span className="insp-orb" style={{ width: size, height: size }} aria-hidden />;
 }
 
 function edgeKey(edge: GraphEdgeDTO): string {
@@ -1674,9 +1612,6 @@ function endId(end: string | { id: string }): string {
   return typeof end === 'string' ? end : end.id;
 }
 
-/** A picture that has finished loading, ready to be drawn into a node. */
-type NodeImage = CanvasImageSource & { width: number; height: number };
-
 /**
  * How big a node draws. Weight comes from the server, from real counts.
  *
@@ -1684,7 +1619,7 @@ type NodeImage = CanvasImageSource & { width: number; height: number };
  * than a dot has to be: a logo at the size of a dot is not a logo.
  */
 function radiusFor(node: SimNode, size = 1): number {
-  if (node.type === 'brand') return Math.min(18 + Math.sqrt(node.weight) * 2.5, 28) * size;
+  if (node.type === 'brand') return Math.min(7 + Math.sqrt(node.weight) * 1.6, 14) * size;
   if (node.type === 'trait' && !node.dimension) return Math.min(2.5 + Math.sqrt(node.weight) * 1.1, 6) * size;
   return Math.min(3 + Math.sqrt(node.weight) * 1.9, 13) * size;
 }
@@ -1807,170 +1742,57 @@ function labelOpacity(node: SimNode, scale: number): number {
   }
 }
 
-/** Up to two letters for a brand with no picture: "Blue Finest" is "BF". */
-function initialsOf(name: string): string {
-  const words = name.split(/\s+/).filter(Boolean);
-  const letters = words.length > 1 ? words[0]![0]! + words[1]![0]! : name.slice(0, 2);
-  return letters.toUpperCase();
-}
-
 /**
- * A brand's picture, and the colour of the ground it was photographed or
- * drawn on. Null for a picture with no ground of its own - a cut-out.
- */
-type NodePicture = { image: NodeImage; plate: string | null };
-
-/**
- * The colour a picture's corners are, which is the colour of its background.
- *
- * Measured, so the badge can be that colour: a logo on white was drawn as a
- * white square inside a dark circle, which is what made the badges look cheap.
- * On a plate of its own background the edge of the picture disappears and the
- * logo sits in the badge as if printed on it.
- */
-function backgroundOf(
-  image: NodeImage,
-  canvasOf: (w: number, h: number) => { getContext(kind: '2d'): CanvasRenderingContext2D | null },
-): string | null {
-  try {
-    const size = 24;
-    const ctx = canvasOf(size, size).getContext('2d');
-    if (!ctx) return null;
-    ctx.drawImage(image, 0, 0, size, size);
-    const { data } = ctx.getImageData(0, 0, size, size);
-    let r = 0, g = 0, b = 0, a = 0, n = 0;
-    for (const [cx, cy] of [[0, 0], [size - 2, 0], [0, size - 2], [size - 2, size - 2]] as const) {
-      for (const [dx, dy] of [[0, 0], [1, 0], [0, 1], [1, 1]] as const) {
-        const at = ((cy + dy) * size + (cx + dx)) * 4;
-        r += data[at]!; g += data[at + 1]!; b += data[at + 2]!; a += data[at + 3]!; n += 1;
-      }
-    }
-    // Mostly see-through at the corners: a cut-out. It sits on the dark plate -
-    // unless the cut-out is itself dark, like Rampur's black mark, which on a
-    // dark plate all but vanished. That gets an ivory plate instead.
-    if (a / n < 160) {
-      let ink = 0, inked = 0;
-      for (let at = 0; at < data.length; at += 4) {
-        if (data[at + 3]! < 128) continue;
-        ink += (0.2126 * data[at]! + 0.7152 * data[at + 1]! + 0.0722 * data[at + 2]!) / 255;
-        inked += 1;
-      }
-      return inked > 0 && ink / inked < 0.33 ? '#efe7d4' : null;
-    }
-    const hex = (v: number) => Math.round(v / n).toString(16).padStart(2, '0');
-    return `#${hex(r)}${hex(g)}${hex(b)}`;
-  } catch {
-    // A picture that cannot be read back (another origin) keeps the dark plate.
-    return null;
-  }
-}
-
-/** The metallic ring every brand wears: champagne gold, lit from the top left. */
-function goldRing(ctx: CanvasRenderingContext2D, x: number, y: number, radius: number) {
-  const ring = ctx.createLinearGradient(x - radius, y - radius, x + radius, y + radius);
-  ring.addColorStop(0, '#f6e7bd');
-  ring.addColorStop(0.35, '#caa866');
-  ring.addColorStop(0.6, '#f0dba5');
-  ring.addColorStop(1, '#9c7a41');
-  return ring;
-}
-
-/**
- * A brand, drawn as a badge: its logo or its bottle on a plate the colour of
- * its own background, inside a thin ring of champagne gold, with the light of
- * a glass cabochon across the top and a soft shadow beneath. The picture is
- * fitted inside the circle, never cropped to fill it - a wordmark cropped to a
- * circle loses its ends, and a bottle cropped loses its neck.
+ * A brand, drawn as Obsidian draws a note - a plain round node, sized by how
+ * much it connects to - and dressed in the portfolio's gold: lit from the top
+ * left like a pearl, with a fine dark rim and a soft shadow. Logos were tried
+ * and read as clutter at this size; the name beneath says whose it is.
  */
 function drawBrand(
   node: SimNode,
   ctx: CanvasRenderingContext2D,
   scale: number,
   radius: number,
-  lit: boolean,
   focus: boolean,
-  picture: NodePicture | undefined,
 ): void {
   const x = node.x ?? 0;
   const y = node.y ?? 0;
 
-  // Depth before light: a shadow under every badge, and a warm glow only on
-  // the one being pointed at.
   ctx.save();
-  ctx.shadowColor = focus ? 'rgba(232, 204, 140, 0.4)' : 'rgba(0, 0, 0, 0.55)';
-  ctx.shadowBlur = focus ? 16 : 12;
-  ctx.shadowOffsetY = focus ? 0 : 3;
+  ctx.shadowColor = focus ? 'rgba(232, 204, 140, 0.45)' : 'rgba(0, 0, 0, 0.5)';
+  ctx.shadowBlur = focus ? 14 : 8;
+  ctx.shadowOffsetY = focus ? 0 : 2;
+  const orb = ctx.createRadialGradient(x - radius * 0.35, y - radius * 0.4, radius * 0.08, x, y, radius);
+  orb.addColorStop(0, '#f5e8c6');
+  orb.addColorStop(0.55, '#d5b87d');
+  orb.addColorStop(1, '#a3834c');
   ctx.beginPath();
   ctx.arc(x, y, radius, 0, 2 * Math.PI);
-  if (picture?.plate) {
-    ctx.fillStyle = picture.plate;
-  } else {
-    const plate = ctx.createRadialGradient(x - radius * 0.3, y - radius * 0.4, radius * 0.1, x, y, radius);
-    plate.addColorStop(0, '#2e2a36');
-    plate.addColorStop(1, '#0f0d13');
-    ctx.fillStyle = plate;
-  }
+  ctx.fillStyle = orb;
   ctx.fill();
   ctx.restore();
 
-  // Guarded: a live reload can keep pictures loaded in an older shape.
-  const image = picture?.image;
-  if (image && image.width > 0 && image.height > 0 && picture) {
-    // A picture on its own ground can fill more of the badge, since its edge
-    // no longer shows; a cut-out keeps a margin so the bottle has air.
-    const inner = radius * (picture.plate ? 0.9 : 0.8);
-    const fit = Math.min((inner * 2) / picture.image.width, (inner * 2) / picture.image.height);
-    const w = picture.image.width * fit;
-    const h = picture.image.height * fit;
-    ctx.save();
+  ctx.beginPath();
+  ctx.arc(x, y, radius, 0, 2 * Math.PI);
+  ctx.lineWidth = Math.max(1 / scale, radius * 0.08);
+  ctx.strokeStyle = 'rgba(16, 14, 11, 0.55)';
+  ctx.stroke();
+
+  // Pointed at: a fine gold ring a little way out, as Obsidian rings a
+  // hovered node.
+  if (focus) {
     ctx.beginPath();
-    ctx.arc(x, y, radius, 0, 2 * Math.PI);
-    ctx.clip();
-    ctx.drawImage(picture.image, x - w / 2, y - h / 2, w, h);
-    ctx.restore();
-  } else {
-    // No picture: a monogram in gold, set in a serif, the way a label is.
-    const letters = ctx.createLinearGradient(x, y - radius * 0.5, x, y + radius * 0.5);
-    letters.addColorStop(0, '#f6e7bd');
-    letters.addColorStop(1, '#b8914f');
-    ctx.fillStyle = letters;
-    ctx.font = `600 ${(radius * 0.78).toFixed(2)}px Georgia, 'Times New Roman', serif`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(initialsOf(node.label ?? node.id), x, y + radius * 0.06);
+    ctx.arc(x, y, radius + 4 / scale, 0, 2 * Math.PI);
+    ctx.lineWidth = 1.2 / scale;
+    ctx.strokeStyle = 'rgba(232, 204, 140, 0.6)';
+    ctx.stroke();
   }
-
-  // The glass: a soft sheen across the top half, as light on a domed badge.
-  ctx.save();
-  ctx.beginPath();
-  ctx.arc(x, y, radius, 0, 2 * Math.PI);
-  ctx.clip();
-  const sheen = ctx.createLinearGradient(x, y - radius, x, y + radius * 0.1);
-  sheen.addColorStop(0, 'rgba(255,255,255,0.22)');
-  sheen.addColorStop(1, 'rgba(255,255,255,0)');
-  ctx.fillStyle = sheen;
-  ctx.beginPath();
-  ctx.ellipse(x, y - radius * 0.45, radius * 0.92, radius * 0.6, 0, 0, 2 * Math.PI);
-  ctx.fill();
-  ctx.restore();
-
-  // The ring, thin and metallic, and a hairline halo just outside it.
-  ctx.beginPath();
-  ctx.arc(x, y, radius, 0, 2 * Math.PI);
-  ctx.lineWidth = Math.max(1.4 / scale, radius * 0.075);
-  ctx.strokeStyle = goldRing(ctx, x, y, radius);
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.arc(x, y, radius + Math.max(3 / scale, radius * 0.14), 0, 2 * Math.PI);
-  ctx.lineWidth = 1 / scale;
-  ctx.strokeStyle = lit ? 'rgba(232, 204, 140, 0.45)' : 'rgba(232, 204, 140, 0.18)';
-  ctx.stroke();
 }
 
 /**
- * A trait drawn as a small planet: a soft disc of its colour, a ring, and a
- * bright core. It reads as a different kind of thing from a brand at a glance,
- * which a second size of plain dot never did.
+ * A trait: a plain dot of its kind's colour with a fine dark rim, a size down
+ * from the brands. Kinds are told apart by colour alone, as Obsidian's groups
+ * are.
  */
 function drawTrait(
   node: SimNode,
@@ -2008,7 +1830,6 @@ function drawNode(
     lit: Set<string>;
     matches: Set<string>;
     expanded: Set<string>;
-    images: Map<string, NodePicture>;
     nodeSize: number;
     textFade: number;
   },
@@ -2038,7 +1859,7 @@ function drawNode(
   // points it is; whatever is under the pointer carries more.
 
   if (node.type === 'brand') {
-    drawBrand(node, ctx, scale, radius, inLight, isFocus, node.imageFileId ? state.images.get(node.imageFileId) : undefined);
+    drawBrand(node, ctx, scale, radius, isFocus);
   } else if (node.type === 'trait' && node.dimension) {
     drawTrait(node, ctx, scale, radius, color);
   } else {
