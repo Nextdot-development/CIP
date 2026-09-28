@@ -149,10 +149,21 @@ export type VideoCheck = {
   onScreen: string[] | null;
   /** What the closer look at the findings decided. Null when there was nothing to look at. */
   secondLook: SecondLook | null;
+  /** The search of every frame at full size for forbidden things. Null when no rule forbids anything. */
+  closePass: ClosePass | null;
   /** When each line of text was on screen. Null when no rule needed it timed. */
   timeline: { step: number; spans: TextSpan[] } | null;
   /** The language the soundtrack was heard as, when it was. */
   heardLanguage: string | null;
+};
+
+/** The search of a video's frames, full size, for anything a rule forbids. */
+export type ClosePass = {
+  status: 'done' | 'failed';
+  /** Frames searched. */
+  frames: number;
+  /** Findings it raised before the second look. */
+  found: number;
 };
 
 /**
@@ -271,7 +282,12 @@ export function groundFindings(
   const kept = new Map<string, CheckFinding & { target: RefTarget; frames: number[] }>();
 
   for (const raw of findings) {
-    const ref = typeof raw.ref === 'string' ? raw.ref.trim() : '';
+    // "R1 - competitor logo" is R1. A ref wrapped in words is still the one
+    // ref, and throwing it away threw away a real finding with it. Two refs,
+    // or none, is not one rule, and is discarded as before.
+    const said = typeof raw.ref === 'string' ? raw.ref.trim() : '';
+    const named = [...new Set(said.match(/\b[RF]\d+\b/g) ?? [])];
+    const ref = refs.has(said) ? said : named.length === 1 ? named[0]! : said;
     const target = refs.get(ref);
     // A ref nobody sent: a rule the model made up. Discarded, not reported.
     if (!target) continue;
@@ -611,6 +627,62 @@ async function readTimeline(
   }
 }
 
+/** Frames searched in one call. More, and each one gets less of the model's attention. */
+const FRAMES_PER_SEARCH = 4;
+
+/**
+ * Every frame of the sheet, at full size, searched for what the rules forbid.
+ *
+ * In batches, side by side. A failed batch is a failed pass, said so on the
+ * check, and the sheet's own findings stand - it never removes anything.
+ */
+async function searchFrames(
+  provider: BrainProvider,
+  input: {
+    filename: string;
+    brand: string | null;
+    market: string | null;
+    rules: CheckRule[];
+    houseBrands: string[];
+    frames: SampledFrame[];
+  },
+): Promise<{ findings: CheckFinding[]; pass: ClosePass }> {
+  try {
+    const fitted = await Promise.all(input.frames.map((f) => fitForVision(f.bytes, f.mimeType)));
+    const numbered = fitted.map((f, i) => ({
+      number: i + 1,
+      atSeconds: input.frames[i]!.atSeconds,
+      bytes: f.bytes,
+      mimeType: f.mimeType,
+    }));
+    const batches: (typeof numbered)[] = [];
+    for (let i = 0; i < numbered.length; i += FRAMES_PER_SEARCH) batches.push(numbered.slice(i, i + FRAMES_PER_SEARCH));
+
+    const results = await Promise.all(
+      batches.map((batch) =>
+        provider.checkFrames({
+          filename: input.filename,
+          brand: input.brand,
+          market: input.market,
+          rules: input.rules,
+          houseBrands: input.houseBrands,
+          frames: batch,
+        }),
+      ),
+    );
+    // A frame number from outside its own batch is a misreading.
+    const findings = results.flatMap((result, b) => {
+      const own = new Set(batches[b]!.map((f) => f.number));
+      return result.findings
+        .map((f) => ({ ...f, frames: (f.frames ?? []).filter((n) => own.has(n)) }))
+        .filter((f) => f.frames.length > 0);
+    });
+    return { findings, pass: { status: 'done', frames: numbered.length, found: findings.length } };
+  } catch {
+    return { findings: [], pass: { status: 'failed', frames: 0, found: 0 } };
+  }
+}
+
 /** Frames looked at again, at most. Past this each close-up costs more than it settles. */
 const MAX_CLOSE_UPS = 6;
 
@@ -913,6 +985,7 @@ export async function runCheck(
 
   let analysis;
   let closeUps: { bytes: Buffer; mimeType: string; label: string }[] = [];
+  let closeFound: Promise<{ findings: CheckFinding[]; pass: ClosePass }> | null = null;
   try {
     if (video && frames.length > 0) {
       const [onScreen, timeline] = await Promise.all([
@@ -935,6 +1008,23 @@ export async function runCheck(
           'print from here.',
       }];
     }
+
+    // The close pass runs beside the sheet's check: it needs nothing from it,
+    // and a video check already spends most of its time waiting.
+    const forbidding = sent.filter(
+      (r) => r.kind === 'prohibited' || r.requirement === 'forbidden' || (r.prohibited?.length ?? 0) > 0,
+    );
+    closeFound =
+      video && frames.length > 0 && forbidding.length > 0
+        ? searchFrames(provider, {
+            filename: subject.subject,
+            brand,
+            market,
+            rules: forbidding,
+            houseBrands: (await companyBrands(scope)).map((b) => b.name),
+            frames,
+          })
+        : null;
 
     const fitted = await fitForVision(subject.bytes, subject.mimeType);
     analysis = await provider.checkCreative({
@@ -964,7 +1054,14 @@ export async function runCheck(
     throw failure;
   }
 
-  let grounded = groundFindings(analysis.findings, refs, frames.length);
+  // What the frames showed close up joins what the sheet showed. Grounding
+  // keeps one flag per rule, the more severe, with every frame either named.
+  const close = closeFound ? await closeFound : null;
+  let grounded = groundFindings(
+    analysis.assetKind === 'creative' ? [...analysis.findings, ...(close?.findings ?? [])] : analysis.findings,
+    refs,
+    frames.length,
+  );
 
   // A video's findings were made from thumbnails. Each one that would cost the
   // film anything is looked at again, close up, before it is reported.
@@ -1027,6 +1124,7 @@ export async function runCheck(
              video_timeline = ${video?.timeline ? tx.json(video.timeline) : null},
              heard_language = ${video?.heard.status === 'heard' ? (video.heard.language ?? null) : null}::text,
              second_look = ${secondLook ? tx.json(secondLook) : null},
+             close_pass = ${close ? tx.json(close.pass) : null},
              completed_at = now()
        where id = ${checkId} and company_id = ${scope.companyId}
     `;
@@ -1046,6 +1144,7 @@ type VideoColumns = {
   second_look: SecondLook | null;
   video_timeline: VideoCheck['timeline'];
   heard_language: string | null;
+  close_pass: ClosePass | null;
 };
 
 function videoOf(row: VideoColumns): VideoCheck | null {
@@ -1061,6 +1160,7 @@ function videoOf(row: VideoColumns): VideoCheck | null {
     secondLook: row.second_look,
     timeline: row.video_timeline,
     heardLanguage: row.heard_language,
+    closePass: row.close_pass,
   };
 }
 
@@ -1083,7 +1183,7 @@ export async function getCheck(scope: CompanyScope, checkId: string): Promise<Cr
              c.facts_considered, c.rules_considered, c.error_message, c.created_at,
              c.asset_kind, c.detected_product, c.detected_confidence, c.detected_evidence,
              c.video_seconds, c.video_shots, c.video_frames, c.video_complete, c.heard, c.heard_status,
-             c.video_text, c.second_look, c.video_timeline, c.heard_language
+             c.video_text, c.second_look, c.video_timeline, c.heard_language, c.close_pass
         from creative_checks c
         left join drive_files f on f.id = c.file_id and f.company_id = c.company_id
        where c.id = ${checkId} and c.company_id = ${scope.companyId}
@@ -1177,7 +1277,7 @@ export async function listChecks(
              c.facts_considered, c.rules_considered, c.error_message, c.created_at,
              c.asset_kind, c.detected_product, c.detected_confidence, c.detected_evidence,
              c.video_seconds, c.video_shots, c.video_frames, c.video_complete, c.heard, c.heard_status,
-             c.video_text, c.second_look, c.video_timeline, c.heard_language
+             c.video_text, c.second_look, c.video_timeline, c.heard_language, c.close_pass
         from creative_checks c
         left join drive_files f on f.id = c.file_id and f.company_id = c.company_id
        where c.company_id = ${scope.companyId}

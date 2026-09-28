@@ -25,6 +25,8 @@ import type {
   ReviewAnalysis,
   ReviewInput,
   ReviewVerdict,
+  FramesCheckAnalysis,
+  FramesCheckInput,
   DocumentInput,
   MarketDocumentInput,
   MarketReading,
@@ -60,7 +62,7 @@ export class FakeBrainProvider implements BrainProvider {
   /** Set by tests to exercise a failure path. */
   failWith: BrainFailed | null = null;
   /** Counts calls, so idempotency can be proved rather than assumed. */
-  calls = { image: 0, frames: 0, document: 0, pdfPage: 0, feedback: 0, brief: 0, check: 0, identify: 0, market: 0, chat: 0, ideas: 0, ocr: 0, frameText: 0, review: 0 };
+  calls = { image: 0, frames: 0, document: 0, pdfPage: 0, feedback: 0, brief: 0, check: 0, identify: 0, market: 0, chat: 0, ideas: 0, ocr: 0, frameText: 0, review: 0, closePass: 0 };
 
   /**
    * What the next checks report. Null means a clean pass.
@@ -91,6 +93,13 @@ export class FakeBrainProvider implements BrainProvider {
   reviewVerdicts: ReviewVerdict['verdict'][] | null = null;
   /** The last second look's input. */
   lastReviewInput: ReviewInput | null = null;
+  /**
+   * What searching the frames close up finds. Each finding is reported only by
+   * the batch holding the first frame it names. Null: nothing.
+   */
+  frameFindings: CheckFinding[] | null = null;
+  /** Every close-pass input, in order. */
+  framesCheckInputs: FramesCheckInput[] = [];
 
   /**
    * What the next market readings report. Null means: every sentence in the
@@ -136,11 +145,13 @@ export class FakeBrainProvider implements BrainProvider {
     this.frameReadFails = false;
     this.reviewVerdicts = null;
     this.lastReviewInput = null;
+    this.frameFindings = null;
+    this.framesCheckInputs = [];
     this.identified = null;
     this.marketSignals = null;
     this.chatAnswer = null;
     this.lastChatInput = null;
-    this.calls = { image: 0, frames: 0, document: 0, pdfPage: 0, feedback: 0, brief: 0, check: 0, identify: 0, market: 0, chat: 0, ideas: 0, ocr: 0, frameText: 0, review: 0 };
+    this.calls = { image: 0, frames: 0, document: 0, pdfPage: 0, feedback: 0, brief: 0, check: 0, identify: 0, market: 0, chat: 0, ideas: 0, ocr: 0, frameText: 0, review: 0, closePass: 0 };
   }
 
   private check(): void {
@@ -546,6 +557,19 @@ export class FakeBrainProvider implements BrainProvider {
       throw new BrainFailed('PROVIDER_ERROR', 'transient', 'Reading the frames failed.');
     }
     return { texts: input.frames.map((_, i) => this.frameTexts?.[i] ?? ''), usage: { durationMs: 1 } };
+  }
+
+  async checkFrames(input: FramesCheckInput): Promise<FramesCheckAnalysis> {
+    this.calls.closePass += 1;
+    this.check();
+    this.framesCheckInputs.push(input);
+    const here = new Set(input.frames.map((f) => f.number));
+    return {
+      findings: (this.frameFindings ?? [])
+        .filter((f) => here.has(f.frames?.[0] ?? -1))
+        .map((f) => ({ ...f })),
+      usage: { durationMs: 1 },
+    };
   }
 
   async reviewFindings(input: ReviewInput): Promise<ReviewAnalysis> {

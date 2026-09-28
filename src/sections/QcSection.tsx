@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
-import type { CheckFlag, SecondLook } from '@/server/brain/checker';
+import type { CheckFlag, ClosePass, SecondLook } from '@/server/brain/checker';
 
 /**
  * Creative QC.
@@ -54,6 +54,7 @@ type Report = {
       secondLook: SecondLook | null;
       timeline: { step: number; spans: { text: string; shown: { from: number; to: number }[]; seconds: number }[] } | null;
       heardLanguage: string | null;
+      closePass: ClosePass | null;
     } | null;
   };
   verdict: 'pass' | 'fix' | 'review' | 'nothing_to_check' | 'not_a_creative';
@@ -588,6 +589,14 @@ function VideoNote({ video }: { video: NonNullable<Report['check']['video']> }) 
             </ul>
           )}
         </details>
+      )}
+      {video.closePass && (
+        <p style={{ marginTop: 4 }}>
+          {video.closePass.status === 'done'
+            ? `Searched all ${video.closePass.frames} frames at full size for anything a rule forbids` +
+              (video.closePass.found > 0 ? ` and found ${video.closePass.found} thing${video.closePass.found === 1 ? '' : 's'} to look at.` : ', and found nothing.')
+            : 'The frames could not be searched at full size, so forbidden things were looked for on the thumbnails only.'}
+        </p>
       )}
       {video.secondLook && <SecondLookNote look={video.secondLook} />}
     </div>

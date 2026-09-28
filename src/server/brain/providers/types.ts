@@ -486,6 +486,17 @@ export interface BrainProvider {
   reviewFindings(input: ReviewInput): Promise<ReviewAnalysis>;
 
   /**
+   * Frames of a video at full size, searched for anything a rule forbids.
+   *
+   * The sheet the video is judged from shows each frame a few hundred pixels
+   * wide, and a competitor's bottle on a back shelf or a glass being raised
+   * in a corner is lost at that size. The second look only questions what
+   * was found; this is what finds what the first look missed. Presence only:
+   * something missing from the film cannot be seen in a handful of frames.
+   */
+  checkFrames(input: FramesCheckInput): Promise<FramesCheckAnalysis>;
+
+  /**
    * Which brand a creative is for, read off the creative itself.
    *
    * Asked before the rules are fetched, because which rules apply depends on
@@ -673,6 +684,25 @@ export type ReadFramesInput = {
 export type FrameReading = {
   /** One per frame, in the order sent. Empty where a frame has no text. */
   texts: string[];
+  usage: BrainUsage;
+};
+
+/** A few frames of a video at full size, and the rules that forbid things. */
+export type FramesCheckInput = {
+  /** The display name only. Never a path, never an id. */
+  filename: string;
+  brand: string | null;
+  market: string | null;
+  /** Only rules something can break by being in a frame. */
+  rules: CheckRule[];
+  houseBrands: string[];
+  /** Each labelled with its number in the whole film, and its time. */
+  frames: { number: number; atSeconds: number; bytes: Buffer; mimeType: string }[];
+};
+
+export type FramesCheckAnalysis = {
+  /** Each names the frames it is in, by their number in the whole film. */
+  findings: CheckFinding[];
   usage: BrainUsage;
 };
 

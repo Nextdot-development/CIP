@@ -1040,6 +1040,27 @@ describe('THE CHECKER: a creative judged against the brand, and nothing else', (
     );
   });
 
+  // The model wrote "Frame 5 top-right label" where the ref belonged, and a
+  // competitor logo it had plainly found was thrown away with it.
+  it('reads the ref out of words wrapped round it, and only when there is one', async () => {
+    const { groundFindings } = await import('../src/server/brain/checker');
+    const refs = new Map([
+      ['R1', { kind: 'rule' as const, id: 'a', dimension: 'compliance' as const, requirement: 'forbidden' as const }],
+      ['R2', { kind: 'rule' as const, id: 'b', dimension: 'compliance' as const, requirement: 'required' as const }],
+    ]);
+    const kept = groundFindings(
+      [
+        { ref: 'R1 - competitor logo', dimension: 'compliance', severity: 'critical', message: 'A Smirnoff label.' },
+        { ref: 'R1 and R2', dimension: 'compliance', severity: 'critical', message: 'Two rules at once.' },
+        { ref: 'Frame 5 top-right label', dimension: 'compliance', severity: 'critical', message: 'No rule at all.' },
+        { ref: 'R12', dimension: 'compliance', severity: 'critical', message: 'A rule nobody sent.' },
+      ],
+      refs,
+    );
+    assert.deepEqual(kept.map((f) => f.message), ['A Smirnoff label.']);
+    assert.equal(kept[0]!.ref, 'R1');
+  });
+
   it('throws away a flag that cites a rule nobody sent', async () => {
     await rule('required', 'Carry a responsible drinking message.');
     // R1 exists. R9 does not: that is a rule the model made up, and a flag
@@ -1220,6 +1241,62 @@ describe('THE CHECKER: a creative judged against the brand, and nothing else', (
     assert.equal(fake.lastCheckInput!.sequence!.timeline, null);
     assert.equal(fake.calls.frameText, 1, 'only the shots were read');
     assert.equal(check.video!.timeline, null);
+  });
+
+  // A bottle on a back shelf is lost on a sheet of thumbnails. The sheet's
+  // check found nothing; the frames, searched at full size, did.
+  it('finds a forbidden thing the thumbnails missed by searching every frame close up', async () => {
+    await rule('required', 'Carry the statutory warning.');
+    await rule('forbidden', 'Never show a competitor brand.', 'regulation', null, 'other');
+    fake.frameFindings = [
+      { ref: 'R2', dimension: 'compliance', severity: 'critical', message: 'A competitor bottle is on the shelf.', frames: [2] },
+    ];
+    const { runCheck } = await import('../src/server/brain/checker');
+
+    const check = await runCheck(mm, { fileId: (await uploadVideo()).id });
+
+    assert.equal(check.flags.length, 1, 'what the close pass found was not reported');
+    assert.equal(check.flags[0]!.message, 'A competitor bottle is on the shelf.');
+    assert.equal(check.flags[0]!.atSeconds[0], check.video!.framesAt[1]);
+    // Only the rules something can break by being in a frame: absence is the
+    // sheet's job, and a handful of frames cannot show it.
+    for (const input of fake.framesCheckInputs) {
+      assert.deepEqual(input.rules.map((r) => r.statement), ['Never show a competitor brand.']);
+      assert.ok(input.frames.length <= 4);
+    }
+    const searched = fake.framesCheckInputs.flatMap((i) => i.frames.map((f) => f.number));
+    assert.deepEqual(searched, check.video!.framesAt.map((_, i) => i + 1), 'every frame is searched, once');
+    assert.equal(check.video!.closePass!.status, 'done');
+    assert.equal(check.video!.closePass!.found, 1);
+    // And it went through the second look like anything else found.
+    assert.equal(fake.lastReviewInput!.findings.length, 1);
+  });
+
+  it('keeps one flag per rule when the sheet and the frames both find it', async () => {
+    await rule('forbidden', 'Never show a person drinking.', 'regulation', null, 'other');
+    fake.checkFindings = [
+      { ref: 'R1', dimension: 'compliance', severity: 'warning', message: 'Someone may be drinking.', frames: [1] },
+    ];
+    fake.frameFindings = [
+      { ref: 'R1', dimension: 'compliance', severity: 'critical', message: 'A man drinks from a glass.', frames: [3] },
+    ];
+    const { runCheck } = await import('../src/server/brain/checker');
+
+    const check = await runCheck(mm, { fileId: (await uploadVideo()).id });
+
+    assert.equal(check.flags.length, 1);
+    assert.equal(check.flags[0]!.severity, 'critical');
+    assert.equal(check.flags[0]!.atSeconds.length, 2, 'the frames either named were not both kept');
+  });
+
+  it('does not search the frames when no rule forbids anything', async () => {
+    await rule('required', 'Carry the statutory warning.');
+    const { runCheck } = await import('../src/server/brain/checker');
+
+    const check = await runCheck(mm, { fileId: (await uploadVideo()).id });
+
+    assert.equal(fake.calls.closePass, 0);
+    assert.equal(check.video!.closePass, null);
   });
 
   it('does not look twice at a picture, only at a film', async () => {

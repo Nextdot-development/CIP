@@ -42,6 +42,8 @@ import type {
   PdfPageInput,
   PdfPost,
   ProposedRule,
+  FramesCheckAnalysis,
+  FramesCheckInput,
   ReadFramesInput,
   ReviewAnalysis,
   ReviewInput,
@@ -1350,6 +1352,47 @@ export class OpenAIBrainProvider implements BrainProvider {
     }
 
     return { texts, usage: { durationMs, inputTokens, outputTokens } };
+  }
+
+  async checkFrames(input: FramesCheckInput): Promise<FramesCheckAnalysis> {
+    const rules = input.rules.map(describeRule).join('\n');
+    const content: Content[] = [
+      {
+        type: 'text',
+        text:
+          `These are ${input.frames.length} frames, at full size, from a video named "${input.filename}"` +
+          (input.brand ? ` for the brand ${input.brand}` : '') +
+          (input.market ? ` in ${input.market}` : '') +
+          ', each labelled with its frame number and time.\n\n' +
+          'Look at every part of every frame - backgrounds, shelves, hands, screens, signs, packs, ' +
+          'small print - for anything the rules below forbid. Report only what you can actually see ' +
+          'in a frame and list the frame numbers it is in. ref is the code of the one rule it breaks, ' +
+          `copied exactly - one of ${input.rules.map((r) => r.ref).join(', ')} - never a description.\n\n` +
+          'Do not report anything as missing: these are only some of the frames, and what is not in ' +
+          'them may be elsewhere in the film. A rule marked allowed is never a fault. If nothing in ' +
+          'these frames breaks a rule, return no findings - an empty list is a real answer.\n\n' +
+          (input.houseBrands.length > 0
+            ? `These brands all belong to this same company, and none is a competitor: ${input.houseBrands.join(', ')}.\n\n`
+            : '') +
+          'Severity: critical when a forbidden thing is plainly present, warning when it probably ' +
+          'is, note when it is borderline. Each message says what is where, in plain words.\n\n' +
+          `Rules:\n${rules}`,
+      },
+    ];
+    for (const frame of input.frames) {
+      content.push(
+        { type: 'text', text: `Frame ${frame.number} (${frame.atSeconds.toFixed(1)}s):` },
+        { type: 'image_url', image_url: { url: dataUri(frame.mimeType, frame.bytes), detail: 'high' } },
+      );
+    }
+
+    const { parsed, usage } = await this.call<{ assetKind: string; summary: string; findings: CheckFinding[] }>(
+      content,
+      CHECK_SCHEMA,
+      'frames_check',
+      2_500,
+    );
+    return { findings: Array.isArray(parsed.findings) ? parsed.findings : [], usage };
   }
 
   async reviewFindings(input: ReviewInput): Promise<ReviewAnalysis> {
