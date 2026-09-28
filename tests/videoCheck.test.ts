@@ -7,11 +7,13 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import ffmpeg from 'ffmpeg-static';
 import {
+  framesEvery,
   framesForShots,
   hear,
   readVideoMetadata,
   sceneCuts,
   tempArtefactsRemaining,
+  textSpans,
   withTempFile,
 } from '../src/server/brain/media';
 import { videoContactSheet } from '../src/server/brain/contactSheet';
@@ -31,6 +33,8 @@ let workdir: string;
 let threeShots: Buffer;
 /** One continuous shot, no sound. */
 let oneShot: Buffer;
+/** Three shots of different colours and the same brightness. */
+let sameBrightness: Buffer;
 
 before(async () => {
   assert.ok(ffmpeg, 'ffmpeg-static has no binary for this platform');
@@ -54,6 +58,16 @@ before(async () => {
     '-pix_fmt', 'yuv420p', '-y', plain,
   ], { timeout: 60_000 });
   oneShot = readFileSync(plain);
+
+  const even = join(workdir, 'even.mp4');
+  await run(ffmpeg!, [
+    '-f', 'lavfi', '-i', 'color=c=0x7a1020:s=320x568:d=3:r=10',
+    '-f', 'lavfi', '-i', 'color=c=0x102a7a:s=320x568:d=3:r=10',
+    '-f', 'lavfi', '-i', 'color=c=0x1a6a20:s=320x568:d=3:r=10',
+    '-filter_complex', '[0:v][1:v][2:v]concat=n=3:v=1:a=0,format=yuv420p[v]',
+    '-map', '[v]', '-y', even,
+  ], { timeout: 60_000 });
+  sameBrightness = readFileSync(even);
 });
 
 after(() => {
@@ -116,6 +130,54 @@ describe('finding the cuts', () => {
     const cuts = await withTempFile(threeShots, 'mp4', (path) => sceneCuts(path));
     assert.equal(cuts.length, 2, `cuts found: ${cuts}`);
     assert.ok(Math.abs(cuts[0]! - 3) < 0.25 && Math.abs(cuts[1]! - 7) < 0.25, `cuts at ${cuts}`);
+  });
+
+  // A dark red shot cut to a dark blue one is as plain a cut as any, and
+  // measured on brightness alone it was not there.
+  it('sees a cut between two shots that are equally bright', async () => {
+    const cuts = await withTempFile(sameBrightness, 'mp4', (path) => sceneCuts(path));
+    assert.equal(cuts.length, 2, `cuts found: ${cuts}`);
+  });
+
+  it('finds no cut in one continuous shot', async () => {
+    const cuts = await withTempFile(oneShot, 'mp4', (path) => sceneCuts(path));
+    assert.deepEqual(cuts, []);
+  });
+});
+
+describe('how long text is on screen', () => {
+  it('takes a frame every step, from one decode', async () => {
+    const frames = await withTempFile(oneShot, 'mp4', (path) => framesEvery(path, 9, 1));
+    assert.ok(frames.length >= 8 && frames.length <= 10, `${frames.length} frames`);
+    assert.deepEqual(frames.map((f) => f.atSeconds), frames.map((_, i) => i));
+  });
+
+  it('works out when each line is up, reading the same line loosely', () => {
+    const spans = textSpans(
+      [
+        { at: 0, text: 'Celebrate tonight' },
+        { at: 1, text: 'Celebrate tonight\nConsume responsibly. 25+ only' },
+        { at: 2, text: 'consume responsibly 25+ only' },
+        { at: 3, text: '' },
+        { at: 4, text: 'Consume Responsibly, 25+ only [partly visible]' },
+        { at: 5, text: 'x9' },
+      ],
+      1,
+      5.5,
+    );
+    assert.equal(spans.length, 2, JSON.stringify(spans));
+    const warning = spans.find((s) => /responsibly/i.test(s.text))!;
+    // Up 1-3s, gone at 3s, back 4-5s: two stretches, three seconds in all.
+    assert.deepEqual(warning.shown, [{ from: 1, to: 3 }, { from: 4, to: 5 }]);
+    assert.equal(warning.seconds, 3);
+    const first = spans[0]!;
+    assert.equal(first.text, 'Celebrate tonight');
+    assert.deepEqual(first.shown, [{ from: 0, to: 2 }]);
+  });
+
+  it('never runs a stretch past the end of the film', () => {
+    const [span] = textSpans([{ at: 9, text: 'For 25+ only, drink responsibly' }], 1, 9.4);
+    assert.equal(span!.shown[0]!.to, 9.4);
   });
 });
 

@@ -11,7 +11,8 @@ import { marketsCovering } from './markets';
 import { productShots } from './retrieval';
 import { fitForVision } from './fitImage';
 import { videoContactSheet } from './contactSheet';
-import type { SampledFrame } from './media';
+import { framesEvery, readVideoMetadata, textSpans, withTempFile } from './media';
+import type { SampledFrame, TextSpan } from './media';
 import { brain } from './providers';
 import { ANALYSABLE_VIDEO_TYPES, BRAIN_LIMITS, BrainFailed } from './providers/types';
 import type {
@@ -148,6 +149,10 @@ export type VideoCheck = {
   onScreen: string[] | null;
   /** What the closer look at the findings decided. Null when there was nothing to look at. */
   secondLook: SecondLook | null;
+  /** When each line of text was on screen. Null when no rule needed it timed. */
+  timeline: { step: number; spans: TextSpan[] } | null;
+  /** The language the soundtrack was heard as, when it was. */
+  heardLanguage: string | null;
 };
 
 /**
@@ -433,6 +438,8 @@ async function resolveSubject(
   sequence?: VideoSequence | null;
   /** The sheet's frames at full size, in order. */
   frames?: SampledFrame[];
+  /** The video itself, kept for timing what is on screen once the rules are known. */
+  film?: { bytes: Buffer; extension: string };
 }> {
   const fileId = input.fileId?.trim() || null;
   const generationId = input.generationId?.trim() || null;
@@ -494,10 +501,12 @@ async function resolveSubject(
      * failed for lacking it. See contactSheet.ts.
      */
     if ((ANALYSABLE_VIDEO_TYPES as readonly string[]).includes(mime)) {
+      const body = await fileBytes(scope, file);
       const sheet = await videoContactSheet(
-        await fileBytes(scope, file),
+        body,
         VIDEO_EXTENSIONS[mime] ?? 'mp4',
         file.name,
+        (await companyBrands(scope)).map((b) => b.name),
       );
       return {
         fileId: file.id,
@@ -510,6 +519,7 @@ async function resolveSubject(
         fromDocument: false,
         sequence: sheet.sequence,
         frames: sheet.frames,
+        film: { bytes: body, extension: VIDEO_EXTENSIONS[mime] ?? 'mp4' },
       };
     }
 
@@ -559,6 +569,46 @@ async function resolveSubject(
     brand: briefs[0]?.brand ?? null,
     market: briefs[0]?.market ?? null,
   };
+}
+
+/**
+ * Rules that turn on on-screen text or how long something is shown. Only these
+ * pay for reading the film every second; the rest are judged from its shots.
+ */
+const TIMED_TEXT =
+  /warning|disclaimer|statutory|legal line|super\b|legib|on[- ]?screen|duration|throughout|entire|whole (film|video|ad)|second/i;
+
+/** Moments read when timing on-screen text, at most. */
+const MAX_TIMELINE_FRAMES = 30;
+
+/**
+ * When each line of text is on screen, read every second or so.
+ *
+ * Null when it could not be done: the check goes on without it and says
+ * nothing about timing it did not measure.
+ */
+async function readTimeline(
+  provider: BrainProvider,
+  filename: string,
+  film: { bytes: Buffer; extension: string },
+): Promise<{ step: number; spans: TextSpan[] } | null> {
+  try {
+    const { frames, duration, step } = await withTempFile(film.bytes, film.extension, async (path) => {
+      const metadata = await readVideoMetadata(path);
+      const step = Math.max(1, Math.ceil(metadata.durationSeconds / MAX_TIMELINE_FRAMES));
+      return { frames: await framesEvery(path, metadata.durationSeconds, step), duration: metadata.durationSeconds, step };
+    });
+    if (frames.length === 0) return null;
+    const reading = await provider.readFrames({ filename, frames });
+    const spans = textSpans(
+      frames.map((f, i) => ({ at: f.atSeconds, text: reading.texts[i] ?? '' })),
+      step,
+      duration,
+    );
+    return { step, spans };
+  } catch {
+    return null;
+  }
 }
 
 /** Frames looked at again, at most. Past this each close-up costs more than it settles. */
@@ -636,11 +686,18 @@ export async function lookAgain<F extends { ref: string; severity: CheckFinding[
         : input.video.heard.status === 'no_audio'
           ? '(it has no sound)'
           : '(the soundtrack could not be transcribed; what is said is unknown)';
-  const onScreen = input.video.onScreen
-    ? input.video.onScreen
-        .map((text, i) => `frame ${i + 1} (${(input.video.at[i] ?? 0).toFixed(1)}s): ${text || '(no text)'}`)
-        .join('\n')
-    : '';
+  const onScreen =
+    (input.video.onScreen
+      ? input.video.onScreen
+          .map((text, i) => `frame ${i + 1} (${(input.video.at[i] ?? 0).toFixed(1)}s): ${text || '(no text)'}`)
+          .join('\n')
+      : '') +
+    (input.video.timeline
+      ? `\n\nWhen each line was on screen, read every ${input.video.timeline.step}s:\n` +
+        input.video.timeline.spans
+          .map((s) => `"${s.text}": ${s.shown.map((r) => `${r.from.toFixed(0)}-${r.to.toFixed(0)}s`).join(', ')} (${s.seconds}s)`)
+          .join('\n')
+      : '');
 
   const ruleText = (ref: string): string => {
     const rule = input.rules.get(ref);
@@ -858,7 +915,13 @@ export async function runCheck(
   let closeUps: { bytes: Buffer; mimeType: string; label: string }[] = [];
   try {
     if (video && frames.length > 0) {
-      video = { ...video, onScreen: await readOnScreen(provider, subject.subject, frames) };
+      const [onScreen, timeline] = await Promise.all([
+        readOnScreen(provider, subject.subject, frames),
+        subject.film && sent.some((r) => TIMED_TEXT.test(r.statement))
+          ? readTimeline(provider, subject.subject, subject.film)
+          : Promise.resolve(null),
+      ]);
+      video = { ...video, onScreen, timeline };
       // The end card again, at full size: on the sheet it is one thumbnail
       // among a dozen, and it carries the warning, the logo and the pack.
       const end = frames.at(-1)!;
@@ -961,6 +1024,8 @@ export async function runCheck(
              heard = ${video?.heard.status === 'heard' ? video.heard.text : null}::text,
              heard_status = ${video?.heard.status ?? null}::text,
              video_text = ${video?.onScreen ?? null}::text[],
+             video_timeline = ${video?.timeline ? tx.json(video.timeline) : null},
+             heard_language = ${video?.heard.status === 'heard' ? (video.heard.language ?? null) : null}::text,
              second_look = ${secondLook ? tx.json(secondLook) : null},
              completed_at = now()
        where id = ${checkId} and company_id = ${scope.companyId}
@@ -979,6 +1044,8 @@ type VideoColumns = {
   heard_status: VideoCheck['heardStatus'] | null;
   video_text: string[] | null;
   second_look: SecondLook | null;
+  video_timeline: VideoCheck['timeline'];
+  heard_language: string | null;
 };
 
 function videoOf(row: VideoColumns): VideoCheck | null {
@@ -992,6 +1059,8 @@ function videoOf(row: VideoColumns): VideoCheck | null {
     heard: row.heard,
     onScreen: row.video_text,
     secondLook: row.second_look,
+    timeline: row.video_timeline,
+    heardLanguage: row.heard_language,
   };
 }
 
@@ -1014,7 +1083,7 @@ export async function getCheck(scope: CompanyScope, checkId: string): Promise<Cr
              c.facts_considered, c.rules_considered, c.error_message, c.created_at,
              c.asset_kind, c.detected_product, c.detected_confidence, c.detected_evidence,
              c.video_seconds, c.video_shots, c.video_frames, c.video_complete, c.heard, c.heard_status,
-             c.video_text, c.second_look
+             c.video_text, c.second_look, c.video_timeline, c.heard_language
         from creative_checks c
         left join drive_files f on f.id = c.file_id and f.company_id = c.company_id
        where c.id = ${checkId} and c.company_id = ${scope.companyId}
@@ -1108,7 +1177,7 @@ export async function listChecks(
              c.facts_considered, c.rules_considered, c.error_message, c.created_at,
              c.asset_kind, c.detected_product, c.detected_confidence, c.detected_evidence,
              c.video_seconds, c.video_shots, c.video_frames, c.video_complete, c.heard, c.heard_status,
-             c.video_text, c.second_look
+             c.video_text, c.second_look, c.video_timeline, c.heard_language
         from creative_checks c
         left join drive_files f on f.id = c.file_id and f.company_id = c.company_id
        where c.company_id = ${scope.companyId}

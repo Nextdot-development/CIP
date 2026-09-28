@@ -45,6 +45,8 @@ export async function videoContactSheet(
   bytes: Buffer,
   extension: string,
   filename = 'video',
+  /** Names the soundtrack may say, so the transcription spells them right. */
+  vocabulary: readonly string[] = [],
 ): Promise<ContactSheet> {
   if (bytes.byteLength > BRAIN_LIMITS.maxVideoBytes) {
     throw new BrainFailed('UNSUPPORTED_ASSET', 'permanent', 'That video is too large to check.');
@@ -63,7 +65,7 @@ export async function videoContactSheet(
     // Listening and cutting are independent, so they run side by side: the
     // transcription is a network call and the cut detection is a decode.
     const [heard, cuts] = await Promise.all([
-      hear(path, metadata, filename),
+      hear(path, metadata, filename, vocabulary),
       sceneCuts(path),
     ]);
     const plan = framesForShots(metadata.durationSeconds, cuts);

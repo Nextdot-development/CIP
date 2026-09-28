@@ -1747,6 +1747,7 @@ function videoSheetNote(sequence: VideoSequence): string {
     'a note that names the frame and says it may be mid-animation, so a person watches ' +
     'that moment rather than rejecting the film for it.\n\n' +
     onScreenNote(sequence) +
+    timelineNote(sequence) +
     heardNote(sequence.heard)
   );
 }
@@ -1773,6 +1774,33 @@ function onScreenNote(sequence: VideoSequence): string {
 }
 
 /**
+ * How long each line of text is on screen, measured, not guessed.
+ *
+ * A rule that a warning stays up for the whole film, or for three seconds, can
+ * only be judged from when it is there. Worked out from frames read at even
+ * steps, so it is accurate to about one step, and the model is told that.
+ */
+export function timelineNote(sequence: VideoSequence): string {
+  const timeline = sequence.timeline;
+  if (!timeline) return '';
+  const total = sequence.durationSeconds;
+  const lines = timeline.spans.length > 0
+    ? timeline.spans
+        .map((span) =>
+          `"${span.text}": ${span.shown.map((s) => `${s.from.toFixed(0)}-${s.to.toFixed(0)}s`).join(', ')} ` +
+          `(${span.seconds.toFixed(1)}s of ${total.toFixed(1)}s)`,
+        )
+        .join('\n')
+    : '(no text was on screen at any of these moments)';
+  return (
+    `The film was also read every ${timeline.step}s from start to end, and this is when each ` +
+    'line of text was on screen. It is accurate to about one step. Use it for any rule about ' +
+    'how long, or for how much of the film, something must be shown - and cite the times.\n' +
+    `${lines}\n\n`
+  );
+}
+
+/**
  * What the video says, as far as anybody could hear.
  *
  * Each case is told apart because each licenses something different. Words
@@ -1784,8 +1812,11 @@ function heardNote(heard: VideoSequence['heard']): string {
   switch (heard.status) {
     case 'heard':
       return (
-        'What is said in the video, transcribed automatically from its soundtrack. It ' +
-        'can contain transcription mistakes and, over music, song lyrics:\n' +
+        'What is said in the video, transcribed automatically from its soundtrack' +
+        (heard.language ? ` (heard as ${heard.language})` : '') +
+        '. Where a line starts with a time range, that is when it is said - match it to ' +
+        'the frames from that moment, and give the time when a finding is about a spoken ' +
+        'line. It can contain transcription mistakes and, over music, song lyrics:\n' +
         `"""\n${heard.text}\n"""\n` +
         'Rules about what an advert claims or says apply to these words as much as to ' +
         'on-screen text. A line that is only spoken does not satisfy a rule that ' +

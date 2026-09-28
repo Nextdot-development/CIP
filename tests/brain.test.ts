@@ -1194,6 +1194,34 @@ describe('THE CHECKER: a creative judged against the brand, and nothing else', (
     }
   });
 
+  // "The warning must stay up throughout" cannot be judged from one frame per
+  // shot. It needs when the warning is there, measured.
+  it('times on-screen text when a rule is about it', async () => {
+    await rule('required', 'The statutory warning must be on screen throughout the film.');
+    fake.frameTexts = ['', '', '', '', 'CONSUME RESPONSIBLY. FOR 25+ ONLY', 'CONSUME RESPONSIBLY. FOR 25+ ONLY'];
+    const { runCheck } = await import('../src/server/brain/checker');
+
+    const check = await runCheck(mm, { fileId: (await uploadVideo()).id });
+
+    const timeline = fake.lastCheckInput!.sequence!.timeline!;
+    assert.equal(timeline.step, 1);
+    const warning = timeline.spans.find((s) => /responsibly/i.test(s.text));
+    assert.ok(warning, `the warning was not timed: ${JSON.stringify(timeline)}`);
+    assert.equal(warning.shown[0]!.from, 4);
+    assert.deepEqual(check.video!.timeline, timeline, 'kept with the verdict');
+  });
+
+  it('does not read the film every second when no rule needs it', async () => {
+    await rule('forbidden', 'Never show a person drinking.', 'regulation', null, 'other');
+    const { runCheck } = await import('../src/server/brain/checker');
+
+    const check = await runCheck(mm, { fileId: (await uploadVideo()).id });
+
+    assert.equal(fake.lastCheckInput!.sequence!.timeline, null);
+    assert.equal(fake.calls.frameText, 1, 'only the shots were read');
+    assert.equal(check.video!.timeline, null);
+  });
+
   it('does not look twice at a picture, only at a film', async () => {
     await rule('required', 'Carry the statutory warning.');
     fake.checkFindings = [

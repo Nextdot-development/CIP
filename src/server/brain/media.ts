@@ -178,6 +178,112 @@ export async function frameAt(
 }
 
 /**
+ * A frame every `step` seconds, from one decode.
+ *
+ * For timing what is on screen, not for looking at the film: a warning that
+ * must stay up for three seconds is judged from when it is there, and that
+ * takes evenly spaced moments, not one per shot. One ffmpeg run rather than a
+ * seek per frame - thirty seeks is thirty processes.
+ */
+export async function framesEvery(
+  path: string,
+  durationSeconds: number,
+  step: number,
+  maxEdge = 1024,
+): Promise<SampledFrame[]> {
+  if (!(durationSeconds > 0) || !(step > 0)) return [];
+  const workspace = await mkdtemp(join(tmpdir(), 'cip-timeline-'));
+  try {
+    await run(
+      ffmpegPath(),
+      [
+        '-i', path,
+        '-an',
+        '-vf', `fps=1/${step},scale=${maxEdge}:${maxEdge}:force_original_aspect_ratio=decrease`,
+        '-q:v', '4',
+        '-y', join(workspace, 'at_%04d.jpg'),
+      ],
+      { timeout: 180_000 },
+    );
+    const names = (await readdir(workspace)).filter((n) => n.endsWith('.jpg')).sort();
+    const frames: SampledFrame[] = [];
+    for (const [i, name] of names.entries()) {
+      const atSeconds = i * step;
+      if (atSeconds > durationSeconds) break;
+      frames.push({ bytes: await readFile(join(workspace, name)), mimeType: 'image/jpeg', atSeconds });
+    }
+    return frames;
+  } catch {
+    return [];
+  } finally {
+    await rm(workspace, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+/** One line of on-screen text, and the stretches of the film it is up for. */
+export type TextSpan = {
+  text: string;
+  /** Each stretch it is on screen, in seconds. */
+  shown: { from: number; to: number }[];
+  /** How long it is on screen in all. */
+  seconds: number;
+};
+
+/**
+ * When each line of text is on screen, from text read at evenly spaced moments.
+ *
+ * Worked out here, not asked of a model: "the warning is up from 6 to 9
+ * seconds" is arithmetic on what was read, and a model asked for it guesses.
+ *
+ * Lines are matched loosely - case, punctuation and spacing ignored - because
+ * the same warning read twice comes back with a comma one time and not the
+ * next. A line seen at one moment is taken to be up for that step; two
+ * sightings a step apart are one stretch.
+ */
+export function textSpans(
+  readings: readonly { at: number; text: string }[],
+  step: number,
+  durationSeconds: number,
+): TextSpan[] {
+  const key = (line: string) =>
+    line
+      .toLowerCase()
+      .replace(/\[(illegible|partly visible)\]/g, ' ')
+      .replace(/[^\p{L}\p{N}]+/gu, ' ')
+      .trim();
+
+  const seen = new Map<string, { forms: Map<string, number>; at: number[] }>();
+  for (const reading of readings) {
+    for (const raw of reading.text.split('\n')) {
+      const line = raw.replace(/\[(illegible|partly visible)\]/g, '').trim();
+      const k = key(line);
+      // A stray letter or a number on a pack is not a line anybody times.
+      if (k.replace(/ /g, '').length < 6) continue;
+      const entry = seen.get(k) ?? { forms: new Map<string, number>(), at: [] as number[] };
+      entry.forms.set(line, (entry.forms.get(line) ?? 0) + 1);
+      if (!entry.at.includes(reading.at)) entry.at.push(reading.at);
+      seen.set(k, entry);
+    }
+  }
+
+  const spans: TextSpan[] = [];
+  for (const { forms, at } of seen.values()) {
+    at.sort((a, b) => a - b);
+    const shown: { from: number; to: number }[] = [];
+    for (const t of at) {
+      const last = shown.at(-1);
+      const end = Math.min(durationSeconds, t + step);
+      if (last && t - last.to <= step * 0.5 + 1e-6) last.to = end;
+      else shown.push({ from: t, to: end });
+    }
+    const text = [...forms.entries()].sort((a, b) => b[1] - a[1])[0]![0];
+    const seconds = shown.reduce((sum, s) => sum + (s.to - s.from), 0);
+    spans.push({ text: text.slice(0, 200), shown, seconds: Math.round(seconds * 10) / 10 });
+  }
+  return spans.sort((a, b) => a.shown[0]!.from - b.shown[0]!.from).slice(0, 25);
+}
+
+/**
  * Where the shots change, in seconds.
  *
  * ffmpeg scores how different each frame is from the one before, and a score
@@ -192,12 +298,17 @@ export async function frameAt(
  * frame-to-frame found one change where there were six. Comparing frames half
  * a second apart turns a slow change into a step and found all six.
  *
+ * In colour, not brightness. ffmpeg scores a YUV frame on its brightness
+ * alone, so a cut between two shots equally bright - a red bar scene and a
+ * blue one - scored 0.08 and was never seen, and the shot between them was
+ * never looked at. Compared as RGB the same cut scores 0.73.
+ *
  * An empty list is a real answer - one continuous shot - not a failure.
  */
 export async function sceneCuts(path: string, threshold = 0.3): Promise<number[]> {
   const [hard, gradual] = await Promise.all([
-    changesAt(path, `scale=320:-2,select='gt(scene,${threshold})',showinfo`),
-    changesAt(path, `fps=2,scale=320:-2,select='gt(scene,${threshold})',showinfo`),
+    changesAt(path, `scale=320:-2,format=rgb24,select='gt(scene,${threshold})',showinfo`),
+    changesAt(path, `fps=2,scale=320:-2,format=rgb24,select='gt(scene,${threshold})',showinfo`),
   ]);
 
   // Both passes see a hard cut, a moment apart. One change is one change.
@@ -304,7 +415,7 @@ export function framesForShots(
 
 /** What was heard on a video's soundtrack, or why nothing was. */
 export type Heard =
-  | { status: 'heard'; text: string }
+  | { status: 'heard'; text: string; language?: string | null }
   | { status: 'nothing_said' }
   | { status: 'no_audio' }
   | { status: 'failed' };
@@ -321,14 +432,101 @@ const MAX_HEARD_CHARS = 4_000;
  * will stop listening for the disclaimer that the transcription simply failed
  * to catch.
  */
-export async function hear(path: string, metadata: VideoMetadata, filename: string): Promise<Heard> {
+export async function hear(
+  path: string,
+  metadata: VideoMetadata,
+  filename: string,
+  /** Names the soundtrack is likely to say - the house's brands - so they are spelt right. */
+  vocabulary: readonly string[] = [],
+): Promise<Heard> {
   if (!metadata.hasAudio) return { status: 'no_audio' };
   const audio = await extractAudio(path, metadata);
   if (!audio) return { status: 'failed' };
+
+  // Timed first, so a spoken claim can be put beside the frame it is said
+  // over. The plain transcription is the fallback: words without times are
+  // still worth far more than no words.
+  const timed = await transcribeTimed(audio, filename, vocabulary);
+  if (timed !== 'failed') {
+    if (timed.lines.length === 0) return { status: 'nothing_said' };
+    return {
+      status: 'heard',
+      text: timed.lines.map((l) => `${clock(l.from)}-${clock(l.to)}  ${l.text}`).join('\n').slice(0, MAX_HEARD_CHARS),
+      language: timed.language,
+    };
+  }
   const outcome = await transcribeOutcome(audio, filename);
   if (outcome === 'failed') return { status: 'failed' };
   if (outcome === null) return { status: 'nothing_said' };
-  return { status: 'heard', text: outcome.slice(0, MAX_HEARD_CHARS) };
+  return { status: 'heard', text: outcome.slice(0, MAX_HEARD_CHARS), language: null };
+}
+
+/** 83.4 seconds as "1:23". */
+function clock(seconds: number): string {
+  const whole = Math.max(0, Math.floor(seconds));
+  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`;
+}
+
+/**
+ * Speech the model thinks is probably not speech. Whisper fills music and
+ * silence with stock phrases - "thanks for watching" - and marks them so.
+ */
+const NOT_SPEECH_ABOVE = 0.6;
+const GUESSED_BELOW = -1;
+
+/**
+ * The soundtrack as lines, each with when it is said, and the language.
+ *
+ * Told the house's brand names and that the voiceover may mix Hindi and
+ * English, and asked for it in the Latin script: "Magic Moments" heard as
+ * "magic moment's" or written in Devanagari cannot be matched against a rule
+ * that names it.
+ *
+ * Lines the model itself marks as probably not speech are dropped rather
+ * than reported - over music they are invented, and an invented line can
+ * break a rule nobody broke.
+ */
+export async function transcribeTimed(
+  audio: Buffer,
+  filename: string,
+  vocabulary: readonly string[] = [],
+): Promise<{ lines: { from: number; to: number; text: string }[]; language: string | null } | 'failed'> {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) return 'failed';
+
+  const form = new FormData();
+  form.append('file', new Blob([new Uint8Array(audio)], { type: 'audio/mpeg' }), `${filename}.mp3`);
+  form.append('model', process.env.CIP_BRAIN_TIMED_TRANSCRIBE_MODEL ?? 'whisper-1');
+  form.append('response_format', 'verbose_json');
+  form.append('timestamp_granularities[]', 'segment');
+  form.append(
+    'prompt',
+    'An advertisement voiceover, often in Hinglish - Hindi and English mixed - written in the ' +
+      'Latin script.' +
+      (vocabulary.length > 0 ? ` Brand names: ${vocabulary.slice(0, 30).join(', ')}.` : ''),
+  );
+
+  try {
+    const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${apiKey}` },
+      body: form,
+      signal: AbortSignal.timeout(BRAIN_LIMITS.requestTimeoutMs),
+    });
+    if (!response.ok) return 'failed';
+    const body = (await response.json()) as {
+      language?: unknown;
+      segments?: { start?: unknown; end?: unknown; text?: unknown; no_speech_prob?: unknown; avg_logprob?: unknown }[];
+    };
+    if (!Array.isArray(body.segments)) return 'failed';
+    const lines = body.segments
+      .filter((s) => !(Number(s.no_speech_prob) > NOT_SPEECH_ABOVE && Number(s.avg_logprob) < GUESSED_BELOW))
+      .map((s) => ({ from: Number(s.start) || 0, to: Number(s.end) || 0, text: String(s.text ?? '').trim() }))
+      .filter((l) => l.text.length > 0);
+    return { lines, language: typeof body.language === 'string' ? body.language : null };
+  } catch {
+    return 'failed';
+  }
 }
 
 /**

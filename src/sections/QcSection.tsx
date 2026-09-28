@@ -52,6 +52,8 @@ type Report = {
       heard: string | null;
       onScreen: string[] | null;
       secondLook: SecondLook | null;
+      timeline: { step: number; spans: { text: string; shown: { from: number; to: number }[]; seconds: number }[] } | null;
+      heardLanguage: string | null;
     } | null;
   };
   verdict: 'pass' | 'fix' | 'review' | 'nothing_to_check' | 'not_a_creative';
@@ -544,7 +546,9 @@ function VideoNote({ video }: { video: NonNullable<Report['check']['video']> }) 
         <p style={{ marginTop: 4 }}>{heard}</p>
       ) : (
         <details style={{ marginTop: 4 }}>
-          <summary>What CIP heard (automatic, can mishear)</summary>
+          <summary>
+            What CIP heard{video.heardLanguage ? ` (as ${video.heardLanguage})` : ''} (automatic, can mishear)
+          </summary>
           <p style={{ marginTop: 4, whiteSpace: 'pre-wrap' }}>{video.heard}</p>
         </details>
       )}
@@ -567,6 +571,23 @@ function VideoNote({ video }: { video: NonNullable<Report['check']['video']> }) 
         <p style={{ marginTop: 4 }}>
           The text on the frames could not be read at full size, so small print was judged from the thumbnails.
         </p>
+      )}
+      {video.timeline && (
+        <details style={{ marginTop: 4 }}>
+          <summary>How long each line of text was on screen (read every {video.timeline.step}s)</summary>
+          {video.timeline.spans.length === 0 ? (
+            <p style={{ marginTop: 4 }}>No text was on screen at any of those moments.</p>
+          ) : (
+            <ul style={{ marginTop: 4, paddingLeft: 16 }}>
+              {video.timeline.spans.map((span, i) => (
+                <li key={i}>
+                  &ldquo;{span.text}&rdquo; — {span.shown.map((s) => `${s.from.toFixed(0)}–${s.to.toFixed(0)}s`).join(', ')}
+                  {' '}<strong>({span.seconds}s of {video.durationSeconds.toFixed(0)}s)</strong>
+                </li>
+              ))}
+            </ul>
+          )}
+        </details>
       )}
       {video.secondLook && <SecondLookNote look={video.secondLook} />}
     </div>

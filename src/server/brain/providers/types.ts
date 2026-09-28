@@ -833,7 +833,7 @@ export type VideoSequence = {
   complete: boolean;
   /** The soundtrack, in words, or why there are none. */
   heard:
-    | { status: 'heard'; text: string }
+    | { status: 'heard'; text: string; language?: string | null }
     | { status: 'nothing_said' }
     | { status: 'no_audio' }
     | { status: 'failed' };
@@ -842,6 +842,14 @@ export type VideoSequence = {
    * when they could not be read, which is not the same as there being none.
    */
   onScreen?: string[] | null;
+  /**
+   * When each line of text is on screen, from frames read at even steps.
+   * Present only when a rule turns on on-screen text or how long it is up.
+   */
+  timeline?: {
+    step: number;
+    spans: { text: string; shown: { from: number; to: number }[]; seconds: number }[];
+  } | null;
 };
 
 export type IdentifyInput = {
