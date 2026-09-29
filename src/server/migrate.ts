@@ -1,6 +1,7 @@
 import { readdir, readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import postgres from 'postgres';
 import { adminSql } from './db-admin';
 
 /**
@@ -59,14 +60,21 @@ export async function migrate(
     }
 
     // The cip_app role is created without a password so no secret sits in a
-    // committed .sql file. Set it here, from the environment, every run.
+    // committed .sql file. Set it here, from the environment - but only when
+    // it is not already that. Setting it again to the same value is not a
+    // no-op: Supabase's pooler refused the running app's logins for a while
+    // afterwards, so every migration briefly broke signing in, locally and on
+    // the live site alike.
     const appPassword = process.env.CIP_APP_DB_PASSWORD;
     if (appPassword) {
       await sql`select 1 from pg_roles where rolname = 'cip_app'`.then(async (rows) => {
-        if (rows.length > 0) {
-          await sql.unsafe(`alter role cip_app with password ${literal(appPassword)}`);
-          log('  set   cip_app password from CIP_APP_DB_PASSWORD');
+        if (rows.length === 0) return;
+        if (await appPasswordWorks(appPassword)) {
+          log('  ok    cip_app password already set');
+          return;
         }
+        await sql.unsafe(`alter role cip_app with password ${literal(appPassword)}`);
+        log('  set   cip_app password from CIP_APP_DB_PASSWORD');
       });
     } else {
       log('  warn  CIP_APP_DB_PASSWORD is not set — cip_app has no password yet');
@@ -75,6 +83,33 @@ export async function migrate(
     return applied;
   } finally {
     await sql.end();
+  }
+}
+
+/**
+ * Whether cip_app can already sign in with this password, tried the way the
+ * app signs in: DATABASE_URL, with this password in it. False whenever that
+ * cannot be tried, so the password is set rather than assumed.
+ */
+async function appPasswordWorks(password: string): Promise<boolean> {
+  const url = process.env.DATABASE_URL;
+  if (!url) return false;
+  let target: URL;
+  try {
+    target = new URL(url);
+  } catch {
+    return false;
+  }
+  if (!target.username.startsWith('cip_app')) return false;
+  target.password = encodeURIComponent(password);
+  const probe = postgres(target.toString(), { max: 1, connect_timeout: 10, onnotice: () => {} });
+  try {
+    await probe`select 1`;
+    return true;
+  } catch {
+    return false;
+  } finally {
+    await probe.end({ timeout: 5 }).catch(() => {});
   }
 }
 
