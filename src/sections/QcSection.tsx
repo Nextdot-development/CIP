@@ -346,7 +346,8 @@ export function QcSection({
         )}
       </div>
 
-      <div className="card pad">
+      {/* Choosing and uploading: the page's controls, not the report. */}
+      <div className="card pad no-print">
         <div className="row" style={{ gap: 12, flexWrap: 'wrap', marginBottom: 14 }}>
           <label className="check-field">
             <span className="tiny muted">Brand</span>
@@ -655,7 +656,14 @@ function Deck({
           style={{ float: 'right' }}
           // The browser's own "Save as PDF": the report as it is on screen,
           // without the page around it. See the print rules in check.css.
-          onClick={() => window.print()}
+          // Named for what was checked, so the saved file is not "Creative QC".
+          onClick={() => {
+            const before = document.title;
+            const subject = pages[0]?.report.check.subject;
+            if (subject) document.title = `QC report - ${subject.replace(/\.[a-z0-9]{2,4}$/i, '')}`;
+            window.print();
+            document.title = before;
+          }}
         >
           <Icon name="download" size={14} /> Download PDF
         </button>

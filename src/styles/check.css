@@ -269,13 +269,21 @@
   .shell { display: block; }
   :root {
     --ink-900: #111; --ink-800: #222; --ink-700: #333; --ink-600: #444; --ink-500: #555;
-    --surface: #fff; --canvas: #fff; --line: #ddd; --line-strong: #bbb;
+    --surface: #fff; --canvas: #fff; --line: #ddd; --line-strong: #bbb; --ink-050: #f2f2f2;
     --ok-700: #2f6b2f; --warn-700: #8a5a00; --stop-700: #a2331a;
   }
+  @page { margin: 14mm; }
   body { background: #fff !important; color: #111; }
-  .card { box-shadow: none !important; background: #fff !important; break-inside: avoid; }
-  .qc-flags li { break-inside: avoid; }
+  /* A report is taller than a page. Kept whole, it was pushed onto the next
+     sheet and the first came out blank under the headline; it breaks between
+     flags instead, and each flag stays in one piece. */
+  .card { box-shadow: none !important; background: #fff !important; break-inside: auto; }
+  .qc-flags li, .qc-add li, .qc-list-title { break-inside: avoid; }
+  .qc-list-title { break-after: avoid; }
   .qc-flag-rule { white-space: normal; }
+  .qc-flag-frames img { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+  /* Entrance animations would print their first, invisible frame. */
+  .rise { animation: none !important; }
 }
 
 .qc-passed { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
