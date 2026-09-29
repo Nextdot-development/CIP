@@ -524,31 +524,10 @@ function clock(seconds: number): string {
 }
 
 /**
- * What a video's verdict rests on, in one line - and, on their own lines,
- * only the things a reviewer must know because they weaken it. Everything
- * else (the transcript, the text read, the timings, the flags thrown out) is
- * one click away rather than a wall of text above the flags.
+ * Only what makes a video's verdict less trustworthy, kept in sight: a clean
+ * result on a film whose sound nobody heard is not the same as a clean one.
  */
-function VideoNote({ video }: { video: NonNullable<Report['check']['video']> }) {
-  const sound =
-    video.heardStatus === 'heard'
-      ? `voiceover heard${video.heardLanguage ? ` (${video.heardLanguage})` : ''}`
-      : video.heardStatus === 'nothing_said'
-        ? 'no speech'
-        : video.heardStatus === 'no_audio'
-          ? 'no sound'
-          : null;
-  const facts = [
-    `${clock(video.durationSeconds)} film`,
-    `${video.shots} shot${video.shots === 1 ? '' : 's'}, ${video.framesAt.length} frames`,
-    sound,
-    video.closePass?.status === 'done' ? 'every frame searched full size' : null,
-    video.secondLook?.status === 'done' && video.secondLook.dropped.length > 0
-      ? `${video.secondLook.dropped.length} false flag${video.secondLook.dropped.length === 1 ? '' : 's'} removed`
-      : null,
-  ].filter(Boolean);
-
-  // Only what makes a clean result less trustworthy.
+function VideoCaveats({ video }: { video: NonNullable<Report['check']['video']> }) {
   const caveats = [
     !video.complete && 'Some short shots were not looked at.',
     video.heardStatus === 'failed' && 'Sound could not be transcribed — listen to it yourself.',
@@ -559,61 +538,81 @@ function VideoNote({ video }: { video: NonNullable<Report['check']['video']> }) 
       `${video.secondLook.unsure} flag${video.secondLook.unsure === 1 ? '' : 's'} uncertain — watch ${video.secondLook.unsure === 1 ? 'that moment' : 'those moments'}.`,
   ].filter((c): c is string => typeof c === 'string');
 
-  const read = video.onScreen?.map((text, i) => ({ text, at: video.framesAt[i] ?? 0 })).filter((r) => r.text) ?? [];
-
   return (
-    <div className="qc-video">
-      <p className="qc-video-line">
-        <Icon name="video" size={13} /> {facts.join(' · ')}
-      </p>
+    <>
       {caveats.map((c) => (
-        <p key={c} className="qc-video-caveat">
+        <p key={c} className="qc-caveat">
           <Icon name="alert" size={13} /> {c}
         </p>
       ))}
-      <details className="qc-video-more">
-        <summary>Details</summary>
-        {video.heardStatus === 'heard' && video.heard && (
-          <div className="qc-video-block">
-            <p className="qc-video-head">Voiceover (automatic, can mishear)</p>
-            <p style={{ whiteSpace: 'pre-wrap' }}>{video.heard}</p>
-          </div>
-        )}
-        {read.length > 0 && (
-          <div className="qc-video-block">
-            <p className="qc-video-head">Text on screen</p>
-            <ul>
-              {read.map((r, i) => (
-                <li key={i}><strong>{clock(r.at)}</strong> {r.text.replace(/\s*\n\s*/g, ' / ')}</li>
-              ))}
-            </ul>
-          </div>
-        )}
-        {video.timeline && video.timeline.spans.length > 0 && (
-          <div className="qc-video-block">
-            <p className="qc-video-head">How long each line stayed up</p>
-            <ul>
-              {video.timeline.spans.map((span, i) => (
-                <li key={i}>
-                  <strong>{span.seconds}s</strong> {span.text}{' '}
-                  <span className="muted">({span.shown.map((x) => `${clock(x.from)}–${clock(x.to)}`).join(', ')})</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-        {video.secondLook && video.secondLook.dropped.length > 0 && (
-          <div className="qc-video-block">
-            <p className="qc-video-head">Removed on a closer look</p>
-            <ul>
-              {video.secondLook.dropped.map((d, i) => (
-                <li key={i}>{d.message} <span className="muted">— {d.reason}</span></li>
-              ))}
-            </ul>
-          </div>
-        )}
-      </details>
-    </div>
+    </>
+  );
+}
+
+/** How a video was checked: the film, what was heard and read, what was thrown out. */
+function VideoDetails({ video }: { video: NonNullable<Report['check']['video']> }) {
+  const sound =
+    video.heardStatus === 'heard'
+      ? `voiceover heard${video.heardLanguage ? ` (${video.heardLanguage})` : ''}`
+      : video.heardStatus === 'nothing_said'
+        ? 'no speech'
+        : video.heardStatus === 'no_audio'
+          ? 'no sound'
+          : 'sound not transcribed';
+  const facts = [
+    `${clock(video.durationSeconds)} film`,
+    `${video.shots} shot${video.shots === 1 ? '' : 's'}, ${video.framesAt.length} frames`,
+    sound,
+    video.closePass?.status === 'done' ? 'every frame searched full size' : null,
+    video.secondLook?.status === 'done' && video.secondLook.dropped.length > 0
+      ? `${video.secondLook.dropped.length} false flag${video.secondLook.dropped.length === 1 ? '' : 's'} removed`
+      : null,
+  ].filter(Boolean);
+  const read = video.onScreen?.map((text, i) => ({ text, at: video.framesAt[i] ?? 0 })).filter((r) => r.text) ?? [];
+
+  return (
+    <>
+      <p>{facts.join(' · ')}</p>
+      {video.heardStatus === 'heard' && video.heard && (
+        <div className="qc-video-block">
+          <p className="qc-video-head">Voiceover (automatic, can mishear)</p>
+          <p style={{ whiteSpace: 'pre-wrap' }}>{video.heard}</p>
+        </div>
+      )}
+      {read.length > 0 && (
+        <div className="qc-video-block">
+          <p className="qc-video-head">Text on screen</p>
+          <ul>
+            {read.map((r, i) => (
+              <li key={i}><strong>{clock(r.at)}</strong> {r.text.replace(/\s*\n\s*/g, ' / ')}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {video.timeline && video.timeline.spans.length > 0 && (
+        <div className="qc-video-block">
+          <p className="qc-video-head">How long each line stayed up</p>
+          <ul>
+            {video.timeline.spans.map((span, i) => (
+              <li key={i}>
+                <strong>{span.seconds}s</strong> {span.text}{' '}
+                <span className="muted">({span.shown.map((x) => `${clock(x.from)}–${clock(x.to)}`).join(', ')})</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {video.secondLook && video.secondLook.dropped.length > 0 && (
+        <div className="qc-video-block">
+          <p className="qc-video-head">Removed on a closer look</p>
+          <ul>
+            {video.secondLook.dropped.map((d, i) => (
+              <li key={i}>{d.message} <span className="muted">— {d.reason}</span></li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -702,7 +701,9 @@ function QcReport({
         <div>
           <p className="tiny muted" style={{ marginBottom: 2 }}>Page {page}</p>
           <p className={`qc-verdict ${verdict.tone}`}>{verdict.text}</p>
-          <p className="tiny muted">{verdict.line}</p>
+          {/* "These break a rule" says again what the title and the flags
+              under it already say. The other verdicts' lines explain. */}
+          {report.verdict !== 'fix' && <p className="tiny muted">{verdict.line}</p>}
         </div>
         {report.check.score !== null && (
           <div style={{ textAlign: 'right' }}>
@@ -712,30 +713,46 @@ function QcReport({
         )}
       </div>
 
-      <p className="tiny muted" style={{ marginTop: 10 }}>
-        {report.check.subject} · checked against {report.counts.rulesApplied} rules and{' '}
-        {report.counts.factsApplied} brand facts · {report.counts.passed} passed,{' '}
-        {report.counts.flagged} flagged
+      {/* One line: what was checked, and as which brand. Everything else about
+          how it was checked is folded away below, unless it weakens the
+          verdict - a brand CIP was not sure of applies the wrong rules. */}
+      <p className="tiny muted" style={{ marginTop: 8 }}>
+        {report.check.subject}
+        {report.check.brand ? ` · ${report.check.brand}` : ''}
       </p>
-
-      {/* Which brand's rules were used, and whether a person chose it. A
-          verdict against the wrong brand applied the wrong rules, and seeing
-          which brand was used is the only defence against one. */}
-      {report.check.detected && (
-        <p className="tiny muted" style={{ marginTop: 4 }}>
+      {report.check.detected && (!report.check.brand || report.check.detected.confidence < 0.7) && (
+        <p className="qc-caveat">
+          <Icon name="alert" size={13} />
           {report.check.brand
-            ? `CIP read this as ${report.check.brand}${report.check.detected.product ? ` — ${report.check.detected.product}` : ''}`
-            : 'CIP could not tell which brand this is, so only the house-wide rules were applied'}
-          {report.check.detected.evidence ? ` (${report.check.detected.evidence})` : ''}
-          {' · '}
-          {Math.round(report.check.detected.confidence * 100)}% sure
-          {!report.check.brand ? ' — pick the brand above to apply its own rules' : ''}
+            ? ` Only ${Math.round(report.check.detected.confidence * 100)}% sure this is ${report.check.brand} — pick the brand above if it is not.`
+            : ' CIP could not tell which brand this is, so only the house-wide rules were applied — pick the brand above.'}
         </p>
       )}
+      {report.check.video && <VideoCaveats video={report.check.video} />}
 
-      {report.check.video && <VideoNote video={report.check.video} />}
+      <details className="qc-how">
+        <summary>How it was checked</summary>
+        <p>
+          Against {report.counts.rulesApplied} rules and {report.counts.factsApplied} brand facts ·{' '}
+          {report.counts.passed} passed, {report.counts.flagged} flagged
+        </p>
+        {report.check.detected && report.check.brand && (
+          <p>
+            Read as {report.check.brand}
+            {report.check.detected.product ? ` — ${report.check.detected.product}` : ''}
+            {report.check.detected.evidence ? ` (${report.check.detected.evidence})` : ''} ·{' '}
+            {Math.round(report.check.detected.confidence * 100)}% sure
+          </p>
+        )}
+        {report.check.video && <VideoDetails video={report.check.video} />}
+        {report.check.summary && report.mustFix.length + report.toReview.length > 0 && (
+          <p>{report.check.summary}</p>
+        )}
+      </details>
 
-      {report.check.summary && (
+      {/* With nothing flagged, the summary is the only account of the
+          creative there is. With flags, it only says them again. */}
+      {report.check.summary && report.mustFix.length + report.toReview.length === 0 && (
         <p style={{ marginTop: 12 }}>{report.check.summary}</p>
       )}
 

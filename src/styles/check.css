@@ -251,11 +251,12 @@
   border: 1px solid var(--line-strong); border-radius: 999px; padding: 0 6px;
 }
 
-/* What a video check rested on: one line, the caveats, and the rest folded. */
-.qc-video { margin-top: 10px; font-size: 12.5px; color: var(--ink-500); }
-.qc-video-line, .qc-video-caveat { display: flex; align-items: center; gap: 6px; margin: 0 0 3px; }
-.qc-video-caveat { color: var(--warn-700); }
-.qc-video-more summary { cursor: pointer; color: var(--ink-600); margin-top: 2px; }
+/* What weakens a verdict, in sight; how it was checked, folded. */
+.qc-caveat { display: flex; align-items: center; gap: 6px; margin: 4px 0 0; font-size: 12.5px; color: var(--warn-700); }
+.qc-how { margin-top: 6px; font-size: 12.5px; color: var(--ink-500); }
+.qc-how summary { cursor: pointer; color: var(--ink-600); width: fit-content; }
+.qc-how > p { margin: 6px 0 0; }
+
 .qc-video-block { margin-top: 8px; }
 .qc-video-head { font-weight: 600; color: var(--ink-700); margin: 0 0 3px; }
 .qc-video-block ul { margin: 0; padding-left: 16px; }
@@ -263,8 +264,8 @@
 /* On paper: the report and nothing else, dark ink on white. The app is dark
    only, and its light text would print as nothing. */
 @media print {
-  .sidebar, .mobilebar, .no-print, .qc-video-more summary, button { display: none !important; }
-  .qc-video-more > *:not(summary) { display: block; }
+  /* How it was checked is for the reviewer; the paper is the verdict. */
+  .sidebar, .mobilebar, .no-print, .qc-how, button { display: none !important; }
   .shell { display: block; }
   :root {
     --ink-900: #111; --ink-800: #222; --ink-700: #333; --ink-600: #444; --ink-500: #555;
