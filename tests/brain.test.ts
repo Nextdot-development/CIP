@@ -1061,6 +1061,29 @@ describe('THE CHECKER: a creative judged against the brand, and nothing else', (
     assert.equal(kept[0]!.ref, 'R1');
   });
 
+  // Eight flags on one film each showed the same end card: five of them were
+  // lines it was missing, which is one list to add, not five moments to see.
+  it('keeps what to add apart from what to change, and remembers which', async () => {
+    const { issueOf } = await import('../src/server/brain/checker');
+    assert.equal(issueOf("No 'Drink Responsibly' line; add on end card."), 'missing');
+    assert.equal(issueOf('Health warnings missing at bottom; add them.'), 'missing');
+    assert.equal(issueOf('Logo bottom-right; move it top-right.'), 'wrong');
+    assert.equal(issueOf('Bottle labels are blurred; restore the pack.'), 'wrong');
+    // What the checker says wins over what the words suggest.
+    assert.equal(issueOf('No problem with the pack, but it is stretched.', 'wrong'), 'wrong');
+
+    await rule('required', 'Carry "Drink Responsibly".');
+    await rule('required', 'The logo sits top-right.');
+    fake.checkFindings = [
+      { ref: 'R1', dimension: 'compliance', severity: 'critical', message: 'Not on the end card.', issue: 'missing' },
+      { ref: 'R2', dimension: 'compliance', severity: 'critical', message: 'Logo bottom-right; move it.', issue: 'wrong' },
+    ];
+    const check = await checkedImage();
+    const by = Object.fromEntries(check.flags.map((f) => [f.message, f.issue]));
+    assert.equal(by['Not on the end card.'], 'missing');
+    assert.equal(by['Logo bottom-right; move it.'], 'wrong');
+  });
+
   it('throws away a flag that cites a rule nobody sent', async () => {
     await rule('required', 'Carry a responsible drinking message.');
     // R1 exists. R9 does not: that is a rule the model made up, and a flag

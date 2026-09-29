@@ -97,6 +97,8 @@ export type CheckFlag = {
   correction: string | null;
   /** For a video: the moments it is about, in seconds. Empty for the whole film. */
   atSeconds: number[];
+  /** missing: add something that is not there. wrong: change something that is. */
+  issue: 'missing' | 'wrong';
 };
 
 export type CreativeCheck = {
@@ -273,13 +275,27 @@ type RefTarget =
  * Exported for the tests, because this is the part of the checker that stands
  * between a model's imagination and a reviewer's screen.
  */
+/**
+ * Whether a finding is about something absent, from its words.
+ *
+ * For findings made before the checker said so itself, and for a checker that
+ * leaves it out. "No 'Drink Responsibly' line" and "the warning is missing"
+ * are things to add; "logo bottom-right" is a thing to change.
+ */
+export function issueOf(message: string, said?: unknown): 'missing' | 'wrong' {
+  if (said === 'missing' || said === 'wrong') return said;
+  return /^\s*no\b|\bmissing\b|\b(is|are) (absent|not (shown|present|visible|displayed|included))\b|\blacks?\b|\bnot (carry|carried|include|included|display|displayed|shown)\b|\bnowhere\b/i.test(message)
+    ? 'missing'
+    : 'wrong';
+}
+
 export function groundFindings(
   findings: CheckFinding[],
   refs: Map<string, RefTarget>,
   /** Frames on a video's sheet. A frame number outside them is not a frame. */
   frameCount = 0,
-): (CheckFinding & { target: RefTarget; frames: number[] })[] {
-  const kept = new Map<string, CheckFinding & { target: RefTarget; frames: number[] }>();
+): (CheckFinding & { target: RefTarget; frames: number[]; issue: 'missing' | 'wrong' })[] {
+  const kept = new Map<string, CheckFinding & { target: RefTarget; frames: number[]; issue: 'missing' | 'wrong' }>();
 
   for (const raw of findings) {
     // "R1 - competitor logo" is R1. A ref wrapped in words is still the one
@@ -329,6 +345,7 @@ export function groundFindings(
       message,
       target,
       frames,
+      issue: issueOf(message, raw.issue),
     };
 
     // One flag per rule, the most severe of whatever was said about it, and
@@ -1136,12 +1153,12 @@ export async function runCheck(
     for (const finding of grounded) {
       await tx`
         insert into check_flags
-          (company_id, check_id, dimension, severity, message, fact_id, rule_id, at_seconds)
+          (company_id, check_id, dimension, severity, message, fact_id, rule_id, at_seconds, issue)
         values
           (${scope.companyId}, ${checkId}, ${finding.dimension}, ${finding.severity}, ${finding.message},
            ${finding.target.kind === 'fact' ? finding.target.id : null},
            ${finding.target.kind === 'rule' ? finding.target.id : null},
-           ${finding.frames.map((n) => frames[n - 1]!.atSeconds)}::real[])
+           ${finding.frames.map((n) => frames[n - 1]!.atSeconds)}::real[], ${finding.issue})
       `;
     }
     await tx`
@@ -1234,12 +1251,12 @@ export async function getCheck(scope: CompanyScope, checkId: string): Promise<Cr
       fact_id: string | null; fact_attribute: string | null; fact_value: string | null; fact_brand: string | null;
       rule_id: string | null; rule_text: string | null; rule_source: RuleSource | null; rule_url: string | null;
       status: CheckFlag['status']; dispute_reason: CheckFlag['disputeReason']; correction: string | null;
-      at_seconds: number[] | null;
+      at_seconds: number[] | null; issue: 'missing' | 'wrong' | null;
     }[]>`
       select g.id, g.dimension, g.severity, g.message,
              g.fact_id, b.attribute as fact_attribute, b.value as fact_value, b.brand as fact_brand,
              g.rule_id, r.rule as rule_text, r.source as rule_source, r.reference_url as rule_url,
-             g.status, g.dispute_reason, g.correction, g.at_seconds
+             g.status, g.dispute_reason, g.correction, g.at_seconds, g.issue
         from check_flags g
         left join brand_dna_facts b on b.id = g.fact_id and b.company_id = g.company_id
         left join compliance_rules r on r.id = g.rule_id and r.company_id = g.company_id
@@ -1289,6 +1306,8 @@ export async function getCheck(scope: CompanyScope, checkId: string): Promise<Cr
         status: g.status,
         disputeReason: g.dispute_reason,
         atSeconds: (g.at_seconds ?? []).map(Number),
+        // Read from the words for a flag written before the checker said.
+        issue: issueOf(g.message, g.issue),
         correction: g.correction,
       })),
     };

@@ -238,6 +238,19 @@
   .qc-flags li { flex-direction: column; }
 }
 
+/* What the creative is missing: one box of points, after everything to change. */
+.qc-add {
+  margin-top: 18px; padding: 14px 16px 12px; border-radius: 10px;
+  border: 1px solid var(--line); border-left: 3px solid var(--stop-500); background: var(--surface);
+}
+.qc-add ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; }
+.qc-add li { font-size: 13.5px; color: var(--ink-900); line-height: 1.45; }
+.qc-add li::marker { color: var(--stop-500); }
+.qc-add-soft {
+  margin-left: 6px; font-size: 11px; color: var(--warn-700);
+  border: 1px solid var(--line-strong); border-radius: 999px; padding: 0 6px;
+}
+
 /* What a video check rested on: one line, the caveats, and the rest folded. */
 .qc-video { margin-top: 10px; font-size: 12.5px; color: var(--ink-500); }
 .qc-video-line, .qc-video-caveat { display: flex; align-items: center; gap: 6px; margin: 0 0 3px; }

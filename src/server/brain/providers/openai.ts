@@ -426,7 +426,7 @@ const CHECK_SCHEMA = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['ref', 'dimension', 'severity', 'message', 'frames'],
+        required: ['ref', 'dimension', 'severity', 'message', 'frames', 'issue'],
         properties: {
           ref: { type: 'string' },
           dimension: { type: 'string', enum: ['visual', 'verbal', 'compliance'] },
@@ -435,6 +435,10 @@ const CHECK_SCHEMA = {
           // For a video, which frames the finding is about, so it can be
           // looked at again close up. Empty for a single picture.
           frames: { type: 'array', items: { type: 'integer' } },
+          // Whether the fix is to add something or to change what is there.
+          // A reviewer handles the two differently: one is a list to add to
+          // the end card, the other is a moment in the film to go and change.
+          issue: { type: 'string', enum: ['missing', 'wrong'] },
         },
       },
     },
@@ -1091,6 +1095,9 @@ export class OpenAIBrainProvider implements BrainProvider {
           // A reviewer reads a dozen of these. The rule is printed beside each
           // one, so a message that restates it is the same thing said twice.
           MESSAGE_STYLE +
+          'Set issue to "missing" when something a rule requires is not there at all, so the ' +
+          'fix is to add it; and to "wrong" when something that is there is wrong - misplaced, ' +
+          'distorted, forbidden, badly worded - so the fix is to change or remove it.\n\n' +
           'Write summary as one short sentence. If nothing is wrong, return no findings - an ' +
           'empty list is a real answer.\n\n' +
           (input.sequence
@@ -1409,7 +1416,12 @@ export class OpenAIBrainProvider implements BrainProvider {
       'frames_check',
       2_500,
     );
-    return { findings: Array.isArray(parsed.findings) ? parsed.findings : [], usage };
+    // Everything found by looking in a frame is there to be seen: a forbidden
+    // thing present is always something to change, never something to add.
+    return {
+      findings: (Array.isArray(parsed.findings) ? parsed.findings : []).map((f) => ({ ...f, issue: 'wrong' as const })),
+      usage,
+    };
   }
 
   async reviewFindings(input: ReviewInput): Promise<ReviewAnalysis> {

@@ -918,6 +918,11 @@ export type CheckFinding = {
   message: string;
   /** For a video: the frames it is about, numbered from 1. Empty for the whole film. */
   frames?: number[];
+  /**
+   * missing: something a rule requires is not there, and the fix is to add it.
+   * wrong: something that is there is wrong, and the fix is to change it.
+   */
+  issue?: 'missing' | 'wrong';
 };
 
 /**

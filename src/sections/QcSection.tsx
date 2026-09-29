@@ -739,14 +739,21 @@ function QcReport({
         <p style={{ marginTop: 12 }}>{report.check.summary}</p>
       )}
 
-      {report.mustFix.length > 0 && (
-        <FlagList title="Fix these" tone="tone-stop" flags={report.mustFix}
+      {/* Something there to change is shown at its moment, with the frame.
+          Something not there at all has no moment to show - every frame of
+          it is just the end card - so those are one list to add, at the end. */}
+      {report.mustFix.some((f) => f.issue === 'wrong') && (
+        <FlagList title="Fix these" tone="tone-stop" flags={report.mustFix.filter((f) => f.issue === 'wrong')}
           checkId={report.check.id} framesAt={report.check.video?.framesAt ?? []} />
       )}
-      {report.toReview.length > 0 && (
-        <FlagList title="Worth a look" tone="tone-warn" flags={report.toReview}
+      {report.toReview.some((f) => f.issue === 'wrong') && (
+        <FlagList title="Worth a look" tone="tone-warn" flags={report.toReview.filter((f) => f.issue === 'wrong')}
           checkId={report.check.id} framesAt={report.check.video?.framesAt ?? []} />
       )}
+      <AddList
+        mustAdd={report.mustFix.filter((f) => f.issue === 'missing')}
+        mayAdd={report.toReview.filter((f) => f.issue === 'missing')}
+      />
 
       {report.passed.length > 0 && (
         <div style={{ marginTop: 18 }}>
@@ -766,6 +773,31 @@ function QcReport({
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Everything the creative is missing, as one list to work through.
+ *
+ * Each point is what to add, short; the rule behind it is a hover away. What
+ * a rule requires comes first, and what is only worth a look is marked so.
+ */
+function AddList({ mustAdd, mayAdd }: { mustAdd: CheckFlag[]; mayAdd: CheckFlag[] }) {
+  if (mustAdd.length + mayAdd.length === 0) return null;
+  return (
+    <div className="qc-add">
+      <p className="qc-list-title tone-stop">Missing — add these · {mustAdd.length + mayAdd.length}</p>
+      <ul>
+        {[...mustAdd, ...mayAdd].map((flag) => (
+          <li key={flag.id} title={flag.citedRule?.rule ?? undefined}>
+            {flag.message}
+            {mayAdd.includes(flag) && (
+              <span className="qc-add-soft"> worth a look</span>
+            )}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
