@@ -15,6 +15,23 @@ import type { FilePage, GoogleDriveApi, GoogleFile, TokenSet } from './client';
  */
 export class FakeGoogleDrive implements GoogleDriveApi {
   readonly configured = true;
+  /** Set by a test that connects by sharing. Null: no service account. */
+  serviceAccountEmail: string | null = null;
+  serviceAccountCalls = 0;
+  /** Folder ids shared with the service account. Others read as not found. */
+  sharedWithServiceAccount = new Set<string>();
+
+  async serviceAccountToken(): Promise<TokenSet> {
+    this.serviceAccountCalls += 1;
+    if (!this.serviceAccountEmail) throw new GoogleDriveError('needs_reauth', 'No service account.');
+    return {
+      accessToken: 'service-account-token',
+      refreshToken: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      scope: 'https://www.googleapis.com/auth/drive.readonly',
+      accountEmail: this.serviceAccountEmail,
+    };
+  }
 
   /** Contents by folder id. */
   private folders = new Map<string, Map<string, GoogleFile>>();
@@ -80,6 +97,9 @@ export class FakeGoogleDrive implements GoogleDriveApi {
   }
 
   reset(): void {
+    this.serviceAccountEmail = null;
+    this.serviceAccountCalls = 0;
+    this.sharedWithServiceAccount.clear();
     this.folders.clear();
     this.contents.clear();
     this.failNext = null;
@@ -145,8 +165,12 @@ export class FakeGoogleDrive implements GoogleDriveApi {
     return { files: page.map((f) => ({ ...f })), nextPageToken: next };
   }
 
-  async getFile(_accessToken: string, fileId: string): Promise<GoogleFile> {
+  async getFile(accessToken: string, fileId: string): Promise<GoogleFile> {
     this.check();
+    // The service account sees only what was shared with it, as in Drive.
+    if (accessToken === 'service-account-token' && this.folders.has(fileId) && !this.sharedWithServiceAccount.has(fileId)) {
+      throw new GoogleDriveError('permanent', 'File not found.');
+    }
     for (const folder of this.folders.values()) {
       const file = folder.get(fileId);
       if (file) return { ...file };

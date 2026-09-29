@@ -370,3 +370,9 @@ a.gtag:hover { color: var(--ink-900); border-color: var(--ink-400); }
   }
   .navscrim { display: block; position: fixed; inset: 0; background: rgba(10, 9, 7, .55); z-index: 95; }
 }
+
+/* The address a Drive folder is shared with: selectable in one click. */
+.share-email {
+  padding: 6px 10px; border-radius: 8px; border: 1px solid var(--line-strong);
+  background: var(--ink-050); font-size: 12.5px; user-select: all; word-break: break-all;
+}

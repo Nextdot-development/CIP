@@ -33,7 +33,8 @@ export function KnowledgeSection({
   const [connection, setConnection] = useState(initial);
   const [files, setFiles] = useState(initialFiles);
   const [folderInput, setFolderInput] = useState('');
-  const [busy, setBusy] = useState<'folder' | 'sync' | 'disconnect' | null>(null);
+  const [busy, setBusy] = useState<'folder' | 'share' | 'sync' | 'disconnect' | null>(null);
+  const [shareInput, setShareInput] = useState('');
 
   // The callback comes back with an outcome in the URL. Said once, then the
   // parameter is cleared so a refresh does not repeat it.
@@ -77,7 +78,28 @@ export function KnowledgeSection({
     [note],
   );
 
+  // A folder shared with CIP's service account: nobody signs in.
+  const connectShared = useCallback(async (link: string) => {
+    setBusy('share');
+    try {
+      const result = await post('/api/integrations/google-drive/share', { folder: link.trim() });
+      if (result) {
+        setShareInput('');
+        setFolderInput('');
+        note('Folder connected. Sync when you are ready.');
+        await refresh();
+      }
+    } finally {
+      setBusy(null);
+    }
+  }, [note, post, refresh]);
+
   const chooseFolder = useCallback(async () => {
+    // Read by the service account, a new folder is one shared with it.
+    if (connection.authKind === 'service_account') {
+      await connectShared(folderInput);
+      return;
+    }
     setBusy('folder');
     try {
       const result = await post('/api/integrations/google-drive/folder', {
@@ -91,7 +113,7 @@ export function KnowledgeSection({
     } finally {
       setBusy(null);
     }
-  }, [folderInput, note, post, refresh]);
+  }, [connection.authKind, connectShared, folderInput, note, post, refresh]);
 
   const syncNow = useCallback(async () => {
     setBusy('sync');
@@ -153,7 +175,18 @@ export function KnowledgeSection({
         title="Connected Google Drive"
         action={<Pill tone={TONE[connection.status]}>{LABEL[connection.status]}</Pill>}
       >
-        {connection.status === 'disconnected' && (
+        {connection.status !== 'connected' && connection.serviceAccountEmail && (
+          <SharePanel
+            email={connection.serviceAccountEmail}
+            value={shareInput}
+            onChange={setShareInput}
+            busy={busy === 'share'}
+            disabled={busy !== null}
+            onConnect={() => void connectShared(shareInput)}
+          />
+        )}
+
+        {connection.status === 'disconnected' && !connection.serviceAccountEmail && (
           <div className="stack">
             <p className="small muted">
               Connect a Google account and choose one folder. CIP reads it — nothing else, and
@@ -165,7 +198,7 @@ export function KnowledgeSection({
           </div>
         )}
 
-        {connection.status === 'needs_reauth' && (
+        {connection.status === 'needs_reauth' && !connection.serviceAccountEmail && (
           <div className="stack">
             <div className="notice">
               <Icon name="alert" size={15} />
@@ -397,3 +430,57 @@ const OUTCOMES: Record<string, string> = {
   state: 'That sign-in did not match this session, so it was refused.',
   failed: 'Google would not complete the connection. Try again.',
 };
+
+/**
+ * Connecting by sharing: the folder is shared with CIP's own address, the way
+ * it would be with a colleague, and its link pasted here. No sign-in, and so
+ * nothing that expires every week or works only for listed testers.
+ */
+function SharePanel({
+  email, value, onChange, busy, disabled, onConnect,
+}: {
+  email: string;
+  value: string;
+  onChange: (value: string) => void;
+  busy: boolean;
+  disabled: boolean;
+  onConnect: () => void;
+}) {
+  const { note } = useToast();
+  return (
+    <div className="stack">
+      <p className="small">
+        <b className="strong">1.</b> In Google Drive, open the folder, click <b>Share</b>, and add this
+        address as a <b>Viewer</b>:
+      </p>
+      <div className="row-gap" style={{ alignItems: 'center' }}>
+        <code className="share-email">{email}</code>
+        <button
+          type="button"
+          className="btn btn-sm"
+          onClick={() => {
+            void navigator.clipboard?.writeText(email).then(
+              () => note('Address copied'),
+              () => note('Copy it from the box'),
+            );
+          }}
+        >
+          Copy
+        </button>
+      </div>
+      <label className="field">
+        <span className="field-label"><b className="strong">2.</b> Paste the folder link</span>
+        <input
+          className="field-input"
+          value={value}
+          placeholder="https://drive.google.com/drive/folders/…"
+          onChange={(e) => onChange(e.target.value)}
+        />
+      </label>
+      <button type="button" className="btn btn-primary" disabled={disabled || !value.trim()} onClick={onConnect}>
+        <Icon name="link" size={15} /> {busy ? 'Checking...' : 'Connect folder'}
+      </button>
+      <p className="small muted">CIP only reads the folder. Remove the share in Drive and it stops.</p>
+    </div>
+  );
+}

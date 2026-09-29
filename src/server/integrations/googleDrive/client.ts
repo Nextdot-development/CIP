@@ -1,3 +1,4 @@
+import { createSign } from 'node:crypto';
 import 'server-only';
 
 /**
@@ -58,6 +59,13 @@ export class GoogleDriveError extends Error {
 
 export interface GoogleDriveApi {
   readonly configured: boolean;
+  /**
+   * The address of CIP's own service account, when one is set up. A folder
+   * shared with this address can be read without anybody signing in.
+   */
+  readonly serviceAccountEmail: string | null;
+  /** An access token for the service account. */
+  serviceAccountToken(): Promise<TokenSet>;
   /** Exchanges an authorization code for tokens. */
   exchangeCode(code: string, redirectUri: string): Promise<TokenSet>;
   /** Trades a refresh token for a fresh access token. */
@@ -124,13 +132,59 @@ export class GoogleDriveTooLarge extends GoogleDriveError {
 
 export class GoogleDriveClient implements GoogleDriveApi {
   readonly configured: boolean;
+  readonly serviceAccountEmail: string | null;
   private readonly clientId: string | undefined;
   private readonly clientSecret: string | undefined;
+  private readonly serviceAccount: ServiceAccountKey | null;
+  private serviceAccountCached: TokenSet | null = null;
 
-  constructor(clientId: string | undefined, clientSecret: string | undefined) {
+  constructor(
+    clientId: string | undefined,
+    clientSecret: string | undefined,
+    serviceAccount: ServiceAccountKey | null = null,
+  ) {
     this.clientId = clientId;
     this.clientSecret = clientSecret;
-    this.configured = Boolean(clientId && clientSecret);
+    this.serviceAccount = serviceAccount;
+    this.serviceAccountEmail = serviceAccount?.email ?? null;
+    // Either way of reading a Drive makes the integration usable.
+    this.configured = Boolean(clientId && clientSecret) || serviceAccount !== null;
+  }
+
+  /**
+   * A token for the service account, from a signed assertion.
+   *
+   * Kept until a minute before it expires: every file in a sync asks for one,
+   * and each would otherwise be a round trip to Google.
+   */
+  async serviceAccountToken(): Promise<TokenSet> {
+    if (!this.serviceAccount) {
+      throw new GoogleDriveError('needs_reauth', "CIP's Google service account is not set up on this server.");
+    }
+    const cached = this.serviceAccountCached;
+    if (cached && cached.expiresAt.getTime() - Date.now() > 60_000) return cached;
+
+    const response = await this.fetchWithRetry(OAUTH_TOKEN, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+        assertion: serviceAccountAssertion(this.serviceAccount, new Date()),
+      }),
+    });
+    const payload = (await response.json()) as { access_token?: string; expires_in?: number };
+    if (!payload.access_token) {
+      throw new GoogleDriveError('needs_reauth', "Google did not accept CIP's service account key.");
+    }
+    const token: TokenSet = {
+      accessToken: payload.access_token,
+      refreshToken: null,
+      expiresAt: new Date(Date.now() + (payload.expires_in ?? 3600) * 1000),
+      scope: DRIVE_SCOPE,
+      accountEmail: this.serviceAccount.email,
+    };
+    this.serviceAccountCached = token;
+    return token;
   }
 
   async exchangeCode(code: string, redirectUri: string): Promise<TokenSet> {
@@ -146,7 +200,7 @@ export class GoogleDriveClient implements GoogleDriveApi {
   }
 
   private async token(fields: Record<string, string>): Promise<TokenSet> {
-    if (!this.configured) {
+    if (!this.clientId || !this.clientSecret) {
       throw new GoogleDriveError('permanent', 'Google Drive is not configured.');
     }
 
@@ -479,6 +533,51 @@ function emailFromIdToken(idToken: string | undefined): string | null {
   }
 }
 
+/** The parts of a service account's JSON key that are used. */
+export type ServiceAccountKey = { email: string; privateKey: string };
+
+/**
+ * The service account key from the environment, or null.
+ *
+ * GOOGLE_SERVICE_ACCOUNT_KEY holds the JSON key file Google gives out, either
+ * as it is or base64-encoded - an environment variable is one line, and a
+ * pasted multi-line key is the usual way this breaks. Anything that does not
+ * parse is treated as absent, never guessed at.
+ */
+export function serviceAccountFromEnv(raw = process.env.GOOGLE_SERVICE_ACCOUNT_KEY): ServiceAccountKey | null {
+  const text = raw?.trim();
+  if (!text) return null;
+  for (const candidate of [text, Buffer.from(text, 'base64').toString('utf8')]) {
+    try {
+      const parsed = JSON.parse(candidate) as { client_email?: unknown; private_key?: unknown };
+      if (typeof parsed.client_email === 'string' && typeof parsed.private_key === 'string') {
+        return { email: parsed.client_email, privateKey: parsed.private_key.replace(/\\n/g, '\n') };
+      }
+    } catch {
+      // Not this encoding.
+    }
+  }
+  return null;
+}
+
+/**
+ * The signed request a service account trades for a token: a JWT, RS256,
+ * asking for read-only Drive for one hour.
+ */
+export function serviceAccountAssertion(key: ServiceAccountKey, now: Date): string {
+  const iat = Math.floor(now.getTime() / 1000);
+  const encode = (value: object) => Buffer.from(JSON.stringify(value)).toString('base64url');
+  const unsigned = `${encode({ alg: 'RS256', typ: 'JWT' })}.${encode({
+    iss: key.email,
+    scope: DRIVE_SCOPE,
+    aud: OAUTH_TOKEN,
+    iat,
+    exp: iat + 3600,
+  })}`;
+  const signature = createSign('RSA-SHA256').update(unsigned).sign(key.privateKey).toString('base64url');
+  return `${unsigned}.${signature}`;
+}
+
 export function googleDriveClientFromEnv(): GoogleDriveClient {
-  return new GoogleDriveClient(process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET);
+  return new GoogleDriveClient(process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET, serviceAccountFromEnv());
 }

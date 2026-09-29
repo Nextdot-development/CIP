@@ -20,6 +20,10 @@ export type GoogleDriveConnectionDTO = {
   syncing: boolean;
   files: { synced: number; pending: number; unsupported: number; trashed: number; failed: number };
   providerConfigured: boolean;
+  /** How it reads: as a person who signed in, or as CIP's service account. */
+  authKind: 'oauth' | 'service_account' | null;
+  /** The address to share a folder with, when CIP has a service account. */
+  serviceAccountEmail: string | null;
 };
 
 export type SyncedFileDTO = {

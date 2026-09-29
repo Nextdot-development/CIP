@@ -425,6 +425,92 @@ describe('a refresh token Google has stopped honouring', () => {
   });
 });
 
+// A person's sign-in through an app in Google's testing mode lasts seven days
+// and works only for listed testers; the one person who could reconnect was on
+// leave and the sync stopped for a fortnight. Sharing a folder with CIP's own
+// service account needs neither.
+describe('a folder shared with CIP, with nobody signing in', () => {
+  const ROBOT = 'cip-reader@cip-drive.iam.gserviceaccount.com';
+
+  it('connects by link once the folder is shared, and syncs with no stored tokens', async () => {
+    fake.serviceAccountEmail = ROBOT;
+    fake.sharedWithServiceAccount.add(MM_FOLDER);
+    fake.put(MM_FOLDER, { id: 'sa-doc', name: 'brief.txt', mimeType: 'text/plain' }, 'A shared brief.');
+
+    const dto = await connection.connectSharedFolder(mm, `https://drive.google.com/drive/folders/${MM_FOLDER}?usp=sharing`);
+    assert.equal(dto.status, 'connected');
+    assert.equal(dto.authKind, 'service_account');
+    assert.equal(dto.accountEmail, ROBOT);
+    assert.equal(dto.folderId, MM_FOLDER);
+
+    const [row] = await adminSql<{ access_token_encrypted: string | null; refresh_token_encrypted: string | null }[]>`
+      select access_token_encrypted, refresh_token_encrypted from google_drive_connections where company_id = ${mm.companyId}
+    `;
+    assert.equal(row!.access_token_encrypted, null, 'a token was stored that nothing needs');
+    assert.equal(row!.refresh_token_encrypted, null);
+
+    await sync.syncNow(mm);
+    const files = await adminSql`select name from drive_files where company_id = ${mm.companyId} and source_type = 'google_drive'`;
+    assert.deepEqual(files.map((f) => f.name), ['brief.txt']);
+    assert.equal(fake.refreshCalls, 0, "a person's refresh token was used");
+  });
+
+  it('says which address to share with when the folder has not been shared', async () => {
+    fake.serviceAccountEmail = ROBOT;
+    await assert.rejects(
+      () => connection.connectSharedFolder(mm, MM_FOLDER),
+      (error: unknown) => {
+        assert.ok(error instanceof connection.GoogleDriveRejected);
+        assert.ok((error as Error).message.includes(ROBOT), (error as Error).message);
+        return true;
+      },
+    );
+    const rows = await adminSql`select id from google_drive_connections where company_id = ${mm.companyId}`;
+    assert.equal(rows.length, 0, 'a connection was saved to a folder CIP cannot read');
+  });
+
+  it('replaces an expired sign-in, and tells the page the address to share with', async () => {
+    await connect(mm, MM_FOLDER);
+    await connection.markNeedsReauth(mm, 'Google Drive access expired.');
+    fake.serviceAccountEmail = ROBOT;
+    fake.sharedWithServiceAccount.add(NH_FOLDER);
+
+    assert.equal((await connection.getConnection(mm)).serviceAccountEmail, ROBOT);
+    const dto = await connection.connectSharedFolder(mm, NH_FOLDER);
+    assert.equal(dto.status, 'connected');
+    assert.equal(dto.folderId, NH_FOLDER);
+    assert.equal(dto.lastSyncError, null);
+  });
+
+  it('refuses when this server has no service account', async () => {
+    await assert.rejects(
+      () => connection.connectSharedFolder(mm, MM_FOLDER),
+      (error: unknown) => error instanceof connection.GoogleDriveRejected && /not set up/.test((error as Error).message),
+    );
+  });
+
+  it('signs a read-only request Google can verify with the key', async () => {
+    const { generateKeyPairSync, createVerify } = await import('node:crypto');
+    const { serviceAccountAssertion, serviceAccountFromEnv } = await import('../src/server/integrations/googleDrive/client');
+    const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+    const pem = privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+
+    // The key file as Google gives it, pasted as JSON or as base64.
+    const json = JSON.stringify({ client_email: ROBOT, private_key: pem });
+    assert.deepEqual(serviceAccountFromEnv(json), { email: ROBOT, privateKey: pem });
+    assert.deepEqual(serviceAccountFromEnv(Buffer.from(json).toString('base64')), { email: ROBOT, privateKey: pem });
+    assert.equal(serviceAccountFromEnv('not a key'), null);
+
+    const jwt = serviceAccountAssertion({ email: ROBOT, privateKey: pem }, new Date('2026-09-29T00:00:00Z'));
+    const [head, body, signature] = jwt.split('.');
+    const claims = JSON.parse(Buffer.from(body!, 'base64url').toString()) as Record<string, unknown>;
+    assert.equal(claims.iss, ROBOT);
+    assert.equal(claims.scope, 'https://www.googleapis.com/auth/drive.readonly', 'more than read-only was asked for');
+    assert.equal((claims.exp as number) - (claims.iat as number), 3600);
+    assert.ok(createVerify('RSA-SHA256').update(`${head}.${body}`).verify(publicKey, Buffer.from(signature!, 'base64url')));
+  });
+});
+
 describe('sync discovers, ingests and hands over to the existing pipeline', () => {
   it('ingests a supported file and marks it as coming from Google Drive', async () => {
     await connect(mm, MM_FOLDER);

@@ -40,6 +40,13 @@ export type GoogleDriveConnectionDTO = {
   files: { synced: number; pending: number; unsupported: number; trashed: number; failed: number };
   /** False when the server has no OAuth client configured at all. */
   providerConfigured: boolean;
+  /** How it reads: as a person who signed in, or as CIP's service account. */
+  authKind: 'oauth' | 'service_account' | null;
+  /**
+   * The address to share a folder with, when CIP has a service account. Not
+   * a secret: it is exactly what a person types into Drive's Share box.
+   */
+  serviceAccountEmail: string | null;
 };
 
 type ConnectionRow = {
@@ -56,6 +63,7 @@ type ConnectionRow = {
   last_sync_at: Date | null;
   last_sync_error: string | null;
   sync_claimed_until: Date | null;
+  auth_kind: 'oauth' | 'service_account';
 };
 
 export class GoogleDriveRejected extends Error {
@@ -126,7 +134,7 @@ async function row(scope: CompanyScope): Promise<ConnectionRow | null> {
       select id, google_account_email, folder_id, folder_name,
              access_token_encrypted, refresh_token_encrypted, token_expires_at,
              granted_scope, status, connected_at, last_sync_at, last_sync_error,
-             sync_claimed_until
+             sync_claimed_until, auth_kind
         from google_drive_connections
        limit 1
     `;
@@ -161,6 +169,8 @@ export async function getConnection(scope: CompanyScope): Promise<GoogleDriveCon
       syncing: false,
       files,
       providerConfigured,
+      authKind: null,
+      serviceAccountEmail: googleDrive().serviceAccountEmail,
     };
   }
 
@@ -176,6 +186,8 @@ export async function getConnection(scope: CompanyScope): Promise<GoogleDriveCon
       connection.sync_claimed_until !== null && connection.sync_claimed_until.getTime() > Date.now(),
     files,
     providerConfigured,
+    authKind: connection.auth_kind,
+    serviceAccountEmail: googleDrive().serviceAccountEmail,
   };
 }
 
@@ -214,6 +226,7 @@ export async function saveTokens(scope: CompanyScope, tokens: TokenSet): Promise
              token_expires_at        = excluded.token_expires_at,
              granted_scope           = excluded.granted_scope,
              status                  = 'connected',
+             auth_kind               = 'oauth',
              connected_by            = excluded.connected_by,
              connected_at            = now(),
              last_sync_error         = null,
@@ -309,6 +322,74 @@ export async function setFolder(scope: CompanyScope, folderId: string): Promise<
 }
 
 /**
+ * Connects a folder that has been shared with CIP's service account.
+ *
+ * Nobody signs in. The folder is read with the service account's own token
+ * first, so a folder that has not been shared - the usual mistake - is caught
+ * here and named, rather than becoming a connection that syncs nothing.
+ *
+ * Replaces whatever connection there was: a person's expired sign-in, or
+ * another folder. The files already synced are the company's and stay.
+ */
+export async function connectSharedFolder(scope: CompanyScope, folderInput: string): Promise<GoogleDriveConnectionDTO> {
+  const api = googleDrive();
+  const email = api.serviceAccountEmail;
+  if (!email) {
+    throw new GoogleDriveRejected("CIP's Google service account is not set up on this server yet.");
+  }
+  const folderId = parseFolderId(folderInput);
+  if (!folderId) {
+    throw new GoogleDriveRejected(
+      'That does not look like a Google Drive folder. Paste the folder link from your address bar, or its id.',
+    );
+  }
+
+  let name: string;
+  try {
+    const token = await api.serviceAccountToken();
+    const folder = await api.getFile(token.accessToken, folderId);
+    if (folder.mimeType !== 'application/vnd.google-apps.folder') {
+      throw new GoogleDriveRejected('That link is a file, not a folder.');
+    }
+    name = folder.name;
+  } catch (error) {
+    if (error instanceof GoogleDriveRejected) throw error;
+    if (error instanceof GoogleDriveError && error.kind !== 'needs_reauth' && error.kind !== 'permanent') throw error;
+    throw new GoogleDriveRejected(
+      `CIP cannot open that folder. In Google Drive, share it with ${email} as a Viewer, then try again.`,
+    );
+  }
+
+  await withCompanyScope(scope, async (tx) => {
+    await tx`
+      insert into google_drive_connections
+        (company_id, google_account_email, folder_id, folder_name, status, auth_kind,
+         connected_by, connected_at, updated_at)
+      values
+        (${scope.companyId}, ${email}, ${folderId}, ${name}, 'connected', 'service_account',
+         ${scope.userId}, now(), now())
+      on conflict (company_id) do update
+         set google_account_email    = excluded.google_account_email,
+             folder_id               = excluded.folder_id,
+             folder_name             = excluded.folder_name,
+             status                  = 'connected',
+             auth_kind               = 'service_account',
+             -- A person's tokens have nothing left to do, and are not kept.
+             access_token_encrypted  = null,
+             refresh_token_encrypted = null,
+             token_expires_at        = null,
+             granted_scope           = null,
+             connected_by            = excluded.connected_by,
+             connected_at            = now(),
+             last_sync_error         = null,
+             updated_at              = now()
+    `;
+  });
+
+  return getConnection(scope);
+}
+
+/**
  * Forgets the tokens.
  *
  * The synced knowledge is left alone: documents already extracted are the
@@ -364,6 +445,21 @@ export async function requireConnected(scope: CompanyScope): Promise<ActiveConne
   const connection = await row(scope);
   if (!connection || connection.status === 'disconnected') throw new GoogleDriveNotConnected();
   if (connection.status === 'needs_reauth') throw new GoogleDriveNeedsReauth();
+
+  // Shared with CIP's service account: nothing is stored to expire, and a
+  // token comes from the service account's key each hour.
+  if (connection.auth_kind === 'service_account') {
+    try {
+      const token = await googleDrive().serviceAccountToken();
+      return { id: connection.id, accessToken: token.accessToken, folderId: connection.folder_id };
+    } catch (error) {
+      if (error instanceof GoogleDriveError && error.kind === 'needs_reauth') {
+        await markNeedsReauth(scope, error.message);
+        throw new GoogleDriveNeedsReauth();
+      }
+      throw error;
+    }
+  }
 
   const expiresSoon =
     connection.token_expires_at === null ||
