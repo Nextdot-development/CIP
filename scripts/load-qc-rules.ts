@@ -74,8 +74,10 @@ async function main(): Promise<void> {
 
     const bySeverity = tally(RADICO_QC_RULES.map((r) => r.severity));
     const byType = tally(RADICO_QC_RULES.map((r) => r.ruleType));
+    const byFormat = tally(RADICO_QC_RULES.map((r) => r.format ?? 'all'));
     console.log(`\n    by severity                ${describe(bySeverity)}`);
     console.log(`    by kind                    ${describe(byType)}`);
+    console.log(`    by format                  ${describe(byFormat)}`);
 
     if (unknownBrands.size > 0) {
       console.log(
@@ -97,12 +99,12 @@ async function main(): Promise<void> {
         insert into compliance_rules
           (company_id, rule_code, brand, product, market, domain, rule_type, severity,
            rule, note, rationale, allowed, prohibited, human_review,
-           requirement, category, source, active)
+           requirement, category, format, source, active)
         values
           (${company.id}, ${r.code}, ${r.brand}, ${r.product}, ${r.market}, ${r.domain},
            ${r.ruleType}, ${r.severity}, ${r.rule}, ${r.from}, ${r.rationale},
            ${r.allowed}, ${r.prohibited}, ${r.humanReview},
-           ${r.requirement}, ${r.category}, 'manual', true)
+           ${r.requirement}, ${r.category}, ${r.format ?? 'all'}, 'manual', true)
         -- The index is partial, so its predicate has to be repeated here or
         -- Postgres will not recognise which constraint is meant.
         on conflict (company_id, rule_code) where rule_code is not null do update set
@@ -111,7 +113,7 @@ async function main(): Promise<void> {
           rule = excluded.rule, note = excluded.note, rationale = excluded.rationale,
           allowed = excluded.allowed, prohibited = excluded.prohibited,
           human_review = excluded.human_review, requirement = excluded.requirement,
-          category = excluded.category, updated_at = now()
+          category = excluded.category, format = excluded.format, updated_at = now()
       `;
       written += 1;
     }

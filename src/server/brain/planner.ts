@@ -250,7 +250,7 @@ export async function planGeneration(
   const examples = await ratedExamples(scope, { mediaType: input.mediaType, brand });
 
   // The rules this creative will be judged against, read before it is made.
-  const rules = await rulesForBrief(scope, { brand, market });
+  const rules = await rulesForBrief(scope, { brand, market, format: input.mediaType === 'video' ? 'video' : 'image' });
 
   // Lessons are fetched for the context the caller already knows. The brief may
   // identify a narrower one; that is applied on the second pass below.

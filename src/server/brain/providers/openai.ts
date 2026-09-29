@@ -1085,8 +1085,11 @@ export class OpenAIBrainProvider implements BrainProvider {
           'Each rule says what kind it is. mandatory: must be visibly present. prohibited: must ' +
           'not appear. preferred: what the brand would rather see - departing from it is at most ' +
           'a note. allowed: an approved choice - never report it as a fault and never require ' +
-          'it; it exists so that what it permits is not flagged. A rule may list what it allows ' +
-          'and what it forbids; the lists are the boundary.\n\n' +
+          'it; it exists so that what it permits is not flagged. conditional and contextual: apply ' +
+          'only when its condition, market, format or product plainly holds for this creative; ' +
+          'otherwise it is not a finding. human_review: report it as a warning for a person to ' +
+          'decide, never as critical. A rule may list what it allows and what it forbids; the ' +
+          'lists are the boundary.\n\n' +
           'Severity: critical is a required compliance element that is missing, or a ' +
           'forbidden one that is present. warning is a clear departure from how the brand ' +
           'consistently does something. note is minor. A rule marked "observed" is what the ' +

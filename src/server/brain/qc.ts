@@ -65,7 +65,12 @@ export async function runQc(
 
 /** The reviewer's view of a check that has already run. */
 export async function reportOn(scope: CompanyScope, check: CreativeCheck): Promise<QcReport> {
-  const rules = await rulesForBrief(scope, { brand: check.brand, market: check.market });
+  // The same rules the check was judged against: a film's, or a picture's.
+  const rules = await rulesForBrief(scope, {
+    brand: check.brand,
+    market: check.market,
+    format: check.video ? 'video' : 'image',
+  });
 
   const verifiedById = new Map(rules.map((r) => [r.id, r.verifiedAt !== null]));
   const flaggedRuleIds = new Set(

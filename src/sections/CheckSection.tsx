@@ -674,6 +674,7 @@ function RulesList({
                   <span className="tiny muted">
                     {SOURCE_LABEL[rule.source]}
                     {rule.brand ? ` · ${rule.brand}` : ''}
+                    {rule.format === 'video' ? ' · video only' : rule.format === 'image' ? ' · images only' : ''}
                     {rule.category === 'medium' ? ' · where and when it runs, not judged from an image' : ''}
                     {!rule.active ? ' · retired' : ''}
                     {rule.active && <RuleReview rule={rule} onVerified={onVerified} />}

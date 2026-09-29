@@ -1355,6 +1355,59 @@ describe('THE CHECKER: a creative judged against the brand, and nothing else', (
     assert.deepEqual(check.flags[0]!.atSeconds, []);
   });
 
+  // "Subtitles must match the voiceover" sent to the checker for a banner is a
+  // rule a picture can only fail by misreading.
+  it('judges a picture by the picture rules and a film by the film rules', async () => {
+    await adminSql`
+      insert into compliance_rules (company_id, category, requirement, rule, source, format)
+      values (${mm.companyId}, 'other', 'required', 'Subtitles must match the voiceover.', 'manual', 'video'),
+             (${mm.companyId}, 'other', 'required', 'The banner is at least 1080 pixels wide.', 'manual', 'image'),
+             (${mm.companyId}, 'other', 'forbidden', 'Never show a competitor logo.', 'manual', 'all')
+    `;
+    const { runCheck } = await import('../src/server/brain/checker');
+
+    await checkedImage();
+    const forPicture = fake.lastCheckInput!.rules.map((r) => r.statement).sort();
+    assert.deepEqual(forPicture, ['Never show a competitor logo.', 'The banner is at least 1080 pixels wide.']);
+
+    await runCheck(mm, { fileId: (await uploadVideo()).id });
+    const forFilm = fake.lastCheckInput!.rules.map((r) => r.statement).sort();
+    assert.deepEqual(forFilm, ['Never show a competitor logo.', 'Subtitles must match the voiceover.']);
+  });
+
+  // The company's own document: a human_review rule "should escalate instead
+  // of making a hard judgement". It can ask; it cannot fail a creative.
+  it('never lets a rule meant for a person fail a creative on its own', async () => {
+    await adminSql`
+      insert into compliance_rules
+        (company_id, rule_code, category, requirement, rule, source, severity, rule_type)
+      values (${mm.companyId}, 'TEST_REVIEW_001', 'other', 'forbidden',
+              'Flag potentially sensitive religious symbolism.', 'manual', 'critical', 'human_review')
+    `;
+    fake.checkFindings = [
+      { ref: 'R1', dimension: 'compliance', severity: 'critical', message: 'A temple in the background.' },
+    ];
+
+    const check = await checkedImage();
+
+    assert.equal(check.flags.length, 1);
+    assert.equal(check.flags[0]!.severity, 'warning');
+  });
+
+  it("transcribes the document's video section as video-only rules, each traceable", async () => {
+    const { RADICO_QC_RULES } = await import('../src/server/brain/radicoRules');
+    const codes = RADICO_QC_RULES.map((r) => r.code);
+    assert.equal(new Set(codes).size, codes.length, 'two rules share a code');
+    const video = RADICO_QC_RULES.filter((r) => r.code.startsWith('RADICO-VIDEO-'));
+    assert.ok(video.length >= 10);
+    for (const r of video) {
+      assert.equal(r.format, 'video', `${r.code} is not video-only`);
+      assert.equal(r.from, '§4.3 Video Analysis');
+      // The section gives no severity: nothing read from it may be critical.
+      assert.notEqual(r.severity, 'critical', `${r.code} was made critical`);
+    }
+  });
+
   /** A rule of a stated kind, the way one kept from Chat with the Brain is written. */
   async function kindRule(
     kind: 'allowed' | 'preferred',

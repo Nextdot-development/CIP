@@ -64,6 +64,8 @@ export type QcRuleSeed = {
   /** How CIP's older, two-valued column has to read this rule. */
   requirement: 'required' | 'forbidden';
   category: 'disclaimer' | 'audience' | 'claim' | 'placement' | 'medium' | 'other';
+  /** Which creatives it is for. The document's "format"; every kind when it does not say. */
+  format?: 'all' | 'image' | 'video';
 };
 
 const G = (
@@ -75,6 +77,20 @@ const G = (
   brand: null,
   product: null,
   market: null,
+  ...fields,
+});
+
+/** A rule from §4.3, for video only. */
+const V = (
+  n: string,
+  fields: Omit<QcRuleSeed, 'code' | 'from' | 'brand' | 'product' | 'market' | 'format'>,
+): QcRuleSeed => ({
+  code: `RADICO-VIDEO-${n}`,
+  from: '§4.3 Video Analysis',
+  brand: null,
+  product: null,
+  market: null,
+  format: 'video',
   ...fields,
 });
 
@@ -872,4 +888,161 @@ export const RADICO_QC_RULES: QcRuleSeed[] = [
     requirement: 'required',
     category: 'other',
   },
+
+  // ---- §4.3 Video Analysis ------------------------------------------------
+  //
+  // Section 4.3 lists what is evaluated on a video and on nothing else. It is
+  // a list of things to look at, not a list of rules: it gives no type and no
+  // severity. Each one below is that item, worded as something a film can be
+  // checked against, with the type and severity CIP's reading - kept low, and
+  // `human_review` wherever the document gives nothing to judge by, so that a
+  // rule the document did not quite write cannot fail a film on its own.
+  //
+  // Everything else in the document - the logo, the pack, competitors,
+  // drinking and driving, claims, British English - applies to a video as it
+  // does to a picture, and is already above with format "all".
+  V('001', {
+    domain: 'Pack / Product',
+    ruleType: 'prohibited',
+    severity: 'major',
+    rule: 'The pack must stay the same approved pack in every shot - no shot where the bottle, label, cap or liquid changes, warps or is generated wrongly.',
+    rationale: '§4.3 lists pack integrity and continuity. §5 RADICO-GLOBAL-005 is the rule; on a film it has to hold in every shot, and a pack that is right on the end card and wrong mid-film breaks it.',
+    allowed: [],
+    prohibited: ['A pack that changes between shots', 'Warped or melting bottle mid-shot', 'Label that is wrong in some shots'],
+    humanReview: false,
+    requirement: 'forbidden',
+    category: 'other',
+  }),
+  V('002', {
+    domain: 'VO',
+    ruleType: 'prohibited',
+    severity: 'major',
+    rule: 'The voiceover is held to the same claim rules as the on-screen copy: no spoken health benefit, success claim or encouragement to drink to excess.',
+    rationale: '§4.3 lists the VO. §5 RADICO-GLOBAL-010, -011 and -012 forbid these claims in Radico communication, which a spoken line is as much as a written one.',
+    allowed: [],
+    prohibited: ['Spoken health or medical benefit', 'Spoken professional, financial or social success from drinking', 'Spoken encouragement to drink more'],
+    humanReview: false,
+    requirement: 'forbidden',
+    category: 'claim',
+  }),
+  V('003', {
+    domain: 'Subtitles',
+    ruleType: 'mandatory',
+    severity: 'minor',
+    rule: 'Subtitles, where there are any, must say what the voiceover says.',
+    rationale: '§4.3 lists subtitles alongside the VO.',
+    allowed: [],
+    prohibited: ['Subtitles that differ from the voiceover'],
+    humanReview: true,
+    requirement: 'required',
+    category: 'other',
+  }),
+  V('004', {
+    domain: 'Language',
+    ruleType: 'mandatory',
+    severity: 'minor',
+    rule: 'On-screen text and subtitles must be spelt correctly, with the product named exactly as it is officially written.',
+    rationale: '§4.3 lists spelling and product terminology. §5 RADICO-GLOBAL-001 sets British English.',
+    allowed: [],
+    prohibited: ['Misspelt on-screen text', 'Misspelt or wrong product name'],
+    humanReview: false,
+    requirement: 'required',
+    category: 'other',
+  }),
+  V('005', {
+    domain: 'Legal / Compliance',
+    ruleType: 'human_review',
+    severity: 'major',
+    rule: 'Disclaimers and statutory lines must be on screen long enough to be read, not flashed.',
+    rationale: '§4.3 lists the disclaimer and timing. The document gives no minimum duration, so a person judges what is long enough.',
+    allowed: [],
+    prohibited: ['A disclaimer shown too briefly to read'],
+    humanReview: true,
+    requirement: 'required',
+    category: 'disclaimer',
+  }),
+  V('006', {
+    domain: 'Brand Identity',
+    ruleType: 'mandatory',
+    severity: 'major',
+    rule: 'The end screen must show the approved logo and the approved pack, legibly.',
+    rationale: '§4.3 lists the end screen, logo and pack visibility. On a film, the end screen is where the brand is signed off.',
+    allowed: [],
+    prohibited: ['An end screen without the logo', 'An end screen with an unapproved or distorted pack'],
+    humanReview: true,
+    requirement: 'required',
+    category: 'other',
+  }),
+  V('007', {
+    domain: 'AI Artefact',
+    ruleType: 'prohibited',
+    severity: 'major',
+    rule: 'No AI artefacts in any frame: warped hands or faces, melting objects, garbled text, or things that appear and vanish between frames.',
+    rationale: '§4.3 lists AI artefacts. §4.1 names distortion, unnatural anatomy and product manipulation.',
+    allowed: [],
+    prohibited: ['Warped hands or faces', 'Melting or morphing objects', 'Garbled text', 'Objects popping in and out'],
+    humanReview: false,
+    requirement: 'forbidden',
+    category: 'other',
+  }),
+  V('008', {
+    domain: 'Animation',
+    ruleType: 'prohibited',
+    severity: 'minor',
+    rule: 'Transitions and animation must not break the logo, the pack or the text mid-movement - no tearing, glitches or half-drawn frames.',
+    rationale: '§4.3 lists transitions and animation. §5 RADICO-GLOBAL-003 forbids altering the logo, which a glitch in a transition does.',
+    allowed: [],
+    prohibited: ['Logo torn or glitched in a transition', 'Pack half-rendered mid-animation'],
+    humanReview: true,
+    requirement: 'forbidden',
+    category: 'other',
+  }),
+  V('009', {
+    domain: 'Visual',
+    ruleType: 'prohibited',
+    severity: 'minor',
+    rule: 'Colour grading must keep the pack, label and liquid their true colours.',
+    rationale: '§4.3 lists colour grading. §5 RADICO-GLOBAL-005 flags an incorrect bottle or liquid colour.',
+    allowed: [],
+    prohibited: ['A grade that changes the bottle, label or liquid colour'],
+    humanReview: true,
+    requirement: 'forbidden',
+    category: 'other',
+  }),
+  V('010', {
+    domain: 'Audio',
+    ruleType: 'human_review',
+    severity: 'minor',
+    rule: 'Song lyrics must not say what the copy may not: drinking to excess, drinking and driving, or health and success claims.',
+    rationale: '§4.3 lists the music. A lyric heard over the film is part of what it says; lyrics are often misheard, so a person decides.',
+    allowed: [],
+    prohibited: ['Lyrics about drinking to excess', 'Lyrics about drinking and driving'],
+    humanReview: true,
+    requirement: 'forbidden',
+    category: 'claim',
+  }),
+  V('011', {
+    domain: 'CTA',
+    ruleType: 'preferred',
+    severity: 'informational',
+    rule: 'Any call to action should be legible and on screen long enough to read.',
+    rationale: '§4.3 lists the CTA and timing. A preference: absence of a CTA is not a violation.',
+    allowed: [],
+    prohibited: [],
+    humanReview: false,
+    requirement: 'required',
+    category: 'other',
+  }),
+  V('012', {
+    domain: 'Technical',
+    ruleType: 'human_review',
+    severity: 'minor',
+    rule: "The film's aspect ratio and resolution must suit where it runs, with nothing important cut off at the edges.",
+    rationale: '§4.3 lists aspect ratio and resolution; §26 Step 1 records them. Which is right depends on the placement, which a person knows.',
+    allowed: [],
+    prohibited: ['Logo, pack or disclaimer cut off at the frame edge'],
+    humanReview: true,
+    requirement: 'required',
+    category: 'other',
+  }),
 ];

@@ -71,6 +71,8 @@ export type ComplianceRule = {
   active: boolean;
   /** When a person confirmed the rule is right. Null until someone has. */
   verifiedAt: string | null;
+  /** Which creatives it is for: every kind, pictures only, or video only. */
+  format: 'all' | 'image' | 'video';
 };
 
 export type NewComplianceRule = {
@@ -265,6 +267,12 @@ type RefTarget =
       permits?: boolean;
       /** A preference, not a requirement: departing from it is at most a note. */
       soft?: boolean;
+      /**
+       * A rule the company wants a person to decide. The document's section 30:
+       * the model "should escalate instead of making a hard judgement" - so it
+       * can ask, at most a warning, and never fail a creative on its own.
+       */
+      review?: boolean;
       /** How serious the rule's author said breaking it is. */
       graded?: CheckFinding['severity'];
     };
@@ -331,6 +339,7 @@ export function groundFindings(
     // exists to prevent.
     if (target.kind === 'rule' && target.permits) continue;
     if (target.kind === 'rule' && target.soft) severity = 'note';
+    if (target.kind === 'rule' && target.review && severity === 'critical') severity = 'warning';
 
     const frames = [...new Set((Array.isArray(raw.frames) ? raw.frames : []).map(Number))]
       .filter((n) => Number.isInteger(n) && n >= 1 && n <= frameCount)
@@ -975,7 +984,9 @@ export async function runCheck(
   ).filter((f) => f.section !== 'video');
 
   // What the category requires, read exactly as the planner reads it.
-  const rules = await rulesForBrief(scope, { brand, market });
+  // Only the rules for what this is: subtitles and the end screen are a
+  // film's, and a picture judged against them can only fail by misreading.
+  const rules = await rulesForBrief(scope, { brand, market, format: subject.sequence ? 'video' : 'image' });
 
   const refs = new Map<string, RefTarget>();
   const sent: CheckRule[] = [];
@@ -996,6 +1007,7 @@ export async function runCheck(
       graded: rule.ruleCode && rule.severity ? FROM_RULE[rule.severity] : undefined,
       permits: rule.ruleType === 'allowed',
       soft: rule.ruleType === 'preferred',
+      review: rule.ruleType === 'human_review',
     });
     // Named, once more than one country's rules are in play: a West African
     // creative is judged against Ghana's rules and Nigeria's, and "the
@@ -1597,6 +1609,7 @@ export type BriefRule = {
   /** Things the rule explicitly permits and forbids. */
   allowed: string[];
   prohibited: string[];
+  format: 'all' | 'image' | 'video';
 };
 
 export type RuleSeverity = 'critical' | 'major' | 'minor' | 'informational';
@@ -1638,8 +1651,14 @@ const FROM_RULE: Record<RuleSeverity, CheckFinding['severity']> = {
  */
 export async function rulesForBrief(
   scope: CompanyScope,
-  context: { brand?: string | null; market?: string | null },
+  context: {
+    brand?: string | null;
+    market?: string | null;
+    /** A picture or a film. Unsaid, every rule is included, whatever it is for. */
+    format?: 'image' | 'video' | null;
+  },
 ): Promise<BriefRule[]> {
+  const format = context.format ?? null;
   const brand = context.brand?.trim() || null;
   const market = context.market?.trim() || null;
   // "West Africa" is Ghana and Nigeria, and a creative for it answers to both.
@@ -1650,13 +1669,14 @@ export async function rulesForBrief(
     tx<BriefRule[]>`
       select id, rule, requirement, category, source, verified_at as "verifiedAt",
              rule_code as "ruleCode", severity, rule_type as "ruleType", market,
-             allowed, prohibited
+             allowed, prohibited, format
         from compliance_rules
        where company_id = ${scope.companyId}
          and active
          and category <> 'medium'
          and (brand is null or brand = ${brand})
          and (market is null or lower(market) = any(${covering}::text[]))
+         and (${format}::text is null or format = 'all' or format = ${format}::text)
        order by requirement, rule
     `,
   );
@@ -1668,8 +1688,9 @@ export async function listRules(scope: CompanyScope): Promise<ComplianceRule[]> 
       id: string; brand: string | null; market: string | null; category: RuleCategory;
       requirement: 'required' | 'forbidden'; rule: string; note: string | null;
       reference_url: string | null; source: RuleSource; active: boolean; verified_at: Date | null;
+      format: ComplianceRule['format'];
     }[]>`
-      select id, brand, market, category, requirement, rule, note, reference_url, source, active, verified_at
+      select id, brand, market, category, requirement, rule, note, reference_url, source, active, verified_at, format
         from compliance_rules
        where company_id = ${scope.companyId}
        order by active desc, market nulls first, brand nulls first, category, rule
@@ -1686,6 +1707,7 @@ export async function listRules(scope: CompanyScope): Promise<ComplianceRule[]> 
       source: r.source,
       active: r.active,
       verifiedAt: r.verified_at ? r.verified_at.toISOString() : null,
+      format: r.format,
     }));
   });
 }
