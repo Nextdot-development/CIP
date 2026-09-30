@@ -20,6 +20,7 @@
     "storage:gc": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/storage-gc.ts",
     "embed:assets": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/embed-assets.ts",
     "rules:load": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/load-qc-rules.ts",
+    "qc:eval": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/qc-eval.ts",
     "export:training": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/export-training.ts",
     "storage:relocate": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/relocate-storage.ts",
     "test:storage": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx --test --test-concurrency=1 tests/storage.test.ts",

@@ -120,6 +120,9 @@ export const RADICO_QC_RULES: QcRuleSeed[] = [
     humanReview: true,
     requirement: 'required',
     category: 'placement',
+    // Radico's review, 30 Sep 2026: "only for image not for video". A film's
+    // logo moves with the shot and signs off on the end card.
+    format: 'image',
   }),
   G('003', {
     domain: 'Logo',
