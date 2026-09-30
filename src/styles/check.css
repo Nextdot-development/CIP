@@ -246,6 +246,18 @@
   .qc-flags li { flex-direction: column; }
 }
 
+/* Several creatives at once. */
+.qc-batch { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 13px; table-layout: fixed; }
+.qc-batch th { text-align: left; font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--ink-500); padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.qc-batch th:first-child { width: 42%; }
+.qc-batch td { padding: 8px; border-bottom: 1px solid var(--line-soft, var(--line)); vertical-align: middle; }
+.qc-batch-verdict { font-weight: 600; }
+.qc-batch-verdict.tone-ok { color: var(--ok-700); }
+.qc-batch-verdict.tone-warn { color: var(--warn-700); }
+.qc-batch-verdict.tone-stop { color: var(--stop-700); }
+.qc-held-row { display: flex; align-items: center; gap: 8px; }
+.qc-held-row > button { flex: 1; min-width: 0; }
+
 /* A new version next to the one before it. */
 .qc-revision { margin-top: 12px; padding: 10px 14px; border-radius: 10px; border: 1px solid var(--line); font-size: 13px; }
 .qc-revision-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 0 0 6px; color: var(--ink-800); }

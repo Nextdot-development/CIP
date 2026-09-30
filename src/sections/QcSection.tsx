@@ -72,6 +72,102 @@ type Report = {
 /** One page's verdict, kept with the page it came from. */
 type PageReport = { page: number; report: Report };
 
+/** The most files checked in one go. Each takes a minute or more. */
+const MAX_BATCH = 20;
+
+/** One creative in a batch, and where it has got to. */
+type BatchItem = {
+  name: string;
+  status: 'waiting' | 'uploading' | 'checking' | 'done' | 'failed';
+  reports: PageReport[];
+  message: string | null;
+  page: number;
+  of: number;
+};
+
+/** A batch item's verdict, from its pages: one page to fix and the creative needs fixing. */
+function batchVerdict(item: BatchItem): { label: string; tone: string } {
+  if (item.status === 'failed') return { label: 'Could not check', tone: 'tone-stop' };
+  if (item.status !== 'done') return { label: '', tone: '' };
+  const judged = item.reports.filter((r) => r.report.verdict !== 'not_a_creative');
+  if (judged.length === 0) return { label: 'Not a creative', tone: 'tone-neutral' };
+  if (judged.some((r) => r.report.verdict === 'nothing_to_check')) return { label: 'Nothing to check against', tone: 'tone-stop' };
+  if (judged.some((r) => r.report.mustFix.length > 0)) return { label: 'Fix', tone: 'tone-stop' };
+  if (judged.some((r) => r.report.toReview.length > 0)) return { label: 'Look', tone: 'tone-warn' };
+  return { label: 'Pass', tone: 'tone-ok' };
+}
+
+/**
+ * A campaign's verdict at a glance: every creative, what it came to, and how
+ * much there is to do - each one a click away from its full report.
+ */
+function BatchTable({ items, onOpen }: { items: BatchItem[]; onOpen: (item: BatchItem) => void }) {
+  const done = items.filter((i) => i.status === 'done' || i.status === 'failed');
+  const tally = (label: string) => items.filter((i) => batchVerdict(i).label === label).length;
+  const running = items.find((i) => i.status === 'uploading' || i.status === 'checking');
+
+  return (
+    <div className="card pad" style={{ marginTop: 16 }}>
+      <p className="qc-verdict">
+        {done.length < items.length
+          ? `Checking ${done.length + 1} of ${items.length}…`
+          : `${items.length} creatives checked`}
+      </p>
+      <p className="tiny muted">
+        {tally('Pass')} pass · {tally('Fix')} to fix · {tally('Look')} to look at
+        {tally('Could not check') > 0 ? ` · ${tally('Could not check')} could not be checked` : ''}
+        {running ? ` · now: ${running.name}${running.of > 1 ? ` (page ${running.page} of ${running.of})` : ''}` : ''}
+      </p>
+      <table className="qc-batch">
+        <thead>
+          <tr>
+            <th>Creative</th>
+            <th>Verdict</th>
+            <th>Score</th>
+            <th>To fix</th>
+            <th>Missing</th>
+            <th className="no-print" />
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((item, i) => {
+            const verdict = batchVerdict(item);
+            const flags = item.reports.flatMap((r) => [...r.report.mustFix, ...r.report.toReview]);
+            const scores = item.reports.map((r) => r.report.check.score).filter((s): s is number => s !== null);
+            return (
+              <tr key={i}>
+                <td className="truncate" title={item.name}>{item.name}</td>
+                <td>
+                  {verdict.label ? (
+                    <span className={`qc-batch-verdict ${verdict.tone}`} title={item.message ?? undefined}>{verdict.label}</span>
+                  ) : (
+                    <span className="muted">{item.status === 'waiting' ? 'Waiting' : item.status === 'uploading' ? 'Uploading…' : 'Checking…'}</span>
+                  )}
+                </td>
+                <td>{scores.length > 0 ? Math.min(...scores) : '—'}</td>
+                <td>{item.status === 'done' ? flags.filter((f) => f.issue === 'wrong').length : '—'}</td>
+                <td>{item.status === 'done' ? flags.filter((f) => f.issue === 'missing').length : '—'}</td>
+                <td className="no-print">
+                  {item.reports.length > 0 && (
+                    <button type="button" className="btn btn-sm" onClick={() => onOpen(item)}>Open</button>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      {items.some((i) => i.status === 'failed') && (
+        <ul className="tiny" style={{ marginTop: 8, paddingLeft: 16, color: 'var(--stop-700)' }}>
+          {items.filter((i) => i.status === 'failed').map((i, n) => (
+            <li key={n}>{i.name}: {i.message}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 type Phase =
   | { at: 'idle' }
   | { at: 'uploading'; name: string }
@@ -209,6 +305,9 @@ export function QcSection({
   // Folded away. Two hundred file names between the dropzone and the report is
   // how a finished report ends up eleven screens below the fold.
   const [browsing, setBrowsing] = useState(false);
+  // Several creatives at once: each one's outcome, in the order they were given.
+  const [batch, setBatch] = useState<BatchItem[]>([]);
+  const [picked, setPicked] = useState<string[]>([]);
   // Where the report will appear. A deck's verdict lands below the dropzone and
   // the file list, and somebody who has just waited four minutes should not
   // have to go looking for it.
@@ -230,10 +329,18 @@ export function QcSection({
     void refreshCoverage();
   }, [refreshCoverage]);
 
-  const busy = phase.at === 'uploading' || phase.at === 'checking';
+  const busy = phase.at === 'uploading' || phase.at === 'checking' || batch.some((b) => b.status === 'uploading' || b.status === 'checking');
 
-  /** Everything after the file is in CIP: count the pages, then walk them. */
-  const checkStored = async (fileId: string, label: string) => {
+  /**
+   * Everything after the file is in CIP: count the pages, then walk them.
+   * Each page's report is handed on as it lands; the error, if the first page
+   * could not be checked at all, comes back.
+   */
+  const walkPages = async (
+    fileId: string,
+    onPage: (collected: PageReport[], page: number, of: number) => void,
+    onPageStart: (page: number, of: number) => void,
+  ): Promise<string | null> => {
     const counted = await fetch(`/api/brain/qc/pages?fileId=${fileId}`).catch(() => null);
     const total = counted?.ok
       ? Math.min(MAX_PAGES, ((await counted.json()) as { pages: number }).pages)
@@ -249,7 +356,7 @@ export function QcSection({
     let known: string | null = brand || null;
 
     for (let page = 1; page <= total; page += 1) {
-      setPhase({ at: 'checking', name: label, page, of: total });
+      onPageStart(page, total);
 
       const res = await fetch('/api/brain/qc', {
         method: 'POST',
@@ -259,58 +366,118 @@ export function QcSection({
 
       if (!res?.ok) {
         // One page that cannot be drawn does not stop the other thirteen.
-        if (page === 1) {
-          setPhase({ at: 'failed', message: await whyCheckFailed(res) });
-          return;
-        }
+        if (page === 1) return whyCheckFailed(res);
         continue;
       }
 
       const { report } = (await res.json()) as { report: Report };
       known = known ?? report.check.brand;
       collected.push({ page, report });
-      setPages([...collected]);
-      // Once, when the first page lands. Scrolling on every page would fight
-      // anybody reading the ones already there.
-      if (collected.length === 1) {
-        results.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      }
+      onPage([...collected], page, total);
     }
+    return null;
+  };
 
-    setPhase({ at: 'done', name: label });
+  const checkStored = async (fileId: string, label: string) => {
+    const failed = await walkPages(
+      fileId,
+      (collected) => {
+        setPages(collected);
+        // Once, when the first page lands. Scrolling on every page would fight
+        // anybody reading the ones already there.
+        if (collected.length === 1) {
+          results.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      },
+      (page, of) => setPhase({ at: 'checking', name: label, page, of }),
+    );
+    setPhase(failed ? { at: 'failed', message: failed } : { at: 'done', name: label });
+  };
+
+  /** A file into CIP, or the copy CIP already holds under its name. */
+  const upload = async (file: File): Promise<{ id: string } | { error: string }> => {
+    const form = new FormData();
+    form.append('file', file);
+    if (brand) form.append('brand', brand);
+    const res = await fetch('/api/drive/files', { method: 'POST', body: form }).catch(() => null);
+    // The upload route answers with the file itself, not with it wrapped.
+    if (res?.ok) return { id: ((await res.json()) as { id: string }).id };
+    // "A file called X is already here" is not a failure here. Somebody
+    // dropping a deck onto a QC page wants that deck checked, and whether CIP
+    // happens to hold a copy already is not their problem.
+    const existing = await findByName(file.name);
+    return existing ? { id: existing } : { error: await whyUploadFailed(res, file) };
+  };
+
+  /**
+   * Several creatives, one after another.
+   *
+   * One at a time, each in its own requests, so no single request has to last
+   * as long as a whole campaign - a request that runs past the platform's
+   * limit is killed with nothing anybody can read. The table fills in as each
+   * one finishes; a file that fails is marked and the rest carry on.
+   */
+  const checkMany = async (items: ({ file: File } | { held: Held })[]) => {
+    const list = items.slice(0, MAX_BATCH);
+    const start: BatchItem[] = list.map((item) => ({
+      name: 'file' in item ? item.file.name : item.held.name,
+      status: 'waiting',
+      reports: [],
+      message: null,
+      page: 0,
+      of: 0,
+    }));
+    setPages([]);
+    setPhase({ at: 'idle' });
+    setBatch(start);
+    const update = (index: number, change: Partial<BatchItem>) =>
+      setBatch((all) => all.map((b, i) => (i === index ? { ...b, ...change } : b)));
+
+    for (const [index, item] of list.entries()) {
+      let fileId: string;
+      if ('file' in item) {
+        update(index, { status: 'uploading' });
+        const got = await upload(item.file);
+        if ('error' in got) {
+          update(index, { status: 'failed', message: got.error });
+          continue;
+        }
+        fileId = got.id;
+      } else {
+        fileId = item.held.id;
+      }
+      update(index, { status: 'checking' });
+      const failed = await walkPages(
+        fileId,
+        (collected) => update(index, { reports: collected }),
+        (page, of) => update(index, { page, of }),
+      );
+      update(index, failed ? { status: 'failed', message: failed } : { status: 'done' });
+    }
   };
 
   const checkHeld = async (file: Held) => {
     setPages([]);
+    setBatch([]);
     await checkStored(file.id, file.name);
   };
 
   const check = async (file: File) => {
     setPages([]);
+    setBatch([]);
     setPhase({ at: 'uploading', name: file.name });
-
-    const form = new FormData();
-    form.append('file', file);
-    if (brand) form.append('brand', brand);
-
-    const upload = await fetch('/api/drive/files', { method: 'POST', body: form }).catch(() => null);
-
-    let fileId: string | null = null;
-    if (upload?.ok) {
-      // The upload route answers with the file itself, not with it wrapped.
-      fileId = ((await upload.json()) as { id: string }).id;
-    } else {
-      // "A file called X is already here" is not a failure here. Somebody
-      // dropping a deck onto a QC page wants that deck checked, and whether CIP
-      // happens to hold a copy already is not their problem.
-      fileId = await findByName(file.name);
-      if (!fileId) {
-        setPhase({ at: 'failed', message: await whyUploadFailed(upload, file) });
-        return;
-      }
+    const got = await upload(file);
+    if ('error' in got) {
+      setPhase({ at: 'failed', message: got.error });
+      return;
     }
+    await checkStored(got.id, file.name);
+  };
 
-    await checkStored(fileId, file.name);
+  /** One file is the usual check; more than one is a batch. */
+  const checkFiles = (files: File[]) => {
+    if (files.length === 1) void check(files[0]!);
+    else if (files.length > 1) void checkMany(files.map((file) => ({ file })));
   };
 
   return (
@@ -397,8 +564,7 @@ export function QcSection({
           onDrop={(event) => {
             event.preventDefault();
             setDragging(false);
-            const file = event.dataTransfer.files[0];
-            if (file) void check(file);
+            checkFiles(Array.from(event.dataTransfer.files));
           }}
         >
           <Icon name="upload" size={26} />
@@ -409,7 +575,7 @@ export function QcSection({
                 ? VIDEO_NAME.test(phase.name)
                   ? 'Watching it from the first frame to the end card…'
                   : `Looking at page ${phase.page} of ${phase.of}…`
-                : 'Drop a creative here, or click to browse'}
+                : 'Drop creatives here, or click to browse — one, or a whole campaign'}
           </span>
           <span className="f">
             PNG, JPEG, WebP, PDF or a video (MP4, MOV, WebM), up to 4.5 MB. A PDF is
@@ -421,10 +587,11 @@ export function QcSection({
           type="file"
           hidden
           accept="image/png,image/jpeg,image/webp,application/pdf,video/mp4,video/quicktime,video/webm"
+          multiple
           onChange={(event) => {
-            const file = event.target.files?.[0];
+            const files = Array.from(event.target.files ?? []);
             event.target.value = '';
-            if (file) void check(file);
+            checkFiles(files);
           }}
         />
 
@@ -488,7 +655,17 @@ export function QcSection({
               .filter((f) => f.name.toLowerCase().includes(search.trim().toLowerCase()))
               .slice(0, 12)
               .map((file) => (
-                <li key={file.id}>
+                <li key={file.id} className="qc-held-row">
+                  {/* Ticked to check several together; clicked to check this one now. */}
+                  <input
+                    type="checkbox"
+                    aria-label={`Add ${file.name} to a batch`}
+                    checked={picked.includes(file.id)}
+                    disabled={busy}
+                    onChange={(e) =>
+                      setPicked((all) => (e.target.checked ? [...all, file.id] : all.filter((id) => id !== file.id)))
+                    }
+                  />
                   <button type="button" onClick={() => void checkHeld(file)} disabled={busy || !configured}>
                     <span className="truncate">{file.name}</span>
                     <span className="tiny muted">
@@ -498,6 +675,25 @@ export function QcSection({
                 </li>
               ))}
           </ul>
+          {picked.length > 0 && (
+            <div className="row-gap" style={{ marginTop: 8 }}>
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                disabled={busy || !configured}
+                onClick={() => {
+                  const chosen = held.filter((f) => picked.includes(f.id));
+                  setPicked([]);
+                  void checkMany(chosen.map((h) => ({ held: h })));
+                }}
+              >
+                Check {picked.length} selected
+              </button>
+              <button type="button" className="btn btn-sm" disabled={busy} onClick={() => setPicked([])}>
+                Clear
+              </button>
+            </div>
+          )}
           {held.length === 0 && (
             <p className="tiny muted">CIP holds no pictures, PDFs or videos yet.</p>
           )}
@@ -513,6 +709,16 @@ export function QcSection({
           </p>
         )}
       </div>
+
+      {batch.length > 0 && (
+        <BatchTable
+          items={batch}
+          onOpen={(item) => {
+            setPages(item.reports);
+            results.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }}
+        />
+      )}
 
       <div ref={results}>
         {pages.length > 0 && (
