@@ -1061,6 +1061,63 @@ describe('THE CHECKER: a creative judged against the brand, and nothing else', (
     assert.equal(kept[0]!.ref, 'R1');
   });
 
+  describe('a new version, next to the one before it', () => {
+    it('knows a version by its name, but not a WhatsApp file by its timestamp', async () => {
+      const { normaliseName } = await import('../src/server/brain/revisions');
+      assert.equal(normaliseName('Diwali_banner_v2.png'), normaliseName('Diwali banner FINAL (1).jpg'));
+      assert.equal(normaliseName('diwali-banner.webp'), 'diwali banner');
+      assert.notEqual(normaliseName('Diwali banner.png'), normaliseName('Holi banner.png'));
+      assert.equal(normaliseName('WhatsApp Video 2026-09-26 at 11.52.21 AM.mp4'), null, 'nothing left to tell them apart');
+      assert.equal(normaliseName('ChatGPT Image Sep 22, 2026, 03_53_48 PM.png'), normaliseName('ChatGPT Image Sep 22, 2026, 03_53_48 PM.png'));
+    });
+
+    it('says what was fixed, what is still open and what is new', async () => {
+      await rule('required', 'Carry the statutory warning.');
+      await rule('required', 'The logo sits top-right.');
+      await rule('forbidden', 'Never show a competitor logo.', 'regulation', null, 'other');
+      const { runCheck } = await import('../src/server/brain/checker');
+      const { compareWithEarlier } = await import('../src/server/brain/revisions');
+      const file = await uploadImage(mm, 'Diwali banner v1.png');
+
+      fake.checkFindings = [
+        { ref: 'R1', dimension: 'compliance', severity: 'critical', message: 'No warning.' },
+        { ref: 'R2', dimension: 'compliance', severity: 'critical', message: 'Logo bottom-left.' },
+      ];
+      const first = await runCheck(mm, { fileId: file.id });
+      // Worded differently the second time: it is the same fault if it breaks the same rule.
+      fake.checkFindings = [
+        { ref: 'R2', dimension: 'compliance', severity: 'critical', message: 'Logo still not top-right.' },
+        { ref: 'R3', dimension: 'compliance', severity: 'critical', message: 'Smirnoff bottle in shot.' },
+      ];
+      const second = await runCheck(mm, { fileId: file.id });
+
+      const revision = (await compareWithEarlier(mm, second.id))!;
+      assert.equal(revision.against?.id, first.id, 'the same file checked again was not found');
+      assert.deepEqual(revision.fixed.map((f) => f.message), ['No warning.']);
+      assert.deepEqual(revision.stillOpen.map((f) => f.message), ['Logo still not top-right.']);
+      assert.deepEqual(revision.added.map((f) => f.message), ['Smirnoff bottle in shot.']);
+
+      // Nobody else's check can be compared with, or compared.
+      assert.equal(await compareWithEarlier(nh, second.id), null);
+    });
+
+    it('does not pair two unrelated WhatsApp files, but lets a person pick', async () => {
+      await rule('required', 'Carry the statutory warning.');
+      const { runCheck } = await import('../src/server/brain/checker');
+      const { compareWithEarlier } = await import('../src/server/brain/revisions');
+      const a = await runCheck(mm, { fileId: (await uploadImage(mm, 'WhatsApp Image 2026-09-26 at 10.01.02 AM.png', 3)).id });
+      const b = await runCheck(mm, { fileId: (await uploadImage(mm, 'WhatsApp Image 2026-09-27 at 4.15.09 PM.png', 4)).id });
+
+      const found = (await compareWithEarlier(mm, b.id))!;
+      assert.equal(found.against, null, 'two unrelated files were called versions of each other');
+      assert.ok(found.candidates.some((c) => c.id === a.id), 'the earlier check was not offered');
+
+      const picked = (await compareWithEarlier(mm, b.id, a.id))!;
+      assert.equal(picked.against?.id, a.id);
+      assert.equal(picked.against?.chosen, true);
+    });
+  });
+
   // A flag showed the whole frame and left the reviewer to find the fault.
   it('keeps where on the picture a fault is, and nothing for what is missing', async () => {
     const { boxOf } = await import('../src/server/brain/checker');

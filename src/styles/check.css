@@ -246,6 +246,16 @@
   .qc-flags li { flex-direction: column; }
 }
 
+/* A new version next to the one before it. */
+.qc-revision { margin-top: 12px; padding: 10px 14px; border-radius: 10px; border: 1px solid var(--line); font-size: 13px; }
+.qc-revision-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 0 0 6px; color: var(--ink-800); }
+.qc-revision-list { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 3px; }
+.qc-revision-list .is-fixed { color: var(--ok-700); }
+.qc-revision-list .is-open { color: var(--warn-700); }
+.qc-revision-list .is-new { color: var(--stop-700); }
+.qc-revision-pick { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.qc-revision-pick select { max-width: 100%; }
+
 /* What the creative is missing: one box of points, after everything to change. */
 .qc-add {
   margin-top: 18px; padding: 14px 16px 12px; border-radius: 10px;

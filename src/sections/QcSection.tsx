@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
 import { assetUrl } from '@/types/media';
 import type { CheckFlag, ClosePass, SecondLook } from '@/server/brain/checker';
+import type { Revision } from '@/server/brain/revisions';
+import { relativeDay } from '@/lib/format';
 
 /**
  * Creative QC.
@@ -521,6 +523,65 @@ export function QcSection({
   );
 }
 
+/**
+ * This check next to the version before it: what was fixed, what is still
+ * open, what is new. Found for the reviewer when it can be told for certain -
+ * the same file checked again, or the same name with "v2" or "final" taken
+ * off - and otherwise chosen from the list.
+ */
+function RevisionNote({ checkId }: { checkId: string }) {
+  const [revision, setRevision] = useState<Revision | null>(null);
+  const [withId, setWithId] = useState<string | null>(null);
+
+  useEffect(() => {
+    let stopped = false;
+    const query = withId ? `?with=${encodeURIComponent(withId)}` : '';
+    void fetch(`/api/brain/checks/${checkId}/compare${query}`, { cache: 'no-store' })
+      .then((res) => (res.ok ? (res.json() as Promise<{ revision: Revision }>) : null))
+      .then((body) => { if (!stopped && body) setRevision(body.revision); })
+      .catch(() => {});
+    return () => { stopped = true; };
+  }, [checkId, withId]);
+
+  if (!revision || (revision.against === null && revision.candidates.length === 0)) return null;
+  const { against, fixed, stillOpen, added } = revision;
+
+  return (
+    <div className="qc-revision">
+      {against && (
+        <>
+          <p className="qc-revision-head">
+            <Icon name="restore" size={13} /> Compared with the earlier version
+            {' '}<span className="muted">({against.subject}, {relativeDay(against.createdAt)})</span>
+            {revision.scoreBefore !== null && revision.scoreNow !== null && (
+              <strong> · score {revision.scoreBefore} → {revision.scoreNow}</strong>
+            )}
+          </p>
+          <ul className="qc-revision-list">
+            {fixed.map((f, i) => <li key={`f${i}`} className="is-fixed">Fixed — {f.message}</li>)}
+            {stillOpen.map((f, i) => <li key={`s${i}`} className="is-open">Still open — {f.message}</li>)}
+            {added.map((f, i) => <li key={`a${i}`} className="is-new">New — {f.message}</li>)}
+            {fixed.length + stillOpen.length + added.length === 0 && <li>Nothing flagged in either version.</li>}
+          </ul>
+        </>
+      )}
+      {revision.candidates.length > 0 && (
+        <label className="qc-revision-pick no-print">
+          <span className="tiny muted">{against ? 'Compare with a different version' : 'Is this a new version? Compare it with'}</span>
+          <select value={against?.id ?? ''} onChange={(e) => setWithId(e.target.value || null)}>
+            <option value="">{against ? '—' : 'Choose an earlier check'}</option>
+            {revision.candidates.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.subject} · {relativeDay(c.createdAt)}{c.score !== null ? ` · ${c.score}` : ''}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+    </div>
+  );
+}
+
 /** 83.4 seconds as "1:23". */
 function clock(seconds: number): string {
   const whole = Math.max(0, Math.floor(seconds));
@@ -760,6 +821,8 @@ function QcReport({
           <p>{report.check.summary}</p>
         )}
       </details>
+
+      <RevisionNote checkId={report.check.id} />
 
       {/* With nothing flagged, the summary is the only account of the
           creative there is. With flags, it only says them again. */}
