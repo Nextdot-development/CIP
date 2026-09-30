@@ -734,6 +734,9 @@ export type ReviewVerdict = {
    */
   verdict: 'confirmed' | 'rejected' | 'unsure';
   reason: string;
+  /** The frame the fault shows most clearly in, and where in it. 0 and empty when it is not in one. */
+  frame?: number;
+  box?: number[];
 };
 
 export type ReviewAnalysis = {
@@ -925,6 +928,11 @@ export type CheckFinding = {
   issue?: 'missing' | 'wrong';
   /** Other refs the same fault breaks. It is one fault, reported once. */
   alsoBreaks?: string[];
+  /**
+   * Where the fault is: [x, y, width, height] as fractions of the picture from
+   * its top-left, or empty. For a frame search, within the first frame named.
+   */
+  box?: number[];
 };
 
 /**

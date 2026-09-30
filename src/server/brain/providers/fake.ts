@@ -93,6 +93,8 @@ export class FakeBrainProvider implements BrainProvider {
   reviewVerdicts: ReviewVerdict['verdict'][] | null = null;
   /** The last second look's input. */
   lastReviewInput: ReviewInput | null = null;
+  /** Where the second look says each finding is, by position. */
+  reviewPlaces: { frame: number; box: number[] }[] | null = null;
   /**
    * What searching the frames close up finds. Each finding is reported only by
    * the batch holding the first frame it names. Null: nothing.
@@ -145,6 +147,7 @@ export class FakeBrainProvider implements BrainProvider {
     this.frameReadFails = false;
     this.reviewVerdicts = null;
     this.lastReviewInput = null;
+    this.reviewPlaces = null;
     this.frameFindings = null;
     this.framesCheckInputs = [];
     this.identified = null;
@@ -581,6 +584,8 @@ export class FakeBrainProvider implements BrainProvider {
         id: finding.id,
         verdict: this.reviewVerdicts?.[i] ?? 'confirmed',
         reason: `Looked again at "${finding.message}".`,
+        frame: this.reviewPlaces?.[i]?.frame ?? 0,
+        box: this.reviewPlaces?.[i]?.box ?? [],
       })),
       usage: { durationMs: 1 },
     };

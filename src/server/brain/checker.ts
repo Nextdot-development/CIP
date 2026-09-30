@@ -103,6 +103,11 @@ export type CheckFlag = {
   issue: 'missing' | 'wrong';
   /** Other rules the same fault breaks. One fault, one flag. */
   alsoRules: { id: string; rule: string }[];
+  /**
+   * Where the fault is, in fractions of the picture from its top-left. For a
+   * video, `at` is the moment of the frame it is marked on.
+   */
+  box: { at: number | null; x: number; y: number; w: number; h: number } | null;
 };
 
 export type CreativeCheck = {
@@ -299,6 +304,27 @@ export function issueOf(message: string, said?: unknown): 'missing' | 'wrong' {
     : 'wrong';
 }
 
+/** Where on the picture a fault is. Fractions from the top-left; for a video, which frame. */
+export type FlagBox = { frame: number | null; x: number; y: number; w: number; h: number };
+
+/**
+ * A rectangle a model gave, or null. Four fractions, clamped to the picture,
+ * and big enough to see; anything else is not a place.
+ */
+export function boxOf(raw: unknown, frame: number | null): FlagBox | null {
+  if (!Array.isArray(raw) || raw.length !== 4 || !raw.every((n) => typeof n === 'number' && Number.isFinite(n))) return null;
+  // A model that answers in percent is still answering.
+  const scale = raw.some((n) => n > 1) && raw.every((n) => n <= 100) ? 100 : 1;
+  const [x, y, w, h] = raw.map((n) => Math.min(1, Math.max(0, n / scale))) as [number, number, number, number];
+  const width = Math.min(w, 1 - x);
+  const height = Math.min(h, 1 - y);
+  if (width < 0.01 || height < 0.01) return null;
+  // Everything is not a place either: a box round the whole picture marks nothing.
+  if (width > 0.95 && height > 0.95) return null;
+  const round = (n: number) => Math.round(n * 1000) / 1000;
+  return { frame, x: round(x), y: round(y), w: round(width), h: round(height) };
+}
+
 /** A finding that survived grounding: what it cites, and every rule it breaks. */
 export type GroundedFinding = CheckFinding & {
   target: RefTarget;
@@ -306,6 +332,8 @@ export type GroundedFinding = CheckFinding & {
   issue: 'missing' | 'wrong';
   /** The other refs the same fault breaks. */
   also: string[];
+  /** Where it is. Null for something missing, or when nobody said. */
+  place: FlagBox | null;
 };
 
 /**
@@ -393,6 +421,11 @@ export function groundFindings(
       frames,
       issue: issueOf(message, raw.issue),
       also,
+      // Something missing has nowhere to point. A frame search's box is in the
+      // first frame it names; a single picture's, in the picture.
+      place: issueOf(message, raw.issue) === 'missing'
+        ? null
+        : boxOf(raw.box, frameCount > 0 ? (frames[0] ?? null) : null),
     };
 
     // One flag per fault. Findings that share any rule are the same fault -
@@ -409,6 +442,7 @@ export function groundFindings(
     const every = [...new Set([existing.ref, ...existing.also, ref, ...also])];
     kept[same] = {
       ...lead,
+      place: lead.place ?? (lead === finding ? existing.place : finding.place),
       also: every.filter((r) => r !== lead.ref),
       frames: [...new Set([...existing.frames, ...frames])].sort((a, b) => a - b),
     };
@@ -828,7 +862,7 @@ async function readOnScreen(
  * wrong flag only costs a reviewer a minute. What was removed is kept, with the
  * reason, so the reviewer can see it and disagree.
  */
-export async function lookAgain<F extends { ref: string; severity: CheckFinding['severity']; message: string; frames: number[] }>(
+export async function lookAgain<F extends { ref: string; severity: CheckFinding['severity']; message: string; frames: number[]; place?: FlagBox | null; issue?: 'missing' | 'wrong' }>(
   provider: BrainProvider,
   input: {
     filename: string;
@@ -932,6 +966,13 @@ export async function lookAgain<F extends { ref: string; severity: CheckFinding[
     // No answer about it is not an answer: it stays.
     if (!verdict || verdict.verdict === 'unsure') unsure += 1;
     return true;
+  }).map((f) => {
+    // Where it is, from the frame looked at full size - better than any
+    // place guessed off the sheet. Only a frame that was shown can have one.
+    const verdict = verdicts.get(f.ref);
+    if (!verdict || f.issue === 'missing' || !verdict.frame || !wanted.includes(verdict.frame)) return f;
+    const place = boxOf(verdict.box, verdict.frame);
+    return place ? { ...f, place, frames: [...new Set([...f.frames, verdict.frame])].sort((a, b) => a - b) } : f;
   });
 
   return { kept, secondLook: { status: 'done', reviewed: serious.length, unsure, dropped } };
@@ -1166,8 +1207,11 @@ export async function runCheck(
   // What the frames showed close up joins what the sheet showed. Grounding
   // keeps one flag per rule, the more severe, with every frame either named.
   const close = closeFound ? await closeFound : null;
+  // A box drawn on the sheet is a place on a grid of thumbnails, not in any
+  // one frame; a film's places come from looking at its frames.
+  const fromSheet = video ? analysis.findings.map((f) => ({ ...f, box: [] })) : analysis.findings;
   let grounded = groundFindings(
-    analysis.assetKind === 'creative' ? [...analysis.findings, ...(close?.findings ?? [])] : analysis.findings,
+    analysis.assetKind === 'creative' ? [...fromSheet, ...(close?.findings ?? [])] : fromSheet,
     refs,
     frames.length,
   );
@@ -1211,13 +1255,16 @@ export async function runCheck(
     for (const finding of grounded) {
       await tx`
         insert into check_flags
-          (company_id, check_id, dimension, severity, message, fact_id, rule_id, at_seconds, issue, also_rule_ids)
+          (company_id, check_id, dimension, severity, message, fact_id, rule_id, at_seconds, issue, also_rule_ids, box)
         values
           (${scope.companyId}, ${checkId}, ${finding.dimension}, ${finding.severity}, ${finding.message},
            ${finding.target.kind === 'fact' ? finding.target.id : null},
            ${finding.target.kind === 'rule' ? finding.target.id : null},
            ${finding.frames.map((n) => frames[n - 1]!.atSeconds)}::real[], ${finding.issue},
-           ${finding.also.map((r) => refs.get(r)).filter((t) => t?.kind === 'rule').map((t) => t!.id)}::uuid[])
+           ${finding.also.map((r) => refs.get(r)).filter((t) => t?.kind === 'rule').map((t) => t!.id)}::uuid[],
+           ${finding.place
+             ? tx.json({ ...finding.place, at: finding.place.frame ? frames[finding.place.frame - 1]!.atSeconds : null })
+             : null})
       `;
     }
     await tx`
@@ -1312,11 +1359,12 @@ export async function getCheck(scope: CompanyScope, checkId: string): Promise<Cr
       status: CheckFlag['status']; dispute_reason: CheckFlag['disputeReason']; correction: string | null;
       at_seconds: number[] | null; issue: 'missing' | 'wrong' | null;
       also_rules: { id: string; rule: string }[];
+      box: (FlagBox & { at: number | null }) | null;
     }[]>`
       select g.id, g.dimension, g.severity, g.message,
              g.fact_id, b.attribute as fact_attribute, b.value as fact_value, b.brand as fact_brand,
              g.rule_id, r.rule as rule_text, r.source as rule_source, r.reference_url as rule_url,
-             g.status, g.dispute_reason, g.correction, g.at_seconds, g.issue,
+             g.status, g.dispute_reason, g.correction, g.at_seconds, g.issue, g.box,
              coalesce((select json_agg(json_build_object('id', o.id, 'rule', o.rule))
                          from compliance_rules o
                         where o.id = any(g.also_rule_ids) and o.company_id = g.company_id), '[]'::json) as also_rules
@@ -1372,6 +1420,7 @@ export async function getCheck(scope: CompanyScope, checkId: string): Promise<Cr
         // Read from the words for a flag written before the checker said.
         issue: issueOf(g.message, g.issue),
         alsoRules: g.also_rules ?? [],
+        box: g.box ? { at: g.box.at, x: g.box.x, y: g.box.y, w: g.box.w, h: g.box.h } : null,
         correction: g.correction,
       })),
     };

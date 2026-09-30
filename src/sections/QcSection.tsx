@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
+import { assetUrl } from '@/types/media';
 import type { CheckFlag, ClosePass, SecondLook } from '@/server/brain/checker';
 
 /**
@@ -32,6 +33,8 @@ const VIDEO_NAME = /\.(mp4|mov|webm|mkv)$/i;
 type Report = {
   check: {
     id: string;
+    fileId: string | null;
+    generationId: string | null;
     subject: string;
     brand: string | null;
     market: string | null;
@@ -769,11 +772,11 @@ function QcReport({
           it is just the end card - so those are one list to add, at the end. */}
       {report.mustFix.some((f) => f.issue === 'wrong') && (
         <FlagList title="Fix these" tone="tone-stop" flags={report.mustFix.filter((f) => f.issue === 'wrong')}
-          checkId={report.check.id} framesAt={report.check.video?.framesAt ?? []} />
+          checkId={report.check.id} framesAt={report.check.video?.framesAt ?? []} picture={pictureOf(report)} />
       )}
       {report.toReview.some((f) => f.issue === 'wrong') && (
         <FlagList title="Worth a look" tone="tone-warn" flags={report.toReview.filter((f) => f.issue === 'wrong')}
-          checkId={report.check.id} framesAt={report.check.video?.framesAt ?? []} />
+          checkId={report.check.id} framesAt={report.check.video?.framesAt ?? []} picture={pictureOf(report)} />
       )}
       <AddList
         mustAdd={report.mustFix.filter((f) => f.issue === 'missing')}
@@ -827,8 +830,55 @@ function AddList({ mustAdd, mayAdd }: { mustAdd: CheckFlag[]; mayAdd: CheckFlag[
   );
 }
 
+/**
+ * The picture a single creative's flags are marked on, or null.
+ *
+ * A film's flags have their frames; a PDF page has no picture of its own to
+ * link to, and marking the whole document would point nowhere.
+ */
+function pictureOf(report: Report): string | null {
+  if (report.check.video) return null;
+  if (report.check.generationId) return assetUrl(report.check.generationId);
+  if (report.check.fileId && /\.(png|jpe?g|webp)$/i.test(report.check.subject)) {
+    return `/api/drive/files/${report.check.fileId}/content?size=640`;
+  }
+  return null;
+}
+
+/** A picture, and where on it the fault is. The rectangle is in fractions, so it fits any size. */
+function Marked({
+  src, alt, box, href, label,
+}: {
+  src: string;
+  alt: string;
+  box: { x: number; y: number; w: number; h: number } | null;
+  href: string;
+  label: string | null;
+}) {
+  return (
+    <a href={href} target="_blank" rel="noreferrer" title={box ? 'Open it - the box marks the fault' : 'Open it'}>
+      <span className="qc-marked">
+        <img
+          src={src}
+          alt={alt}
+          loading="lazy"
+          // An older check kept no pictures; its time still says where.
+          onError={(event) => { event.currentTarget.parentElement!.style.display = 'none'; }}
+        />
+        {box && (
+          <i
+            className="qc-box"
+            style={{ left: `${box.x * 100}%`, top: `${box.y * 100}%`, width: `${box.w * 100}%`, height: `${box.h * 100}%` }}
+          />
+        )}
+      </span>
+      {label && <span>{label}</span>}
+    </a>
+  );
+}
+
 function FlagList({
-  title, tone, flags, checkId, framesAt,
+  title, tone, flags, checkId, framesAt, picture,
 }: {
   title: string;
   tone: string;
@@ -836,6 +886,8 @@ function FlagList({
   checkId: string;
   /** For a video: when each kept frame was taken, so a flag's moment finds its picture. */
   framesAt: number[];
+  /** For a single picture: the picture itself, to mark the fault on. */
+  picture: string | null;
 }) {
   return (
     <div style={{ marginTop: 18 }}>
@@ -843,7 +895,11 @@ function FlagList({
       <ul className="qc-flags">
         {flags.map((flag) => {
           // A flag names moments; the kept frame for each is the one taken then.
-          const shots = flag.atSeconds.slice(0, 3).map((t) => ({
+          // The moment the fault is marked on comes first, so it is always shown.
+          const moments = flag.box?.at != null
+            ? [flag.box.at, ...flag.atSeconds.filter((t) => Math.abs(t - flag.box!.at!) >= 0.05)]
+            : flag.atSeconds;
+          const shots = moments.slice(0, 3).map((t) => ({
             t,
             n: framesAt.findIndex((f) => Math.abs(f - t) < 0.05) + 1,
           }));
@@ -868,26 +924,23 @@ function FlagList({
                 <div className="qc-flag-frames">
                   {shots.map(({ t, n }) =>
                     n > 0 ? (
-                      <a
+                      <Marked
                         key={t}
+                        src={`/api/brain/checks/${checkId}/frames/${n}`}
                         href={`/api/brain/checks/${checkId}/frames/${n}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        title={`Open the frame at ${clock(t)}`}
-                      >
-                        <img
-                          src={`/api/brain/checks/${checkId}/frames/${n}`}
-                          alt={`The frame at ${clock(t)}`}
-                          loading="lazy"
-                          // An older check kept no pictures; its time still says where.
-                          onError={(event) => { event.currentTarget.style.display = 'none'; }}
-                        />
-                        <span>{clock(t)}</span>
-                      </a>
+                        alt={`The frame at ${clock(t)}`}
+                        box={flag.box && flag.box.at !== null && Math.abs(flag.box.at - t) < 0.05 ? flag.box : null}
+                        label={clock(t)}
+                      />
                     ) : (
                       <span key={t} className="qc-flag-time">{clock(t)}</span>
                     ),
                   )}
+                </div>
+              )}
+              {shots.length === 0 && picture && flag.box && (
+                <div className="qc-flag-frames">
+                  <Marked src={picture} href={picture} alt="Where the fault is" box={flag.box} label={null} />
                 </div>
               )}
             </li>

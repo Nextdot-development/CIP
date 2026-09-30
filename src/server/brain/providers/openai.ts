@@ -426,7 +426,7 @@ const CHECK_SCHEMA = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['ref', 'dimension', 'severity', 'message', 'frames', 'issue', 'alsoBreaks'],
+        required: ['ref', 'dimension', 'severity', 'message', 'frames', 'issue', 'alsoBreaks', 'box'],
         properties: {
           ref: { type: 'string' },
           dimension: { type: 'string', enum: ['visual', 'verbal', 'compliance'] },
@@ -441,6 +441,8 @@ const CHECK_SCHEMA = {
           issue: { type: 'string', enum: ['missing', 'wrong'] },
           // One fault that breaks two rules is one finding, not two.
           alsoBreaks: { type: 'array', items: { type: 'string' } },
+          // Where the fault is, so the report can mark it. Fractions 0-1.
+          box: { type: 'array', items: { type: 'number' } },
         },
       },
     },
@@ -567,11 +569,13 @@ const REVIEW_SCHEMA = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['id', 'verdict', 'reason'],
+        required: ['id', 'verdict', 'reason', 'frame', 'box'],
         properties: {
           id: { type: 'string' },
           verdict: { type: 'string', enum: ['confirmed', 'rejected', 'unsure'] },
           reason: { type: 'string' },
+          frame: { type: 'integer' },
+          box: { type: 'array', items: { type: 'number' } },
         },
       },
     },
@@ -1112,7 +1116,10 @@ export class OpenAIBrainProvider implements BrainProvider {
             ? 'For each finding, list in frames the numbers of the frames it is about - ' +
               'where the forbidden thing is, or where the missing thing should have been. ' +
               'Leave it empty only when it is about the film as a whole.\n\n'
-            : 'Leave frames empty: this is a single picture.\n\n') +
+            : 'Leave frames empty: this is a single picture. In box give where the fault is, as ' +
+              '[x, y, width, height] in fractions of the picture from its top-left corner - tight ' +
+              'around the logo, the bottle, the words at fault. Leave box empty when the fault is ' +
+              'something missing, or the whole picture.\n\n') +
           `Rules:\n${rules || '(none)'}`,
       },
       {
@@ -1399,6 +1406,8 @@ export class OpenAIBrainProvider implements BrainProvider {
           'small print - for anything the rules below forbid. Report only what you can actually see ' +
           'in a frame and list the frame numbers it is in. ref is the code of the one rule it breaks, ' +
           `copied exactly - one of ${input.rules.map((r) => r.ref).join(', ')} - never a description.\n\n` +
+          'In box give where it is in the first frame you list, as [x, y, width, height] in ' +
+          'fractions of that frame from its top-left corner, tight around the thing at fault.\n\n' +
           'Do not report anything as missing: these are only some of the frames, and what is not in ' +
           'them may be elsewhere in the film. A rule marked allowed is never a fault. If nothing in ' +
           'these frames breaks a rule, return no findings - an empty list is a real answer.\n\n' +
@@ -1455,7 +1464,10 @@ export class OpenAIBrainProvider implements BrainProvider {
           'A missed fault is far worse than a wrong one. Reject only when the evidence in front ' +
           'of you shows the finding is wrong, never because you cannot see the fault yourself in ' +
           'the frames given - something missing from the whole film cannot be seen in a frame. ' +
-          'Say in reason what you saw, in at most 12 words a reviewer can check.\n\n' +
+          'Say in reason what you saw, in at most 12 words a reviewer can check. For a finding you ' +
+          'do not reject whose fault can be seen, give in frame the number of the frame it shows ' +
+          'most clearly in, and in box where it is in that frame, as [x, y, width, height] in ' +
+          'fractions of the frame from its top-left corner. Otherwise frame is 0 and box empty.\n\n' +
           `Findings:\n${findings}\n\n` +
           `Text read off each frame:\n${input.onScreen || '(none read)'}\n\n` +
           `Soundtrack: ${input.heard}`,
@@ -1484,6 +1496,8 @@ export class OpenAIBrainProvider implements BrainProvider {
         id: v.id,
         verdict: v.verdict,
         reason: typeof v.reason === 'string' ? v.reason.trim().slice(0, 300) : '',
+        frame: Number.isInteger(v.frame) ? v.frame : 0,
+        box: Array.isArray(v.box) ? v.box : [],
       })),
       usage,
     };

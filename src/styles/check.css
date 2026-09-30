@@ -229,9 +229,17 @@
 }
 .qc-flag-frames { display: flex; gap: 6px; flex: none; }
 .qc-flag-frames a { display: flex; flex-direction: column; align-items: center; gap: 2px; text-decoration: none; }
+/* The whole frame, never cropped: the box is placed in fractions of it, and a
+   cropped picture would put it in the wrong place. */
+.qc-marked { position: relative; display: inline-block; line-height: 0; }
 .qc-flag-frames img {
-  width: 72px; height: 72px; object-fit: cover; border-radius: 6px;
+  height: 84px; width: auto; max-width: none; border-radius: 6px;
   border: 1px solid var(--line-strong); background: var(--ink-050);
+}
+.qc-box {
+  position: absolute; border: 2px solid var(--stop-500); border-radius: 3px;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .55), 0 0 0 2px rgba(255, 255, 255, .35);
+  pointer-events: none;
 }
 .qc-flag-frames span, .qc-flag-time { font-size: 11px; color: var(--ink-500); font-variant-numeric: tabular-nums; }
 @media (max-width: 560px) {

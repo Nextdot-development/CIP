@@ -1061,6 +1061,45 @@ describe('THE CHECKER: a creative judged against the brand, and nothing else', (
     assert.equal(kept[0]!.ref, 'R1');
   });
 
+  // A flag showed the whole frame and left the reviewer to find the fault.
+  it('keeps where on the picture a fault is, and nothing for what is missing', async () => {
+    const { boxOf } = await import('../src/server/brain/checker');
+    assert.deepEqual(boxOf([0.7, 0.05, 0.2, 0.1], null), { frame: null, x: 0.7, y: 0.05, w: 0.2, h: 0.1 });
+    assert.deepEqual(boxOf([70, 5, 20, 10], 3), { frame: 3, x: 0.7, y: 0.05, w: 0.2, h: 0.1 }, 'percent is still a place');
+    assert.deepEqual(boxOf([0.9, 0.9, 0.5, 0.5], null), { frame: null, x: 0.9, y: 0.9, w: 0.1, h: 0.1 }, 'kept inside the picture');
+    assert.equal(boxOf([0, 0, 1, 1], null), null, 'the whole picture marks nothing');
+    assert.equal(boxOf([], null), null);
+    assert.equal(boxOf([0.1, 0.1, 0.001, 0.2], null), null, 'too thin to see');
+
+    await rule('required', 'The logo sits top-right.');
+    await rule('required', 'Carry "Drink Responsibly".');
+    fake.checkFindings = [
+      { ref: 'R1', dimension: 'compliance', severity: 'critical', message: 'Logo bottom-left; move it.', issue: 'wrong', box: [0.05, 0.8, 0.2, 0.12] },
+      { ref: 'R2', dimension: 'compliance', severity: 'critical', message: 'No warning line; add it.', issue: 'missing', box: [0.1, 0.1, 0.3, 0.3] },
+    ];
+    const check = await checkedImage();
+    const by = Object.fromEntries(check.flags.map((f) => [f.message, f.box]));
+    assert.deepEqual(by['Logo bottom-left; move it.'], { at: null, x: 0.05, y: 0.8, w: 0.2, h: 0.12 });
+    assert.equal(by['No warning line; add it.'], null, 'something missing was given a place');
+  });
+
+  it("marks a film's fault in the frame the closer look found it in", async () => {
+    await rule('forbidden', 'Never show a competitor brand.', 'regulation', null, 'other');
+    // The sheet's box is a place on a grid of thumbnails - it must not be kept.
+    fake.checkFindings = [
+      { ref: 'R1', dimension: 'compliance', severity: 'critical', message: 'Competitor bottle on the shelf.', frames: [2], box: [0.5, 0.5, 0.1, 0.1] },
+    ];
+    fake.reviewPlaces = [{ frame: 2, box: [0.8, 0.1, 0.1, 0.25] }];
+    const { runCheck } = await import('../src/server/brain/checker');
+
+    const check = await runCheck(mm, { fileId: (await uploadVideo()).id });
+
+    const flag = check.flags[0]!;
+    assert.ok(flag.box, 'the fault was not marked');
+    assert.equal(flag.box.at, check.video!.framesAt[1]);
+    assert.deepEqual([flag.box.x, flag.box.y, flag.box.w, flag.box.h], [0.8, 0.1, 0.1, 0.25]);
+  });
+
   // "Whytehall logo is centred" and "Move brand logo to top-right" were one
   // fault on the same frames, reported twice because it broke two rules.
   it('reports one fault once, naming every rule it breaks', async () => {
