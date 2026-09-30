@@ -73,8 +73,11 @@ export async function reportOn(scope: CompanyScope, check: CreativeCheck): Promi
   });
 
   const verifiedById = new Map(rules.map((r) => [r.id, r.verifiedAt !== null]));
+  // Every rule a flag broke, not only the one it names first: a rule a fault
+  // also broke did not pass.
   const flaggedRuleIds = new Set(
-    check.flags.map((flag) => flag.citedRule?.id).filter((id): id is string => Boolean(id)),
+    check.flags.flatMap((flag) => [flag.citedRule?.id, ...(flag.alsoRules ?? []).map((r) => r.id)])
+      .filter((id): id is string => Boolean(id)),
   );
 
   const passed = rules

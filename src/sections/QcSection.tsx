@@ -815,7 +815,7 @@ function AddList({ mustAdd, mayAdd }: { mustAdd: CheckFlag[]; mayAdd: CheckFlag[
       <p className="qc-list-title tone-stop">Missing — add these · {mustAdd.length + mayAdd.length}</p>
       <ul>
         {[...mustAdd, ...mayAdd].map((flag) => (
-          <li key={flag.id} title={flag.citedRule?.rule ?? undefined}>
+          <li key={flag.id} title={[flag.citedRule?.rule, ...(flag.alsoRules ?? []).map((r) => r.rule)].filter(Boolean).join(' · ') || undefined}>
             {flag.message}
             {mayAdd.includes(flag) && (
               <span className="qc-add-soft"> worth a look</span>
@@ -850,7 +850,7 @@ function FlagList({
           // What it was judged against. A finding with nothing here would
           // have been thrown away before it reached this screen.
           const against = flag.citedRule
-            ? flag.citedRule.rule
+            ? [flag.citedRule.rule, ...(flag.alsoRules ?? []).map((r) => r.rule)].join(' · ')
             : flag.citedFact
               ? `${flag.citedFact.brand ?? 'This brand'} usually — ${flag.citedFact.attribute}: ${flag.citedFact.value}`
               : null;
@@ -860,7 +860,7 @@ function FlagList({
                 <p className="qc-flag-message">{flag.message}</p>
                 {against && (
                   <p className="qc-flag-rule" title={against}>
-                    {flag.citedRule ? 'Rule' : 'Pattern'}: {against}
+                    {flag.citedRule ? ((flag.alsoRules ?? []).length > 0 ? 'Rules' : 'Rule') : 'Pattern'}: {against}
                   </p>
                 )}
               </div>

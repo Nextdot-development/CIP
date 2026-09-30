@@ -1061,6 +1061,58 @@ describe('THE CHECKER: a creative judged against the brand, and nothing else', (
     assert.equal(kept[0]!.ref, 'R1');
   });
 
+  // "Whytehall logo is centred" and "Move brand logo to top-right" were one
+  // fault on the same frames, reported twice because it broke two rules.
+  it('reports one fault once, naming every rule it breaks', async () => {
+    const { groundFindings } = await import('../src/server/brain/checker');
+    const rule = (id: string, graded?: 'critical' | 'warning' | 'note') =>
+      ({ kind: 'rule' as const, id, dimension: 'compliance' as const, requirement: 'required' as const, graded, permits: false });
+    const refs = new Map([
+      ['R1', rule('brand-logo', 'warning')],
+      ['R2', rule('global-logo', 'critical')],
+      ['R3', rule('warning-line')],
+      ['R4', { ...rule('approved'), permits: true }],
+    ]);
+
+    const kept = groundFindings(
+      [
+        // One fault, both logo rules, said by the model as one finding.
+        { ref: 'R1', dimension: 'compliance', severity: 'warning', message: 'Logo centred; move top-right.', frames: [2], alsoBreaks: ['R2', 'R4', 'R9'] },
+        // The same fault found again close up, under the other rule.
+        { ref: 'R2', dimension: 'compliance', severity: 'critical', message: 'Logo not top-right.', frames: [5] },
+        // A different fault.
+        { ref: 'R3', dimension: 'compliance', severity: 'critical', message: 'No warning line.', frames: [] },
+      ],
+      refs,
+      9,
+    );
+
+    assert.equal(kept.length, 2, JSON.stringify(kept.map((k) => k.message)));
+    const logo = kept.find((k) => k.ref === 'R1' || k.ref === 'R2')!;
+    // As serious as the most serious rule it breaks: R2 is graded critical.
+    assert.equal(logo.severity, 'critical');
+    assert.deepEqual([logo.ref, ...logo.also].sort(), ['R1', 'R2'], 'an approved or unsent ref was counted');
+    assert.deepEqual(logo.frames, [2, 5]);
+  });
+
+  it('stores the other rules a flag breaks, and never lists them as passed', async () => {
+    await rule('required', 'The brand logo sits top-right.');
+    await rule('required', 'Whytehall logo stays approved and sits top-right.');
+    fake.checkFindings = [
+      { ref: 'R1', dimension: 'compliance', severity: 'critical', message: 'Logo centred; move it top-right.', alsoBreaks: ['R2'] },
+    ];
+    const check = await checkedImage();
+
+    assert.equal(check.flags.length, 1);
+    assert.equal(check.flags[0]!.alsoRules.length, 1);
+    const { reportOn } = await import('../src/server/brain/qc');
+    const report = await reportOn(mm, check);
+    assert.ok(
+      !report.passed.some((p) => p.rule.includes('logo')),
+      `a rule the flag broke was listed as passed: ${report.passed.map((p) => p.rule)}`,
+    );
+  });
+
   // Eight flags on one film each showed the same end card: five of them were
   // lines it was missing, which is one list to add, not five moments to see.
   it('keeps what to add apart from what to change, and remembers which', async () => {

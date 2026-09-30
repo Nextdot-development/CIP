@@ -426,7 +426,7 @@ const CHECK_SCHEMA = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['ref', 'dimension', 'severity', 'message', 'frames', 'issue'],
+        required: ['ref', 'dimension', 'severity', 'message', 'frames', 'issue', 'alsoBreaks'],
         properties: {
           ref: { type: 'string' },
           dimension: { type: 'string', enum: ['visual', 'verbal', 'compliance'] },
@@ -439,6 +439,8 @@ const CHECK_SCHEMA = {
           // A reviewer handles the two differently: one is a list to add to
           // the end card, the other is a moment in the film to go and change.
           issue: { type: 'string', enum: ['missing', 'wrong'] },
+          // One fault that breaks two rules is one finding, not two.
+          alsoBreaks: { type: 'array', items: { type: 'string' } },
         },
       },
     },
@@ -582,6 +584,9 @@ const REVIEW_SCHEMA = {
  * fix, because that is what they do next.
  */
 const MESSAGE_STYLE =
+  'Report each fault once. When one fault breaks more than one rule - a logo in the wrong ' +
+  'corner breaking both a brand logo rule and a general logo rule - put the closest rule in ' +
+  'ref and the others in alsoBreaks; otherwise leave alsoBreaks empty.\n\n' +
   'Write each message as a crisp one-liner of at most 12 words: what is wrong and where, and ' +
   'the fix when it is not obvious. Do not restate or quote the rule - it is shown beside the ' +
   'message - and do not explain why it matters. Good: "No \'Drink Responsibly\' line anywhere." ' +

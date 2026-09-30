@@ -923,6 +923,8 @@ export type CheckFinding = {
    * wrong: something that is there is wrong, and the fix is to change it.
    */
   issue?: 'missing' | 'wrong';
+  /** Other refs the same fault breaks. It is one fault, reported once. */
+  alsoBreaks?: string[];
 };
 
 /**

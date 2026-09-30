@@ -101,6 +101,8 @@ export type CheckFlag = {
   atSeconds: number[];
   /** missing: add something that is not there. wrong: change something that is. */
   issue: 'missing' | 'wrong';
+  /** Other rules the same fault breaks. One fault, one flag. */
+  alsoRules: { id: string; rule: string }[];
 };
 
 export type CreativeCheck = {
@@ -297,21 +299,62 @@ export function issueOf(message: string, said?: unknown): 'missing' | 'wrong' {
     : 'wrong';
 }
 
+/** A finding that survived grounding: what it cites, and every rule it breaks. */
+export type GroundedFinding = CheckFinding & {
+  target: RefTarget;
+  frames: number[];
+  issue: 'missing' | 'wrong';
+  /** The other refs the same fault breaks. */
+  also: string[];
+};
+
+/**
+ * How serious breaking one ref is, or null when it cannot be broken at all.
+ *
+ * The rule's own grading wins where it has one. The model is answering "was
+ * this broken", not "how bad is it" - that was settled when the rule was
+ * written down.
+ */
+function severityFor(target: RefTarget, said: unknown): CheckFinding['severity'] | null {
+  // "The black logo is approved" cannot be broken. A flag citing it is the
+  // model reading a permission as a requirement, which is the flag the rule
+  // exists to prevent.
+  if (target.kind === 'rule' && target.permits) return null;
+  let severity: CheckFinding['severity'] =
+    target.kind === 'rule' && target.graded
+      ? target.graded
+      : said === 'critical' || said === 'warning'
+        ? said
+        : 'note';
+  // What a brand has usually done is not what it must do. Departing from an
+  // observed pattern is at most a warning, whatever the model called it.
+  if (target.requirement === 'observed' && severity === 'critical') severity = 'warning';
+  // A rule CIP suggested and no person has verified is a question, not a
+  // ruling: it can raise a flag, but it cannot fail a creative on its own.
+  if (target.kind === 'rule' && target.advisory && severity === 'critical') severity = 'warning';
+  if (target.kind === 'rule' && target.soft) severity = 'note';
+  if (target.kind === 'rule' && target.review && severity === 'critical') severity = 'warning';
+  return severity;
+}
+
+/** "R1 - competitor logo" is R1; two refs, or none, is not one rule. */
+function refOf(said: unknown, refs: Map<string, RefTarget>): string {
+  const text = typeof said === 'string' ? said.trim() : '';
+  if (refs.has(text)) return text;
+  const named = [...new Set(text.match(/\b[RF]\d+\b/g) ?? [])];
+  return named.length === 1 ? named[0]! : text;
+}
+
 export function groundFindings(
   findings: CheckFinding[],
   refs: Map<string, RefTarget>,
   /** Frames on a video's sheet. A frame number outside them is not a frame. */
   frameCount = 0,
-): (CheckFinding & { target: RefTarget; frames: number[]; issue: 'missing' | 'wrong' })[] {
-  const kept = new Map<string, CheckFinding & { target: RefTarget; frames: number[]; issue: 'missing' | 'wrong' }>();
+): GroundedFinding[] {
+  const kept: GroundedFinding[] = [];
 
   for (const raw of findings) {
-    // "R1 - competitor logo" is R1. A ref wrapped in words is still the one
-    // ref, and throwing it away threw away a real finding with it. Two refs,
-    // or none, is not one rule, and is discarded as before.
-    const said = typeof raw.ref === 'string' ? raw.ref.trim() : '';
-    const named = [...new Set(said.match(/\b[RF]\d+\b/g) ?? [])];
-    const ref = refs.has(said) ? said : named.length === 1 ? named[0]! : said;
+    const ref = refOf(raw.ref, refs);
     const target = refs.get(ref);
     // A ref nobody sent: a rule the model made up. Discarded, not reported.
     if (!target) continue;
@@ -319,33 +362,27 @@ export function groundFindings(
     const message = typeof raw.message === 'string' ? raw.message.trim().slice(0, 400) : '';
     if (message.length === 0) continue;
 
-    // The rule's own grading wins where it has one. The model is answering
-    // "was this broken", not "how bad is it" - that was settled when the rule
-    // was written down.
-    let severity: CheckFinding['severity'] =
-      target.kind === 'rule' && target.graded
-        ? target.graded
-        : raw.severity === 'critical' || raw.severity === 'warning'
-          ? raw.severity
-          : 'note';
-    // What a brand has usually done is not what it must do. Departing from an
-    // observed pattern is at most a warning, whatever the model called it.
-    if (target.requirement === 'observed' && severity === 'critical') severity = 'warning';
-    // A rule CIP suggested and no person has verified is a question, not a
-    // ruling: it can raise a flag, but it cannot fail a creative on its own.
-    if (target.kind === 'rule' && target.advisory && severity === 'critical') severity = 'warning';
-    // "The black logo is approved" cannot be broken. A flag citing it is the
-    // model reading a permission as a requirement, which is the flag the rule
-    // exists to prevent.
-    if (target.kind === 'rule' && target.permits) continue;
-    if (target.kind === 'rule' && target.soft) severity = 'note';
-    if (target.kind === 'rule' && target.review && severity === 'critical') severity = 'warning';
+    let severity = severityFor(target, raw.severity);
+    if (severity === null) continue;
+
+    // The other rules the same fault breaks, as long as they were sent and
+    // can be broken. The fault is as serious as the most serious of them.
+    const also: string[] = [];
+    for (const other of Array.isArray(raw.alsoBreaks) ? raw.alsoBreaks : []) {
+      const otherRef = refOf(other, refs);
+      const otherTarget = refs.get(otherRef);
+      if (!otherTarget || otherRef === ref || also.includes(otherRef)) continue;
+      const otherSeverity = severityFor(otherTarget, raw.severity);
+      if (otherSeverity === null) continue;
+      also.push(otherRef);
+      if (SEVERITY_RANK[otherSeverity] > SEVERITY_RANK[severity]) severity = otherSeverity;
+    }
 
     const frames = [...new Set((Array.isArray(raw.frames) ? raw.frames : []).map(Number))]
       .filter((n) => Number.isInteger(n) && n >= 1 && n <= frameCount)
       .sort((a, b) => a - b);
 
-    const finding = {
+    const finding: GroundedFinding = {
       ref,
       // The dimension comes from what the ref is, never from what the model
       // said it was, so a compliance rule cannot be quietly filed as visual.
@@ -355,20 +392,29 @@ export function groundFindings(
       target,
       frames,
       issue: issueOf(message, raw.issue),
+      also,
     };
 
-    // One flag per rule, the most severe of whatever was said about it, and
-    // every frame anything said about it pointed at.
-    const existing = kept.get(ref);
-    if (!existing || SEVERITY_RANK[severity] > SEVERITY_RANK[existing.severity]) {
-      const union = existing ? [...new Set([...existing.frames, ...frames])].sort((a, b) => a - b) : frames;
-      kept.set(ref, { ...finding, frames: union });
-    } else {
-      existing.frames = [...new Set([...existing.frames, ...frames])].sort((a, b) => a - b);
+    // One flag per fault. Findings that share any rule are the same fault -
+    // said twice about one rule, or found once by the sheet and again close
+    // up - and become one: the most severe wording, every rule, every frame.
+    const cited = new Set([ref, ...also]);
+    const same = kept.findIndex((k) => k.ref === ref || [k.ref, ...k.also].some((r) => cited.has(r)));
+    if (same === -1) {
+      kept.push(finding);
+      continue;
     }
+    const existing = kept[same]!;
+    const lead = SEVERITY_RANK[severity] > SEVERITY_RANK[existing.severity] ? finding : existing;
+    const every = [...new Set([existing.ref, ...existing.also, ref, ...also])];
+    kept[same] = {
+      ...lead,
+      also: every.filter((r) => r !== lead.ref),
+      frames: [...new Set([...existing.frames, ...frames])].sort((a, b) => a - b),
+    };
   }
 
-  return [...kept.values()];
+  return kept;
 }
 
 /** The bytes of a file, including one read from Google Drive without being kept. */
@@ -1165,12 +1211,13 @@ export async function runCheck(
     for (const finding of grounded) {
       await tx`
         insert into check_flags
-          (company_id, check_id, dimension, severity, message, fact_id, rule_id, at_seconds, issue)
+          (company_id, check_id, dimension, severity, message, fact_id, rule_id, at_seconds, issue, also_rule_ids)
         values
           (${scope.companyId}, ${checkId}, ${finding.dimension}, ${finding.severity}, ${finding.message},
            ${finding.target.kind === 'fact' ? finding.target.id : null},
            ${finding.target.kind === 'rule' ? finding.target.id : null},
-           ${finding.frames.map((n) => frames[n - 1]!.atSeconds)}::real[], ${finding.issue})
+           ${finding.frames.map((n) => frames[n - 1]!.atSeconds)}::real[], ${finding.issue},
+           ${finding.also.map((r) => refs.get(r)).filter((t) => t?.kind === 'rule').map((t) => t!.id)}::uuid[])
       `;
     }
     await tx`
@@ -1264,11 +1311,15 @@ export async function getCheck(scope: CompanyScope, checkId: string): Promise<Cr
       rule_id: string | null; rule_text: string | null; rule_source: RuleSource | null; rule_url: string | null;
       status: CheckFlag['status']; dispute_reason: CheckFlag['disputeReason']; correction: string | null;
       at_seconds: number[] | null; issue: 'missing' | 'wrong' | null;
+      also_rules: { id: string; rule: string }[];
     }[]>`
       select g.id, g.dimension, g.severity, g.message,
              g.fact_id, b.attribute as fact_attribute, b.value as fact_value, b.brand as fact_brand,
              g.rule_id, r.rule as rule_text, r.source as rule_source, r.reference_url as rule_url,
-             g.status, g.dispute_reason, g.correction, g.at_seconds, g.issue
+             g.status, g.dispute_reason, g.correction, g.at_seconds, g.issue,
+             coalesce((select json_agg(json_build_object('id', o.id, 'rule', o.rule))
+                         from compliance_rules o
+                        where o.id = any(g.also_rule_ids) and o.company_id = g.company_id), '[]'::json) as also_rules
         from check_flags g
         left join brand_dna_facts b on b.id = g.fact_id and b.company_id = g.company_id
         left join compliance_rules r on r.id = g.rule_id and r.company_id = g.company_id
@@ -1320,6 +1371,7 @@ export async function getCheck(scope: CompanyScope, checkId: string): Promise<Cr
         atSeconds: (g.at_seconds ?? []).map(Number),
         // Read from the words for a flag written before the checker said.
         issue: issueOf(g.message, g.issue),
+        alsoRules: g.also_rules ?? [],
         correction: g.correction,
       })),
     };
