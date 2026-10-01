@@ -151,6 +151,17 @@ export const VIDEO_GENERATION_LIMIT = (): RateLimitOptions =>
 export const GOOGLE_SYNC_LIMIT = (): RateLimitOptions =>
   fromEnv('CIP_GDRIVE_SYNC_RATE', { capacity: 3, refillPerSecond: 1 / 120 });
 
+/**
+ * Syncing a connected Team.
+ *
+ * More generous than the Google one, and the reason is what the call costs.
+ * A Google sync lists every folder and every file to discover that nothing
+ * moved; a Teams sync presents a delta link and is handed back an empty page.
+ * So pressing Sync Now twice is cheap here in a way it is not there.
+ */
+export const TEAMS_SYNC_LIMIT = (): RateLimitOptions =>
+  fromEnv('CIP_TEAMS_SYNC_RATE', { capacity: 6, refillPerSecond: 1 / 30 });
+
 /** Everything the company generates, across all its users. */
 export const COMPANY_GENERATION_LIMIT = (): RateLimitOptions =>
   fromEnv('CIP_COMPANY_RATE', { capacity: 20, refillPerSecond: 1 / 6 });
