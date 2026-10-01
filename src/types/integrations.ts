@@ -55,3 +55,43 @@ export type SyncedFileDTO = {
     posts: number | null;
   } | null;
 };
+
+export type MicrosoftStatus = 'connected' | 'needs_admin_consent' | 'disconnected';
+
+/**
+ * The connected Microsoft Team.
+ *
+ * Shorter than the Google one, and for the same reason the server type is: CIP
+ * reads a Team as itself, with a permission an administrator granted once, so
+ * there is no account, no token and no expiry to show.
+ */
+export type MicrosoftConnectionDTO = {
+  status: MicrosoftStatus;
+  /** Whether this deployment has an Entra application at all. */
+  configured: boolean;
+  teamId: string | null;
+  teamName: string | null;
+  driveName: string | null;
+  connectedAt: string | null;
+  lastSyncAt: string | null;
+  lastSyncError: string | null;
+  everSynced: boolean;
+};
+
+export type MicrosoftTeamDTO = {
+  id: string;
+  name: string;
+  description: string | null;
+};
+
+export type SyncedTeamsFileDTO = {
+  id: string;
+  name: string;
+  /** The folder inside the Team, as Microsoft reports it. */
+  path: string | null;
+  /** What the sync did: synced, unsupported, failed, trashed. */
+  state: string;
+  reason: string | null;
+  fileId: string | null;
+  syncedAt: string | null;
+};

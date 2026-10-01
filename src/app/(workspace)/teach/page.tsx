@@ -1,5 +1,9 @@
 import { requireSession } from '@/server/auth/guards';
 import { getConnection, listSyncedFiles } from '@/server/integrations/googleDrive/connection';
+import {
+  getConnection as getMicrosoftConnection,
+  listSyncedFiles as listMicrosoftFiles,
+} from '@/server/integrations/microsoftTeams/connection';
 import { listFolder } from '@/server/drive/service';
 import { TeachSection } from '@/sections/TeachSection';
 
@@ -21,9 +25,11 @@ export default async function TeachPage({
   const session = await requireSession();
   const { google, folder } = await searchParams;
 
-  const [connection, syncedFiles, listing] = await Promise.all([
+  const [connection, syncedFiles, microsoft, microsoftFiles, listing] = await Promise.all([
     getConnection(session.scope),
     listSyncedFiles(session.scope, {}),
+    getMicrosoftConnection(session.scope),
+    listMicrosoftFiles(session.scope),
     listFolder(session.scope, folder ?? null),
   ]);
 
@@ -31,6 +37,8 @@ export default async function TeachPage({
     <TeachSection
       connection={connection}
       syncedFiles={syncedFiles}
+      microsoft={microsoft}
+      microsoftFiles={microsoftFiles}
       listing={listing}
       googleOutcome={google}
     />

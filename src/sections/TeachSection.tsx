@@ -2,9 +2,15 @@
 
 import { useState } from 'react';
 import { KnowledgeSection } from './KnowledgeSection';
+import { MicrosoftTeamsSection } from './MicrosoftTeamsSection';
 import { DriveSection } from './DriveSection';
 import { Icon } from '../components/ui/Icon';
-import type { GoogleDriveConnectionDTO, SyncedFileDTO } from '@/types/integrations';
+import type {
+  GoogleDriveConnectionDTO,
+  MicrosoftConnectionDTO,
+  SyncedFileDTO,
+  SyncedTeamsFileDTO,
+} from '@/types/integrations';
 import type { DriveListingDTO } from '@/types/drive';
 
 /**
@@ -27,18 +33,24 @@ type Tab = 'connect' | 'upload';
 export function TeachSection({
   connection,
   syncedFiles,
+  microsoft,
+  microsoftFiles,
   listing,
   googleOutcome,
 }: {
   connection: GoogleDriveConnectionDTO;
   syncedFiles: SyncedFileDTO[];
+  microsoft: MicrosoftConnectionDTO;
+  microsoftFiles: SyncedTeamsFileDTO[];
   listing: DriveListingDTO;
   googleOutcome?: string;
 }) {
-  // A connected Drive is the thing most people set up once and leave alone, so
-  // the upload tab opens first when one is already running.
+  // A connected source is the thing most people set up once and leave alone,
+  // so the upload tab opens first when one is already running. Either source
+  // counts: somebody who has connected a Team has no more to do here than
+  // somebody who has connected a Drive.
   const [tab, setTab] = useState<Tab>(
-    connection.status === 'connected' ? 'upload' : 'connect',
+    connection.status === 'connected' || microsoft.status === 'connected' ? 'upload' : 'connect',
   );
 
   return (
@@ -76,12 +88,18 @@ export function TeachSection({
       </div>
 
       {tab === 'connect' ? (
-        <KnowledgeSection
-          connection={connection}
-          initialFiles={syncedFiles}
-          outcome={googleOutcome}
-          embedded
-        />
+        // Both places CIP can be pointed at, one under the other. They answer
+        // the same question — where else should it read from — and a person
+        // deciding between them wants to see both at once.
+        <div className="stack">
+          <KnowledgeSection
+            connection={connection}
+            initialFiles={syncedFiles}
+            outcome={googleOutcome}
+            embedded
+          />
+          <MicrosoftTeamsSection connection={microsoft} initialFiles={microsoftFiles} />
+        </div>
       ) : (
         <DriveSection listing={listing} embedded />
       )}
