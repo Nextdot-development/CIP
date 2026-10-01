@@ -95,3 +95,17 @@ export type SyncedTeamsFileDTO = {
   fileId: string | null;
   syncedAt: string | null;
 };
+
+/**
+ * A folder somebody can choose, and where it lives.
+ *
+ * `where` is what makes the list pickable: a company has "Assets" in My Drive,
+ * "Assets" in a shared drive and "Assets" somebody shared with them, and the
+ * name alone cannot tell them apart.
+ */
+export type PickableFolderDTO = {
+  id: string;
+  name: string;
+  where: 'my_drive' | 'shared_drive' | 'shared_with_me';
+  driveName: string | null;
+};

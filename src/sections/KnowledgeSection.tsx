@@ -5,7 +5,11 @@ import { Card, EmptyState, Pill } from '@/components/ui/Bits';
 import { Icon } from '@/components/ui/Icon';
 import { useToast } from '@/context/toast';
 import { relativeDay } from '@/lib/format';
-import type { GoogleDriveConnectionDTO, SyncedFileDTO } from '@/types/integrations';
+import type {
+  GoogleDriveConnectionDTO,
+  PickableFolderDTO,
+  SyncedFileDTO,
+} from '@/types/integrations';
 
 /**
  * Knowledge settings — the connected Google Drive.
@@ -17,6 +21,13 @@ import type { GoogleDriveConnectionDTO, SyncedFileDTO } from '@/types/integratio
  * Nothing here filters by company. It cannot see another company's connection
  * because the endpoints only ever answer for the session's own.
  */
+/** The three places a folder worth connecting lives, in Drive's own order. */
+const FOLDER_GROUPS: [PickableFolderDTO['where'], string][] = [
+  ['shared_drive', 'Shared drives'],
+  ['my_drive', 'My Drive'],
+  ['shared_with_me', 'Shared with me'],
+];
+
 export function KnowledgeSection({
   connection: initial,
   initialFiles,
@@ -42,6 +53,14 @@ export function KnowledgeSection({
    * not on the page and the button did visibly nothing.
    */
   const [changing, setChanging] = useState(false);
+  /**
+   * The folders Google says this account can reach, once asked for.
+   *
+   * Null until somebody opens the chooser, because it costs three calls to
+   * Google and most people connect a folder once and never come back.
+   */
+  const [folders, setFolders] = useState<PickableFolderDTO[] | null>(null);
+  const [loadingFolders, setLoadingFolders] = useState(false);
   const [busy, setBusy] = useState<'folder' | 'share' | 'sync' | 'disconnect' | null>(null);
   const [shareInput, setShareInput] = useState('');
 
@@ -103,6 +122,23 @@ export function KnowledgeSection({
     }
   }, [note, post, refresh]);
 
+  const loadFolders = useCallback(async () => {
+    setLoadingFolders(true);
+    try {
+      const response = await fetch('/api/integrations/google-drive/folders', { cache: 'no-store' });
+      if (!response.ok) {
+        const data = (await response.json().catch(() => null)) as { message?: string } | null;
+        note(data?.message ?? 'CIP could not read the list of folders.');
+        return;
+      }
+      const data = (await response.json()) as { folders: PickableFolderDTO[] };
+      setFolders(data.folders);
+      if (data.folders.length === 0) note('No folders came back from this Google account.');
+    } finally {
+      setLoadingFolders(false);
+    }
+  }, [note]);
+
   const chooseFolder = useCallback(async () => {
     // Read by the service account, a new folder is one shared with it.
     if (connection.authKind === 'service_account') {
@@ -117,6 +153,7 @@ export function KnowledgeSection({
       if (result) {
         setFolderInput('');
         setChanging(false);
+        setFolders(null);
         note('Folder saved. Sync when you are ready.');
         await refresh();
       }
@@ -255,8 +292,50 @@ export function KnowledgeSection({
 
             {connection.folderId === null || changing ? (
               <div className="stack">
+                {/*
+                  Choosing beats pasting. A folder somebody was given lives
+                  under "Shared with me", where finding its link means hunting
+                  through Drive — so the list is offered first and the link box
+                  stays underneath for a folder too deeply nested to be listed.
+                */}
+                {folders === null ? (
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    disabled={loadingFolders || busy !== null}
+                    onClick={() => void loadFolders()}
+                  >
+                    {loadingFolders ? 'Looking…' : 'Choose from my folders'}
+                  </button>
+                ) : (
+                  <label className="field">
+                    <span className="field-label">Folder</span>
+                    <select
+                      className="field-input"
+                      value={folderInput}
+                      onChange={(event) => setFolderInput(event.target.value)}
+                    >
+                      <option value="">Choose a folder…</option>
+                      {FOLDER_GROUPS.map(([where, label]) => {
+                        const group = folders.filter((folder) => folder.where === where);
+                        if (group.length === 0) return null;
+                        return (
+                          <optgroup key={where} label={label}>
+                            {group.map((folder) => (
+                              <option key={folder.id} value={folder.id}>{folder.name}</option>
+                            ))}
+                          </optgroup>
+                        );
+                      })}
+                    </select>
+                    <span className="small muted">
+                      A shared drive reads whole, subfolders and all.
+                    </span>
+                  </label>
+                )}
+
                 <label className="field">
-                  <span className="field-label">Folder link</span>
+                  <span className="field-label">Or paste a folder link</span>
                   <input
                     className="field-input"
                     value={folderInput}
@@ -284,6 +363,7 @@ export function KnowledgeSection({
                       onClick={() => {
                         setChanging(false);
                         setFolderInput('');
+                        setFolders(null);
                       }}
                     >
                       Cancel

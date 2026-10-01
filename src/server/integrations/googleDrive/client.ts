@@ -28,6 +28,22 @@ export type GoogleFile = {
   trashed: boolean;
 };
 
+/**
+ * A folder somebody could choose, and where it lives.
+ *
+ * `where` is what makes a list of folders pickable rather than a wall of
+ * names: a company has "Assets" in My Drive, "Assets" in a shared drive and
+ * "Assets" somebody shared with them, and the name alone cannot tell them
+ * apart. It is the group Drive's own sidebar would file it under.
+ */
+export type PickableFolder = {
+  id: string;
+  name: string;
+  where: 'my_drive' | 'shared_drive' | 'shared_with_me';
+  /** The shared drive's name, when this is one or sits in one. */
+  driveName: string | null;
+};
+
 export type FilePage = {
   files: GoogleFile[];
   nextPageToken: string | null;
@@ -72,6 +88,16 @@ export interface GoogleDriveApi {
   refresh(refreshToken: string): Promise<TokenSet>;
   /** One page of the folder's contents. */
   listFolder(accessToken: string, folderId: string, pageToken: string | null): Promise<FilePage>;
+  /**
+   * Folders this account could be pointed at, for somebody to choose from.
+   *
+   * Not every folder in the Drive: the top level of My Drive, the shared
+   * drives themselves, and folders other people have shared. Those are the
+   * three places a folder worth connecting actually lives, and listing every
+   * nested folder would return hundreds of names with no way to tell which
+   * "Assets" is which.
+   */
+  listFolders(accessToken: string): Promise<PickableFolder[]>;
   /** Metadata for one file, used to confirm a folder exists and is readable. */
   getFile(accessToken: string, fileId: string): Promise<GoogleFile>;
   /** Downloads a binary file as-is. */
@@ -235,6 +261,83 @@ export class GoogleDriveClient implements GoogleDriveApi {
       scope: payload.scope ?? null,
       accountEmail: emailFromIdToken(payload.id_token),
     };
+  }
+
+  async listFolders(accessToken: string): Promise<PickableFolder[]> {
+    const FOLDER = "mimeType='application/vnd.google-apps.folder' and trashed=false";
+
+    /** One page of folders matching a query. Bounded: this is a chooser. */
+    const folders = async (q: string): Promise<Record<string, unknown>[]> => {
+      const params = new URLSearchParams({
+        q,
+        fields: 'files(id, name, driveId)',
+        pageSize: '100',
+        orderBy: 'name',
+        supportsAllDrives: 'true',
+        includeItemsFromAllDrives: 'true',
+      });
+      const response = await this.fetchWithRetry(`${API}/files?${params}`, {
+        headers: { authorization: `Bearer ${accessToken}` },
+      });
+      const payload = (await response.json()) as { files?: Record<string, unknown>[] };
+      return payload.files ?? [];
+    };
+
+    const picked: PickableFolder[] = [];
+
+    // The shared drives themselves. A shared drive's id doubles as the id of
+    // its top-level folder, so connecting one reads the whole drive — which is
+    // usually what somebody means by "connect the Radico drive".
+    try {
+      const params = new URLSearchParams({ pageSize: '100', fields: 'drives(id, name)' });
+      const response = await this.fetchWithRetry(`${API}/drives?${params}`, {
+        headers: { authorization: `Bearer ${accessToken}` },
+      });
+      const payload = (await response.json()) as { drives?: { id?: string; name?: string }[] };
+      for (const drive of payload.drives ?? []) {
+        if (!drive.id) continue;
+        picked.push({
+          id: drive.id,
+          name: drive.name ?? 'Shared drive',
+          where: 'shared_drive',
+          driveName: null,
+        });
+      }
+    } catch {
+      // A Workspace plan without shared drives answers this with an error, and
+      // that is not a reason to show no folders at all.
+    }
+
+    // The top level of My Drive.
+    for (const raw of await folders(`${FOLDER} and 'root' in parents`)) {
+      if (typeof raw.id !== 'string') continue;
+      picked.push({
+        id: raw.id,
+        name: typeof raw.name === 'string' ? raw.name : 'Untitled',
+        where: 'my_drive',
+        driveName: null,
+      });
+    }
+
+    // And folders other people have shared. This is where a folder owned by a
+    // colleague lives — it is in neither My Drive nor a shared drive, and
+    // leaving it out is how somebody ends up unable to find the one folder
+    // they were actually given.
+    for (const raw of await folders(`${FOLDER} and sharedWithMe`)) {
+      if (typeof raw.id !== 'string') continue;
+      picked.push({
+        id: raw.id,
+        name: typeof raw.name === 'string' ? raw.name : 'Untitled',
+        where: 'shared_with_me',
+        driveName: null,
+      });
+    }
+
+    // The same folder can arrive from two of these queries — a folder in a
+    // shared drive is also shared with you. Shown once, under the first group
+    // that claimed it.
+    const seen = new Set<string>();
+    return picked.filter((folder) => (seen.has(folder.id) ? false : (seen.add(folder.id), true)));
   }
 
   async listFolder(accessToken: string, folderId: string, pageToken: string | null): Promise<FilePage> {

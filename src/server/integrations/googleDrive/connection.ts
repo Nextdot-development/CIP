@@ -4,7 +4,7 @@ import { withCompanyScope } from '../../db';
 import type { CompanyScope } from '../../db';
 import { decryptSecret, encryptSecret } from '../crypto';
 import { DRIVE_SCOPE, GoogleDriveError } from './client';
-import type { GoogleDriveApi, TokenSet } from './client';
+import type { GoogleDriveApi, PickableFolder, TokenSet } from './client';
 import { googleDrive } from './index';
 import { GoogleDriveNeedsReauth, GoogleDriveNotConnected } from './types';
 
@@ -274,6 +274,26 @@ export function parseFolderId(input: string): string | null {
   if (queryId && BARE_FOLDER_ID.test(queryId)) return queryId;
 
   return null;
+}
+
+/**
+ * The folders this connection could be pointed at.
+ *
+ * Goes through requireConnected rather than the client directly, so a grant
+ * that has lapsed reports needs_reauth here — the same as it would during a
+ * sync — instead of an empty list that reads as "you have no folders".
+ */
+export async function listPickableFolders(scope: CompanyScope): Promise<PickableFolder[]> {
+  const connection = await requireConnected(scope);
+  try {
+    return await googleDrive().listFolders(connection.accessToken);
+  } catch (error) {
+    if (error instanceof GoogleDriveError && error.kind === 'needs_reauth') {
+      await markNeedsReauth(scope, error.message);
+      throw new GoogleDriveNeedsReauth();
+    }
+    throw error;
+  }
 }
 
 /** Chooses which folder to read. Confirms it exists and is readable first. */

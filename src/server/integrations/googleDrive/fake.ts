@@ -1,6 +1,6 @@
 import 'server-only';
 import { DRIVE_SCOPE, GoogleDriveError, PAGE_SIZE } from './client';
-import type { FilePage, GoogleDriveApi, GoogleFile, TokenSet } from './client';
+import type { FilePage, GoogleDriveApi, GoogleFile, PickableFolder, TokenSet } from './client';
 
 /**
  * A Google Drive that lives in memory.
@@ -31,6 +31,20 @@ export class FakeGoogleDrive implements GoogleDriveApi {
       scope: 'https://www.googleapis.com/auth/drive.readonly',
       accountEmail: this.serviceAccountEmail,
     };
+  }
+
+  /**
+   * Folders a test can offer to a chooser.
+   *
+   * Set by a test rather than derived from the folders map, because what makes
+   * this list interesting is *where* each folder is — My Drive, a shared drive,
+   * or shared with you — and the in-memory Drive has no such notion.
+   */
+  pickableFolders: PickableFolder[] = [];
+
+  async listFolders(): Promise<PickableFolder[]> {
+    this.check();
+    return [...this.pickableFolders];
   }
 
   /** Contents by folder id. */
