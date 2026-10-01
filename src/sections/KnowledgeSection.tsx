@@ -33,6 +33,15 @@ export function KnowledgeSection({
   const [connection, setConnection] = useState(initial);
   const [files, setFiles] = useState(initialFiles);
   const [folderInput, setFolderInput] = useState('');
+  /**
+   * Whether the person has asked to change an already-chosen folder.
+   *
+   * Separate from folderInput, because the form was shown on
+   * `connection.folderId === null` alone: once a folder was chosen the input
+   * was no longer rendered, so Change folder set a value into a field that was
+   * not on the page and the button did visibly nothing.
+   */
+  const [changing, setChanging] = useState(false);
   const [busy, setBusy] = useState<'folder' | 'share' | 'sync' | 'disconnect' | null>(null);
   const [shareInput, setShareInput] = useState('');
 
@@ -107,6 +116,7 @@ export function KnowledgeSection({
       });
       if (result) {
         setFolderInput('');
+        setChanging(false);
         note('Folder saved. Sync when you are ready.');
         await refresh();
       }
@@ -243,7 +253,7 @@ export function KnowledgeSection({
               <p className="small" style={{ color: 'var(--stop-700)' }}>{connection.lastSyncError}</p>
             )}
 
-            {connection.folderId === null ? (
+            {connection.folderId === null || changing ? (
               <div className="stack">
                 <label className="field">
                   <span className="field-label">Folder link</span>
@@ -257,14 +267,29 @@ export function KnowledgeSection({
                     Open the folder in Drive and copy the address. The id on its own works too.
                   </span>
                 </label>
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  disabled={busy !== null}
-                  onClick={() => void chooseFolder()}
-                >
-                  {busy === 'folder' ? 'Checking...' : 'Use this folder'}
-                </button>
+                <div className="row-gap">
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    disabled={busy !== null}
+                    onClick={() => void chooseFolder()}
+                  >
+                    {busy === 'folder' ? 'Checking...' : 'Use this folder'}
+                  </button>
+                  {changing && (
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      disabled={busy !== null}
+                      onClick={() => {
+                        setChanging(false);
+                        setFolderInput('');
+                      }}
+                    >
+                      Cancel
+                    </button>
+                  )}
+                </div>
               </div>
             ) : (
               <div className="row-gap">
@@ -280,7 +305,13 @@ export function KnowledgeSection({
                   type="button"
                   className="btn btn-sm"
                   disabled={busy !== null}
-                  onClick={() => setFolderInput(connection.folderId ?? '')}
+                  onClick={() => {
+                    // Opened empty rather than prefilled with the current id.
+                    // What goes in here is a link somebody pastes, and a bare
+                    // id sitting in the box looks like something to edit.
+                    setFolderInput('');
+                    setChanging(true);
+                  }}
                 >
                   Change folder
                 </button>
