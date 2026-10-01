@@ -16,6 +16,7 @@ import { claimMarketSource, readClaimedMarketSource, sweepMarketFoldersEverywher
 import { analyseNextFeedback } from '../brain/learning';
 import { brain } from '../brain/providers';
 import { claimConnectionForSync, runClaimedSync } from '../integrations/googleDrive/jobs';
+import { claimTeamsConnectionForSync, runClaimedTeamsSync } from '../integrations/microsoftTeams/jobs';
 
 /**
  * Moving the queue along, from inside the app.
@@ -66,6 +67,8 @@ const PER_STAGE = 12;
  * a timer, where nobody is waiting and a slower sweep costs nothing.
  */
 const SYNC_EVERY_MINUTES = 3;
+/** A Team is asked more often, because a delta that finds nothing is one call. */
+const TEAMS_EVERY_MINUTES = 1;
 
 /** Folders swept in one pass. The rest are due again in moments. */
 const SYNCS_PER_PASS = 2;
@@ -170,6 +173,25 @@ async function runPass(): Promise<PumpTally> {
       // A folder that needs reauthorising, or one whose sync failed, has
       // already recorded that against the connection — the person sees it on
       // Teach. Nothing to do here but carry on with the next one.
+      if (outcome.status === 'synced') tally.synced += outcome.outcome.added;
+    }
+  });
+
+  // 0b. And anything new in a connected Team, for the same reason and in the
+  //     same pass: a file dropped into the Files tab a moment ago should be
+  //     learned by the end of this one.
+  await stage(async () => {
+    for (let i = 0; i < SYNCS_PER_PASS; i += 1) {
+      if (outOfTime()) {
+        tally.moreWaiting = true;
+        return;
+      }
+      const claim = await claimTeamsConnectionForSync({ intervalMinutes: TEAMS_EVERY_MINUTES });
+      if (!claim) break;
+
+      const outcome = await runClaimedTeamsSync(claim);
+      // A connection needing admin consent, or one whose sync failed, has
+      // already recorded that against itself. Nothing to do here but carry on.
       if (outcome.status === 'synced') tally.synced += outcome.outcome.added;
     }
   });

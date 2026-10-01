@@ -2,6 +2,10 @@ import {
   claimConnectionForSync,
   runClaimedSync,
 } from '../src/server/integrations/googleDrive/jobs';
+import {
+  claimTeamsConnectionForSync,
+  runClaimedTeamsSync,
+} from '../src/server/integrations/microsoftTeams/jobs';
 import { claimNextFile, processClaimedFile, recoverStuckFiles } from '../src/server/drive/processing';
 import {
   claimChunksNeedingEmbedding,
@@ -55,6 +59,16 @@ const POLL_MS = pollArg ? Number(pollArg.split('=')[1]) : 30_000;
 const syncArg = process.argv.find((a) => a.startsWith('--sync-every='));
 /** Google's quotas are per project, so its folders are swept less often. */
 const SYNC_EVERY_MINUTES = syncArg ? Number(syncArg.split('=')[1]) : 5;
+const teamsArg = process.argv.find((a) => a.startsWith('--teams-every='));
+/**
+ * A Team is swept more often than a Google folder, because asking is cheaper.
+ *
+ * Graph is presented a delta link and answers with what has changed since —
+ * usually nothing, in one call. There is no folder walk to pay for, so the
+ * interval is set by how soon somebody should see their upload learned rather
+ * than by what the sweep costs.
+ */
+const TEAMS_EVERY_MINUTES = teamsArg ? Number(teamsArg.split('=')[1]) : 2;
 
 /** Bounds one pass so a backlog cannot hold any single stage for ever. */
 const PER_STAGE = 25;
@@ -97,6 +111,34 @@ async function pass(): Promise<Tally> {
       console.log('  drive sync: a connection needs reconnecting');
     } else {
       console.log(`  drive sync failed: ${outcome.message}`);
+    }
+  }
+
+  // 1b. And from any connected Microsoft Team.
+  //
+  // Its own interval rather than SYNC_EVERY_MINUTES, because the two cost
+  // entirely different amounts. Asking Google again means listing every folder
+  // and every file to learn that nothing moved; asking Graph means presenting
+  // a delta link and being handed an empty page. So this can run often enough
+  // that somebody who drops a file in a Team sees CIP learn it shortly after,
+  // which is the whole point of connecting one.
+  for (let i = 0; i < PER_STAGE && !stopping; i += 1) {
+    const claim = await claimTeamsConnectionForSync({ intervalMinutes: TEAMS_EVERY_MINUTES });
+    if (!claim) break;
+    const outcome = await runClaimedTeamsSync(claim);
+    if (outcome.status === 'synced') {
+      const o = outcome.outcome;
+      tally.synced += o.added + o.updated;
+      if (o.added + o.updated + o.removed > 0) {
+        console.log(
+          `  teams sync: ${o.added} added, ${o.updated} updated, ${o.removed} removed, ` +
+            `${o.unchanged} unchanged${o.full ? ' (full walk)' : ''}`,
+        );
+      }
+    } else if (outcome.status === 'needs_admin_consent') {
+      console.log('  teams sync: an administrator must grant CIP access');
+    } else {
+      console.log(`  teams sync failed: ${outcome.message}`);
     }
   }
 
