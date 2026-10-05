@@ -417,6 +417,12 @@ export type BriefInput = {
    * wide piece, and a square cut from that is a banner with its sides missing.
    */
   requestedShape?: string | null;
+  /**
+   * Passages from the reference books the company keeps - Ogilvy, Whipple and
+   * the like - on how to make the thing well. Craft, never facts about this
+   * brand or market.
+   */
+  craft?: { source: string; text: string }[];
 };
 
 export interface BrainProvider {

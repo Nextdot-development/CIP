@@ -540,3 +540,68 @@ export async function searchMemory(
     score: 1,
   }));
 }
+
+/** One passage of craft from a book the company keeps for reference. */
+export type CraftPassage = { source: string; text: string };
+
+/**
+ * What the company's reference books say about the thing being made.
+ *
+ * The team keeps Ogilvy, Whipple, Made to Stick and the rest because they say
+ * how to write a headline people remember and lay out a page people read. Chat
+ * already drew on them; the brief behind every generated creative did not.
+ *
+ * Craft only - how to make the thing well. A book's examples are other brands'
+ * and its numbers are other decades', so nothing here is a fact about this
+ * brand or this market, and the brief is told so.
+ *
+ * Two passages per book at most, so one long book cannot speak for all of them,
+ * and nothing below the embedder's own relevance floor.
+ */
+export async function craftPassages(scope: CompanyScope, requestText: string, limit = 4): Promise<CraftPassage[]> {
+  const text = requestText.trim();
+  if (text.length < 3) return [];
+  if (!(await similaritySupported(scope))) return [];
+  const active = embedder();
+  const [vector] = await active.embed([text]);
+  if (!vector) return [];
+  const literal = toVectorLiteral(vector);
+  const maxDistance = 1 - Math.min(Math.max(active.minRelevanceScore, 0), 1);
+
+  const rows = await withCompanyScope(scope, async (tx) => {
+    await tx`set local hnsw.iterative_scan = 'relaxed_order'`;
+    await tx`set local hnsw.max_scan_tuples = 1000`;
+    return tx<{ file_name: string; content: string; score: number }[]>`
+      select f.name as file_name, k.content, 1 - (e.embedding <=> ${literal}::extensions.vector) as score
+        from drive_file_embeddings e
+        join drive_file_chunks k on k.id = e.chunk_id
+        join drive_files f on f.id = e.file_id and f.company_id = e.company_id
+       where e.company_id = ${scope.companyId}
+         and e.model = ${active.model}
+         and f.archived_at is null
+         and f.knowledge_role = 'reference'
+         and (e.embedding <=> ${literal}::extensions.vector) <= ${maxDistance}
+       order by e.embedding <=> ${literal}::extensions.vector
+       limit ${limit * 4}
+    `;
+  });
+
+  const perBook = new Map<string, number>();
+  const seen = new Set<string>();
+  const kept: CraftPassage[] = [];
+  for (const row of rows) {
+    const n = perBook.get(row.file_name) ?? 0;
+    if (n >= 2) continue;
+    // The same book kept twice gives the same passage twice; once is enough.
+    const key = row.content.replace(/\s+/g, ' ').trim().slice(0, 200).toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    perBook.set(row.file_name, n + 1);
+    kept.push({
+      source: row.file_name.replace(/\.[a-z0-9]{2,4}$/i, '').replace(/[-_]+/g, ' ').slice(0, 80),
+      text: row.content.replace(/\s+/g, ' ').trim().slice(0, 700),
+    });
+    if (kept.length >= limit) break;
+  }
+  return kept;
+}

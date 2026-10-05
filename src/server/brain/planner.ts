@@ -5,7 +5,7 @@ import { brain } from './providers';
 import { BRAIN_LIMITS, BrainFailed, defaultTaskType } from './providers/types';
 import type { GenerationBrief } from './providers/types';
 import { knownSubjects, readBrandDna } from './brandDna';
-import { applicableLessons, productShots, ratedExamples, similarAssets, similarPosts } from './retrieval';
+import { applicableLessons, craftPassages, productShots, ratedExamples, similarAssets, similarPosts } from './retrieval';
 import { companyMarkets, marketFromEvidence, marketInRequest } from './markets';
 import { brandInRequest, brandNames } from './brands';
 import { rulesForBrief } from './checker';
@@ -249,6 +249,10 @@ export async function planGeneration(
 
   const examples = await ratedExamples(scope, { mediaType: input.mediaType, brand });
 
+  // What the team's reference books say about making this. Optional: a
+  // company with no books, or an embedder that is down, still gets a brief.
+  const craft = await craftPassages(scope, requestText).catch(() => []);
+
   // The rules this creative will be judged against, read before it is made.
   const rules = await rulesForBrief(scope, { brand, market, format: input.mediaType === 'video' ? 'video' : 'image' });
 
@@ -321,6 +325,7 @@ export async function planGeneration(
     knownCampaigns: subjects.campaigns,
     knownProducts: subjects.products,
     requestedShape: input.requestedShape ?? null,
+    craft,
     complianceRules: rules.map((rule) => ({
       rule: rule.rule,
       requirement: rule.requirement,

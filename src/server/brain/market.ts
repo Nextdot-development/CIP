@@ -293,6 +293,10 @@ export async function sweepMarketFolders(scope: CompanyScope): Promise<number> {
         from drive_files f
        where f.company_id = ${scope.companyId}
          and f.archived_at is null
+         -- A book kept in the market folder is still a book. Kotler and
+         -- Ogilvy were read as market reports and gave 689 "signals" - a toy
+         -- company's Christmas advertising filed as a competitor's move.
+         and f.knowledge_role <> 'reference'
          and f.folder_id in (select id from tree)
       on conflict (company_id, file_id) do nothing
       returning id
@@ -377,6 +381,8 @@ export async function claimMarketSource(): Promise<ClaimedMarketSource | null> {
            from market_sources m
            join drive_files f on f.id = m.file_id and f.company_id = m.company_id
           where f.archived_at is null
+            -- Background reading is never read for market signals.
+            and f.knowledge_role <> 'reference'
             and m.attempts < ${MAX_ATTEMPTS}
             and (f.processing_status in ('processed', 'failed')
                  or f.mime_type like 'image/%' or f.mime_type like 'video/%' or f.mime_type like 'audio/%')

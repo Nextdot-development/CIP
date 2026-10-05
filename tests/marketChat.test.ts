@@ -273,6 +273,22 @@ describe('MARKET INTELLIGENCE: only what a report actually says', () => {
     assert.equal(await market.sweepMarketFolders(mm), 0, 'a sweep registered the same report twice');
   });
 
+  // Kotler and Ogilvy sat in the market folder and were read as market
+  // reports: 689 "signals", a toy company's Christmas ads among them.
+  it('never reads a reference book for market signals, even in the market folder', async () => {
+    const folder = await drive.createFolder(mm, null, 'Market Intelligence');
+    const book = await drive.uploadFile(mm, { folderId: folder.id, filename: 'kotler.txt', mimeType: 'text/plain', body: Buffer.from(REPORT) });
+    // Read and ready, so only its role can be what keeps it out.
+    await adminSql`update drive_files set knowledge_role = 'reference', processing_status = 'processed' where id = ${book.id}`;
+    assert.equal(await market.sweepMarketFolders(mm), 0, 'a reference book was registered as market data');
+
+    // One registered before it was marked is not read either.
+    await adminSql`insert into market_sources (company_id, file_id) values (${mm.companyId}, ${book.id})`;
+    assert.equal(await readAll().then((s) => s.length), 0, 'a reference book was read for signals');
+    const [row] = await adminSql<{ knowledge_role: string }[]>`select knowledge_role from drive_files where id = ${book.id}`;
+    assert.equal(row!.knowledge_role, 'reference', 'the sweep turned the book back into market data');
+  });
+
   it("never shows one company another company's market", async () => {
     await addReport(mm);
     await readAll();

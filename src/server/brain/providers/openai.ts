@@ -890,6 +890,18 @@ export class OpenAIBrainProvider implements BrainProvider {
           input.lessons.map((l) => `- ${l.polarity}: ${l.statement}`).join('\n'),
       );
     }
+    if (input.craft && input.craft.length > 0) {
+      sections.push(
+        'Craft from the reference books this team keeps - how to make the thing well:\n' +
+          input.craft.map((c) => `- (${c.source}) ${c.text}`).join('\n') +
+          '\n\nUse these for how the brief is written: a headline that is specific and memorable, ' +
+          'copy that is short and concrete, a layout that is easy to read. They are general ' +
+          'principles, not facts about this brand or market: their examples are other brands and ' +
+          'their numbers are other decades. Never let them override a brand fact, a lesson or a rule. ' +
+          'Put what they teach into the visual and content directions only - never into brandRules, ' +
+          'which is for what this brand itself does.',
+      );
+    }
     if (input.knownCampaigns.length > 0) {
       sections.push(`Campaigns this company has assets for: ${input.knownCampaigns.join(', ')}`);
     }
