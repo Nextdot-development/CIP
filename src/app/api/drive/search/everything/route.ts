@@ -21,7 +21,11 @@ export const maxDuration = 60;
 export async function GET(request: Request) {
   return withDriveScope(async (scope) => {
     const params = new URL(request.url).searchParams;
-    const files = await findEverything(scope, params.get('q') ?? '');
-    return Response.json({ files }, { headers: noStore });
+    // The brand chosen in the sidebar, as a tie-breaker. A brand named in the
+    // question itself always wins over it.
+    const { files, reading } = await findEverything(scope, params.get('q') ?? '', 24, {
+      activeBrand: params.get('brand') || null,
+    });
+    return Response.json({ files, reading }, { headers: noStore });
   });
 }

@@ -5,7 +5,7 @@ import { EmptyState } from '../components/ui/Bits';
 import { Icon } from '../components/ui/Icon';
 import type { IconName } from '../components/ui/Icon';
 import { useToast } from '@/context/toast';
-import type { FoundFile } from '@/server/drive/findEverything';
+import type { FoundFile, SearchReading } from '@/server/drive/findEverything';
 
 /**
  * Creative Search.
@@ -61,6 +61,7 @@ export function SearchSection({
   const [busy, setBusy] = useState<'words' | 'meaning' | null>(null);
   const [found, setFound] = useState<FoundFile[] | null>(null);
   const [asked, setAsked] = useState('');
+  const [reading, setReading] = useState<SearchReading | null>(null);
 
   /**
    * One search, three ways of looking, merged.
@@ -78,10 +79,15 @@ export function SearchSection({
     }
     setBusy('words');
     try {
-      const res = await fetch(`/api/drive/search/everything?q=${encodeURIComponent(q)}`);
+      // The sidebar's brand goes along as a tie-breaker; a brand named in the
+      // question wins over it.
+      const params = new URLSearchParams({ q });
+      if (brand) params.set('brand', brand);
+      const res = await fetch(`/api/drive/search/everything?${params.toString()}`);
       if (!res.ok) throw new Error('search failed');
-      const data = (await res.json()) as { files: FoundFile[] };
+      const data = (await res.json()) as { files: FoundFile[]; reading?: SearchReading };
       setFound(data.files);
+      setReading(data.reading ?? null);
       setAsked(q);
     } catch {
       note('Search is unavailable right now.');
@@ -99,6 +105,7 @@ export function SearchSection({
     setQuery('');
     setFound(null);
     setAsked('');
+    setReading(null);
   };
 
   const shownRecent = recent.filter((card) => !kind || card.kind === kind);
@@ -161,7 +168,12 @@ export function SearchSection({
           <p className="searchnote">
             {shownFound.length === 0
               ? `Nothing here is about “${asked}” — not by name, not inside a document, not in a picture.`
-              : `${shownFound.length} file${shownFound.length === 1 ? '' : 's'} about “${asked}”, closest first.`}
+              : `${shownFound.length} result${shownFound.length === 1 ? '' : 's'} about “${asked}”, closest first.`}
+            {/* What the question was taken to be about, said back, so a
+                result that leads with one brand is not a mystery. */}
+            {reading && (reading.brand || reading.market) && (
+              <> Read as {[reading.brand, reading.market && `in ${reading.market}`].filter(Boolean).join(' ')} — that work comes first.</>
+            )}
           </p>
           {/* Said with the results rather than instead of them: no search can
               return a file CIP has never read, and typing something else will
@@ -217,20 +229,28 @@ function FileCard({
         why.inText && 'in the text',
         why.inPicture && 'in the picture',
         why.inPost && `a post on page ${why.inPost.page}`,
+        why.byLabel && 'its brand or market',
       ]
         .filter(Boolean)
         .join(' · ')
     : '';
   const passage = why?.inPicture ?? why?.inPost?.text ?? why?.inText ?? null;
+  // A post found on a deck opens the deck at that page.
+  const href = why?.inPost ? `${contentUrl(card.id)}#page=${why.inPost.page}` : contentUrl(card.id);
+  const copies = 'copies' in card ? (card as FoundFile).copies : 1;
 
   return (
-    <a className="resultcard" href={contentUrl(card.id)} target="_blank" rel="noreferrer noopener">
+    <a className="resultcard" href={href} target="_blank" rel="noreferrer noopener">
       {/* The picture, because this is a search for pictures. A list of file
           names is what it looked like without this, and a creative nobody can
           see is a creative nobody recognises. */}
       <div className="thumb">
         {card.kind === 'image' ? (
           <img src={`${contentUrl(card.id)}&size=640`} alt="" loading="lazy" decoding="async" />
+        ) : card.kind === 'video' ? (
+          // A frame from a second in, so a film is recognised by what is in
+          // it. Only the opening of the file is fetched to draw it.
+          <video src={`${contentUrl(card.id)}#t=1`} preload="metadata" muted playsInline />
         ) : (
           <Icon name={KIND_ICON[card.kind] ?? 'doc'} size={28} />
         )}
@@ -244,6 +264,7 @@ function FileCard({
         {/* A result nobody expected is only useful if it can be understood,
             and "it matched" is not a reason. */}
         {reasons && <p className="meta">Found by {reasons}</p>}
+        {copies > 1 && <p className="meta">{copies} identical copies in the Drive — shown once</p>}
         {passage && <p className="snippet">{passage}</p>}
       </div>
     </a>

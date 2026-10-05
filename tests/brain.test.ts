@@ -392,6 +392,72 @@ describe('cost control and idempotency', () => {
   });
 });
 
+describe('CREATIVE SEARCH: the creative asked for, once, ahead of everything else', () => {
+  async function tag(fileId: string, brand: string | null, market: string | null) {
+    await adminSql`update drive_files set brand = ${brand}, market = ${market} where id = ${fileId}`;
+  }
+
+  it('matches a name word by word, whatever the order or the dashes', async () => {
+    const { findEverything, nameWords } = await import('../src/server/drive/findEverything');
+    const file = await uploadImage(mm, 'FIFA-AfriBull-static-football_night.png', 11);
+    assert.deepEqual(nameWords('Show me the AfriBull football posts'), ['afribull', 'football']);
+
+    for (const q of ['afribull football', 'football AfriBull', 'football night']) {
+      const { files } = await findEverything(mm, q);
+      assert.ok(files.some((f) => f.id === file.id && f.why.byName), `"${q}" did not find it by name`);
+    }
+    const { files } = await findEverything(mm, 'afribull cricket');
+    assert.ok(!files.some((f) => f.id === file.id && f.why.byName), 'a word it does not have still matched');
+  });
+
+  it('shows the same picture once, however many copies the Drive has', async () => {
+    const { findEverything } = await import('../src/server/drive/findEverything');
+    // The same bytes under two names: one creative, synced twice.
+    const a = await uploadImage(mm, 'Honey jar sunrise.png', 21);
+    const b = await uploadImage(mm, 'Honey jar sunrise (8PM).png', 21);
+    const [ca, cb] = await adminSql<{ checksum_sha256: string }[]>`
+      select checksum_sha256 from drive_files where id in (${a.id}, ${b.id})`;
+    assert.equal(ca!.checksum_sha256, cb!.checksum_sha256, 'the fixture is not two copies');
+
+    const { files } = await findEverything(mm, 'honey jar');
+    const hits = files.filter((f) => f.id === a.id || f.id === b.id);
+    assert.equal(hits.length, 1, 'the same picture was listed twice');
+    assert.equal(hits[0]!.copies, 2);
+  });
+
+  it("asked only for a market, shows that market's creatives - its own before its region's", async () => {
+    const { findEverything } = await import('../src/server/drive/findEverything');
+    const region = await uploadImage(mm, 'savanna campfire.png', 31);
+    const own = await uploadImage(mm, 'lagos rooftop.png', 32);
+    const elsewhere = await uploadImage(mm, 'delhi terrace.png', 33);
+    await tag(region.id, null, 'West Africa');
+    await tag(own.id, null, 'Nigeria');
+    await tag(elsewhere.id, null, 'India');
+
+    const { files, reading } = await findEverything(mm, 'Nigeria posts');
+    assert.equal(reading.market, 'Nigeria');
+    const ids = files.map((f) => f.id);
+    assert.ok(ids.includes(own.id) && ids.includes(region.id), `missing: ${ids}`);
+    assert.ok(ids.indexOf(own.id) < ids.indexOf(region.id), "the region's work came before Nigeria's own");
+    assert.ok(!ids.includes(elsewhere.id), "another market's work was shown");
+    assert.ok(files.find((f) => f.id === own.id)!.why.byLabel);
+  });
+
+  it('leads with the brand the question names', async () => {
+    const { findEverything } = await import('../src/server/drive/findEverything');
+    await adminSql`insert into company_brands (company_id, name) values (${mm.companyId}, 'Afri Bull') on conflict do nothing`;
+    const theirs = await uploadImage(mm, 'golden pour one.png', 41);
+    const other = await uploadImage(mm, 'golden pour two.png', 42);
+    await tag(theirs.id, 'Afri Bull', null);
+    await tag(other.id, '8PM', null);
+
+    const { files, reading } = await findEverything(mm, 'Afri Bull golden pour');
+    assert.equal(reading.brand, 'Afri Bull');
+    const ids = files.map((f) => f.id);
+    assert.ok(ids.indexOf(theirs.id) !== -1 && (ids.indexOf(other.id) === -1 || ids.indexOf(theirs.id) < ids.indexOf(other.id)));
+  });
+});
+
 describe('failure handling', () => {
   it('a transient failure spends an attempt and backs off', async () => {
     const { BrainFailed } = await import('../src/server/brain/providers/types');
@@ -424,6 +490,36 @@ describe('failure handling', () => {
 
     const rows = await adminSql<{ attempts: number }[]>`select attempts from asset_understanding`;
     assert.equal(rows[0]!.attempts, 0, 'being rate limited must not cost an attempt');
+  });
+
+  // A 42-page book was taken, killed by the platform mid-read, and taken again
+  // on every pass for days. Nothing recorded a failure, so nothing ever gave up
+  // on it, and being the oldest it was always first.
+  it('a run killed mid-asset still spends an attempt, and gives up after three', async () => {
+    await uploadText(mm, 'endless-book.txt', 'A very long book.');
+    await extractAll();
+    await understanding.enqueueUnderstanding(mm);
+
+    for (let run = 1; run <= 3; run += 1) {
+      const claim = await understanding.claimAssetForUnderstanding();
+      assert.ok(claim, `run ${run} found nothing to take`);
+      assert.equal(claim.attempts, run);
+      // Killed: no outcome is recorded, and the lease runs out.
+      await adminSql`update asset_understanding set next_attempt_at = now() - interval '1 second'`;
+    }
+    assert.equal(await understanding.claimAssetForUnderstanding(), null, 'it was taken a fourth time');
+  });
+
+  it('reads pictures before documents, whatever came first', async () => {
+    await uploadText(mm, 'old-deck.txt', 'An old document.');
+    await extractAll();
+    await understanding.enqueueUnderstanding(mm);
+    await uploadImage(mm, 'new-banner.png', 7);
+    await extractAll();
+    await understanding.enqueueUnderstanding(mm);
+
+    const claim = await understanding.claimAssetForUnderstanding();
+    assert.equal(claim?.kind, 'image', 'the document went first');
   });
 
   it('a permanent failure stops immediately', async () => {

@@ -155,6 +155,12 @@ export async function claimAssetForUnderstanding(): Promise<ClaimedAsset | null>
     >`
       update asset_understanding u
          set status = 'processing',
+             -- Counted when it is taken, not when it fails. A run the platform
+             -- kills mid-asset records no failure, so counting failures let a
+             -- 42-page book be taken, killed and taken again on every pass for
+             -- days - ahead of everything else, being the oldest - and nothing
+             -- behind it was ever read.
+             attempts = u.attempts + 1,
              next_attempt_at = now() + (${CLAIM_LEASE_SECONDS} * interval '1 second'),
              updated_at = now()
        where u.id = (
@@ -165,7 +171,10 @@ export async function claimAssetForUnderstanding(): Promise<ClaimedAsset | null>
             and u2.attempts < ${BRAIN_LIMITS.maxAttempts}
             and (u2.next_attempt_at is null or u2.next_attempt_at <= now())
             and f.archived_at is null
-          order by u2.created_at
+          -- Pictures and films first: one is a single vision call, and they
+          -- are what Creative Search and the checker find. A document can be
+          -- dozens of calls and waits its turn behind them.
+          order by (u2.kind = 'document'), u2.created_at
             for update of u2 skip locked
           limit 1
        )
@@ -370,7 +379,8 @@ export async function understandClaimedAsset(claim: ClaimedAsset): Promise<Under
     return {
       status: 'failed',
       message: failure.message,
-      willRetry: failure.kind !== 'permanent' && claim.attempts + 1 < BRAIN_LIMITS.maxAttempts,
+      // The attempt was counted when it was claimed.
+      willRetry: failure.kind !== 'permanent' && claim.attempts < BRAIN_LIMITS.maxAttempts,
     };
   }
 }
@@ -797,6 +807,8 @@ async function recordFailure(
       await tx`
         update asset_understanding
            set status = 'pending',
+               -- Handed back: the claim counted an attempt this did not spend.
+               attempts = greatest(attempts - 1, 0),
                error_code = ${failure.code},
                error_message = ${message},
                next_attempt_at = now() + (${seconds} * interval '1 second'),
@@ -820,16 +832,16 @@ async function recordFailure(
       return;
     }
 
-    // Transient: spend an attempt and back off 2, 4 then 8 minutes.
+    // Transient: the attempt was spent when it was claimed. Back off 2, 4 then
+    // 8 minutes.
     await tx`
       update asset_understanding
-         set attempts = attempts + 1,
-             error_code = ${failure.code},
+         set error_code = ${failure.code},
              error_message = ${message},
-             status = case when attempts + 1 >= ${BRAIN_LIMITS.maxAttempts} then 'failed' else 'pending' end,
+             status = case when attempts >= ${BRAIN_LIMITS.maxAttempts} then 'failed' else 'pending' end,
              next_attempt_at = case
-               when attempts + 1 >= ${BRAIN_LIMITS.maxAttempts} then null
-               else now() + (power(2, least(attempts + 1, 3)) * interval '1 minute')
+               when attempts >= ${BRAIN_LIMITS.maxAttempts} then null
+               else now() + (power(2, least(attempts, 3)) * interval '1 minute')
              end,
              updated_at = now()
        where id = ${understandingId}

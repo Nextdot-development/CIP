@@ -113,7 +113,7 @@
   height: 138px; display: flex; align-items: center; justify-content: center; color: var(--ink-400);
   background: linear-gradient(135deg, var(--ink-050), var(--surface)); overflow: hidden;
 }
-.resultcard .thumb img { width: 100%; height: 100%; object-fit: cover; max-width: 100%; }
+.resultcard .thumb img, .resultcard .thumb video { width: 100%; height: 100%; object-fit: cover; max-width: 100%; pointer-events: none; }
 .resultcard .body { padding: 13px 15px; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .resultcard .tag {
   align-self: flex-start; font-size: 10px; padding: 2px 9px; border-radius: 20px; border: 1px solid var(--line-strong);
