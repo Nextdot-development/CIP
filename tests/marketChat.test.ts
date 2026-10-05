@@ -289,6 +289,65 @@ describe('MARKET INTELLIGENCE: only what a report actually says', () => {
     assert.equal(row!.knowledge_role, 'reference', 'the sweep turned the book back into market data');
   });
 
+  describe('a book is recognised as one, and a person always has the last word', () => {
+    const BOOK = [
+      'Hey, Whipple, Squeeze This. Copyright © 2012 by Luke Sullivan. All rights reserved.',
+      'Published by John Wiley & Sons. ISBN 978-1-118-10192-4. Library of Congress Cataloging.',
+      'Contents. Foreword. Preface. Acknowledgments.',
+      'Chapter 1 Salad as a Metaphor. Chapter 2 Kicking Doors. Chapter 3 Writing a Headline.',
+      'Think of a headline as a promise. '.repeat(200),
+    ].join('\n');
+    const REPORT_TEXT = [
+      'Radico Khaitan Limited. Annual Report 2025-26. Report of the Board of Directors.',
+      'Standalone financial statements. Balance sheet as at 31 March. SEBI listing regulations.',
+      'Copyright © 2026 Radico Khaitan. All rights reserved. Chapter 1 Corporate overview. Chapter 2 Strategy.',
+      'Revenue grew 18 percent. '.repeat(200),
+    ].join('\n');
+
+    it('tells a book from a company report, and a short note from either', async () => {
+      const { looksLikeBook } = await import('../src/server/drive/knowledgeRole');
+      assert.equal(looksLikeBook({ name: 'Hey_Whipple.pdf', pageCount: 348, text: BOOK }), true);
+      assert.equal(looksLikeBook({ name: 'Annual-Report.pdf', pageCount: 324, text: REPORT_TEXT }), false, 'an annual report was taken for a book');
+      assert.equal(looksLikeBook({ name: 'brief.pdf', pageCount: 4, text: BOOK }), false, 'four pages are not a book');
+      assert.equal(looksLikeBook({ name: 'Confessions-by-Ogilvy-z-lib.org.pdf', pageCount: 42, text: 'scanned' }), true);
+    });
+
+    it('files a book read in the market folder as reference, and retires what it said', async () => {
+      const { recogniseBook } = await import('../src/server/drive/knowledgeRole');
+      const { withCompanyScope } = await import('../src/server/db');
+      // Read as a market report first, as the books were, so it has signals.
+      const file = await addReport(mm, 'whipple.txt');
+      await readAll();
+      const before = await adminSql`select id from market_signals where file_id = ${file.id} and status = 'active'`;
+      assert.ok(before.length > 0, 'the fixture gave no signals to retire');
+
+      const changed = await withCompanyScope(mm, (tx) =>
+        recogniseBook(tx, mm.companyId, { id: file.id, name: 'whipple.pdf' }, { pageCount: 348, text: BOOK }));
+      assert.equal(changed, true);
+      const [row] = await adminSql<{ knowledge_role: string }[]>`select knowledge_role from drive_files where id = ${file.id}`;
+      assert.equal(row!.knowledge_role, 'reference');
+      const active = await adminSql`select id from market_signals where file_id = ${file.id} and status = 'active'`;
+      assert.equal(active.length, 0, "a book's signals were left standing");
+      assert.equal(await market.sweepMarketFolders(mm), 0);
+    });
+
+    it("never overrides what a person chose", async () => {
+      const { recogniseBook, setKnowledgeRole, getKnowledgeRole } = await import('../src/server/drive/knowledgeRole');
+      const { withCompanyScope } = await import('../src/server/db');
+      const file = await drive.uploadFile(mm, { folderId: null, filename: 'house-style.txt', mimeType: 'text/plain', body: Buffer.from('Our style.') });
+
+      assert.equal(await setKnowledgeRole(mm, file.id, 'brand'), true);
+      const changed = await withCompanyScope(mm, (tx) =>
+        recogniseBook(tx, mm.companyId, { id: file.id, name: 'house-style.pdf' }, { pageCount: 300, text: BOOK }));
+      assert.equal(changed, false, "CIP's guess overrode a person's choice");
+      assert.deepEqual(await getKnowledgeRole(mm, file.id), { role: 'brand', chosen: true });
+
+      // Nobody else's file can be read or set.
+      assert.equal(await getKnowledgeRole(nh, file.id), null);
+      assert.equal(await setKnowledgeRole(nh, file.id, 'market'), false);
+    });
+  });
+
   it("never shows one company another company's market", async () => {
     await addReport(mm);
     await readAll();

@@ -148,3 +148,7 @@
   background: var(--surface); color: var(--ink-900);
 }
 .market-input:focus { outline: none; box-shadow: var(--sh-focus); }
+
+/* What a document is read as: brand material, market data, or a book. */
+.p-role { display: inline-flex; align-items: center; gap: 6px; margin-right: 8px; }
+.p-role select { font-size: 12.5px; }

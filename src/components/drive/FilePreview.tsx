@@ -54,6 +54,7 @@ export function FilePreview({ file, onClose }: { file: DriveFileDTO; onClose: ()
             </span>
           </span>
           <span className="p-actions">
+            {file.kind !== 'image' && file.kind !== 'video' && file.kind !== 'audio' && <RoleChoice fileId={file.id} />}
             <a className="btn btn-ghost btn-sm" href={`/api/drive/files/${file.id}/content`} download={file.name}>
               <Icon name="download" size={15} /> Download
             </a>
@@ -93,5 +94,59 @@ export function FilePreview({ file, onClose }: { file: DriveFileDTO; onClose: ()
         </div>
       </div>
     </div>
+  );
+}
+
+const ROLE_LABEL = {
+  brand: 'Brand material',
+  market: 'Market data',
+  reference: 'Book / reference',
+} as const;
+
+/**
+ * What CIP reads this document as, and the means to say otherwise.
+ *
+ * CIP decides on its own - a book is recognised by its ISBN, its copyright
+ * page, its chapters - and is right most of the time. When it is not, one
+ * choice here settles it for good.
+ */
+function RoleChoice({ fileId }: { fileId: string }) {
+  const [role, setRole] = useState<keyof typeof ROLE_LABEL | null>(null);
+  const [chosen, setChosen] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let stopped = false;
+    void fetch(`/api/drive/files/${fileId}/role`, { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((body: { role: keyof typeof ROLE_LABEL; chosen: boolean } | null) => {
+        if (!stopped && body) { setRole(body.role); setChosen(body.chosen); }
+      })
+      .catch(() => {});
+    return () => { stopped = true; };
+  }, [fileId]);
+
+  if (!role) return null;
+
+  const choose = async (next: keyof typeof ROLE_LABEL) => {
+    setSaving(true);
+    const res = await fetch(`/api/drive/files/${fileId}/role`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ role: next }),
+    }).catch(() => null);
+    if (res?.ok) { setRole(next); setChosen(true); }
+    setSaving(false);
+  };
+
+  return (
+    <label className="p-role" title={chosen ? 'Chosen by a person' : 'Worked out by CIP - change it if it is wrong'}>
+      <span className="tiny muted">Read as</span>
+      <select value={role} disabled={saving} onChange={(e) => void choose(e.target.value as keyof typeof ROLE_LABEL)}>
+        {(Object.keys(ROLE_LABEL) as (keyof typeof ROLE_LABEL)[]).map((r) => (
+          <option key={r} value={r}>{ROLE_LABEL[r]}</option>
+        ))}
+      </select>
+    </label>
   );
 }

@@ -295,8 +295,10 @@ export async function sweepMarketFolders(scope: CompanyScope): Promise<number> {
          and f.archived_at is null
          -- A book kept in the market folder is still a book. Kotler and
          -- Ogilvy were read as market reports and gave 689 "signals" - a toy
-         -- company's Christmas advertising filed as a competitor's move.
+         -- company's Christmas advertising filed as a competitor's move. And
+         -- what a person said a file is for, they said on purpose.
          and f.knowledge_role <> 'reference'
+         and not f.knowledge_role_chosen
          and f.folder_id in (select id from tree)
       on conflict (company_id, file_id) do nothing
       returning id
@@ -305,6 +307,7 @@ export async function sweepMarketFolders(scope: CompanyScope): Promise<number> {
     await tx`
       update drive_files f set knowledge_role = 'market', updated_at = now()
        where f.company_id = ${scope.companyId} and f.knowledge_role = 'brand'
+         and not f.knowledge_role_chosen
          and exists (select 1 from market_sources m where m.company_id = f.company_id and m.file_id = f.id)
     `;
     await tx`
@@ -381,8 +384,9 @@ export async function claimMarketSource(): Promise<ClaimedMarketSource | null> {
            from market_sources m
            join drive_files f on f.id = m.file_id and f.company_id = m.company_id
           where f.archived_at is null
-            -- Background reading is never read for market signals.
-            and f.knowledge_role <> 'reference'
+            -- Market data only. A book is background reading, and a file a
+            -- person has called brand material is not market data either.
+            and f.knowledge_role = 'market'
             and m.attempts < ${MAX_ATTEMPTS}
             and (f.processing_status in ('processed', 'failed')
                  or f.mime_type like 'image/%' or f.mime_type like 'video/%' or f.mime_type like 'audio/%')

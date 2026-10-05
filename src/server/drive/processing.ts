@@ -1,4 +1,5 @@
 import 'server-only';
+import { recogniseBook } from './knowledgeRole';
 import { withCompanyScope } from '../db';
 import type { CompanyScope } from '../db';
 import { adminSql } from '../db-admin';
@@ -183,6 +184,13 @@ export async function processClaimedFile(file: ClaimedFile): Promise<ProcessOutc
           )
         `;
       }
+
+      // A book is recognised as it is read, before anything reads it as brand
+      // material or market data.
+      await recogniseBook(tx, scope.companyId, { id: file.id, name: file.name }, {
+        pageCount: run.pageCount ?? null,
+        text: run.content,
+      });
 
       await tx`
         update drive_files
