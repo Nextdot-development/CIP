@@ -286,7 +286,7 @@ export type UploadInput = {
    * because a brief drawn from a product page and one drawn from a packshot
    * are different claims and somebody reading it needs to tell them apart.
    */
-  sourceType?: 'cip_drive' | 'website';
+  sourceType?: 'cip_drive' | 'website' | 'exchange_filing';
 };
 
 export async function uploadFile(scope: CompanyScope, input: UploadInput): Promise<D.DriveFileDTO> {

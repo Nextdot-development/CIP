@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { EmptyState, Pill } from '../components/ui/Bits';
 import { Icon } from '../components/ui/Icon';
 import { useToast } from '@/context/toast';
+import { FilingsCard } from './FilingsCard';
 import type { MarketSignalKind } from '@/server/brain/providers/types';
 import type { MarketSignalDTO, MarketSourceDTO } from '@/server/brain/market';
 
@@ -215,6 +216,8 @@ export function MarketSection({
           {sources.length > 0 && addButton}
         </div>
       </header>
+
+      <FilingsCard />
 
       {!configured && (
         <p className="chatnotice">

@@ -129,6 +129,8 @@ beforeEach(async () => {
   await adminSql`delete from chat_messages`;
   await adminSql`delete from chat_threads`;
   await adminSql`delete from market_signals`;
+  await adminSql`delete from market_feed_items`;
+  await adminSql`delete from market_feeds`;
   await adminSql`delete from market_sources`;
   await adminSql`delete from brain_lesson_evidence`;
   await adminSql`delete from brain_lessons`;
@@ -287,6 +289,119 @@ describe('MARKET INTELLIGENCE: only what a report actually says', () => {
     assert.equal(await readAll().then((s) => s.length), 0, 'a reference book was read for signals');
     const [row] = await adminSql<{ knowledge_role: string }[]>`select knowledge_role from drive_files where id = ${book.id}`;
     assert.equal(row!.knowledge_role, 'reference', 'the sweep turned the book back into market data');
+  });
+
+  describe('stock exchange filings arrive by themselves', () => {
+    const PDF = Buffer.from('%PDF-1.4\n% a filing\n%%EOF\n');
+    const today = new Date();
+    const nseDay = `${String(today.getUTCDate()).padStart(2, '0')}-${today.toLocaleString('en-US', { month: 'short', timeZone: 'UTC' })}-${today.getUTCFullYear()} 10:00:00`;
+    const LISTING = [
+      { seq_id: '1', an_dt: nseDay, desc: 'Financial Result Updates', attchmntText: 'Radico Khaitan has submitted its financial results for the quarter.', attchmntFile: 'https://nsearchives.nseindia.com/corporate/RADICO_results.pdf', sm_name: 'Radico Khaitan Limited', symbol: 'RADICO' },
+      { seq_id: '2', an_dt: nseDay, desc: 'Trading Window', attchmntText: 'Trading window closure pursuant to SEBI regulations.', attchmntFile: 'https://nsearchives.nseindia.com/corporate/RADICO_window.pdf', sm_name: 'Radico Khaitan Limited', symbol: 'RADICO' },
+      { seq_id: '3', an_dt: nseDay, desc: 'Analysts/Institutional Investor Meet/Con. Call Updates', attchmntText: 'Transcript of the earnings conference call.', attchmntFile: 'https://nsearchives.nseindia.com/corporate/RADICO_transcript.pdf', sm_name: 'Radico Khaitan Limited', symbol: 'RADICO' },
+    ];
+    let refuse = false;
+    const fakeNse = (async (input: string | URL | Request) => {
+      const url = String(input);
+      if (refuse) return new Response('Access Denied', { status: 403 });
+      if (url.includes('/api/corporate-announcements')) return Response.json(LISTING);
+      return new Response(PDF, { status: 200, headers: { 'content-type': 'application/pdf' } });
+    }) as typeof fetch;
+
+    it('reads a filing worth reading, and leaves the paperwork', async () => {
+      const { worthReading } = await import('../src/server/brain/filings');
+      assert.equal(worthReading({ desc: 'Financial Result Updates', attchmntText: 'quarterly results' }), true);
+      assert.equal(worthReading({ desc: 'Analysts/Institutional Investor Meet/Con. Call Updates', attchmntText: 'transcript' }), true);
+      assert.equal(worthReading({ desc: 'Press Release', attchmntText: 'launch in the UK' }), true);
+      assert.equal(worthReading({ desc: 'Trading Window', attchmntText: 'closure' }), false);
+      assert.equal(worthReading({ desc: 'Copy of Newspaper Publication', attchmntText: 'results published in newspapers' }), false);
+    });
+
+    it('fetches new filings once each, files them as market data, and records the rest', async () => {
+      const filings = await import('../src/server/brain/filings');
+      filings.__setFilingsFetch(fakeNse);
+      try {
+        await filings.addFeed(mm, { symbol: 'radico', name: 'Radico Khaitan' });
+        const [feed] = await filings.listFeeds(mm);
+        assert.equal(feed!.symbol, 'RADICO');
+
+        const after = (await filings.checkFeedNow(mm, feed!.id))!;
+        assert.equal(after[0]!.recent.length, 2, 'the results and the transcript were not both fetched');
+        assert.equal(after[0]!.lastError, null);
+
+        const files = await adminSql<{ name: string; source_type: string; knowledge_role: string }[]>`
+          select name, source_type, knowledge_role from drive_files where company_id = ${mm.companyId} and source_type = 'exchange_filing'`;
+        assert.equal(files.length, 2);
+        assert.ok(files.every((f) => f.knowledge_role === 'market'), 'a filing was not filed as market data');
+        assert.ok(files.some((f) => f.name.startsWith('Radico Khaitan - Financial Result Updates')));
+        const sources = await adminSql`select m.id from market_sources m join drive_files f on f.id = m.file_id where f.source_type = 'exchange_filing'`;
+        assert.equal(sources.length, 2, 'a filing was not queued to be read');
+
+        // Looked at again: nothing new, nothing fetched twice.
+        await adminSql`update market_feeds set last_checked_at = now() - interval '1 day' where id = ${feed!.id}`;
+        await filings.checkFeedNow(mm, feed!.id);
+        const again = await adminSql`select id from drive_files where source_type = 'exchange_filing' and company_id = ${mm.companyId}`;
+        assert.equal(again.length, 2, 'a filing was fetched twice');
+      } finally {
+        filings.__setFilingsFetch(null);
+      }
+    });
+
+    // Radico's July results were behind three newer filings on the first look,
+    // and the next look only reached back a fortnight: they never came.
+    it('keeps fetching an older backlog until it is all in, before narrowing to recent filings', async () => {
+      const filings = await import('../src/server/brain/filings');
+      const day = (daysAgo: number) => {
+        const d = new Date(Date.now() - daysAgo * 86_400_000);
+        return `${String(d.getUTCDate()).padStart(2, '0')}-${d.toLocaleString('en-US', { month: 'short', timeZone: 'UTC' })}-${d.getUTCFullYear()} 10:00:00`;
+      };
+      const many = [1, 5, 9, 40, 60].map((ago, i) => ({
+        seq_id: `b${i}`, an_dt: day(ago), desc: 'Press Release', attchmntText: `Press release number ${i}`,
+        attchmntFile: `https://nsearchives.nseindia.com/corporate/RADICO_pr${i}.pdf`, sm_name: 'Radico', symbol: 'RADICO',
+      }));
+      filings.__setFilingsFetch((async (input: string | URL | Request) =>
+        String(input).includes('/api/') ? Response.json(many) : new Response(PDF, { status: 200 })) as typeof fetch);
+      try {
+        await filings.addFeed(mm, { symbol: 'RADICO', name: 'Radico Khaitan' });
+        const [feed] = await filings.listFeeds(mm);
+        await filings.checkFeedNow(mm, feed!.id);
+        const [first] = await adminSql<{ caught_up: boolean }[]>`select caught_up from market_feeds where id = ${feed!.id}`;
+        assert.equal(first!.caught_up, false, 'three of five fetched, and the feed thought it was done');
+
+        await filings.checkFeedNow(mm, feed!.id);
+        const fetched = await adminSql`select external_id from market_feed_items where feed_id = ${feed!.id} and status = 'fetched'`;
+        assert.equal(fetched.length, 5, 'the filings 40 and 60 days old were never fetched');
+        const [second] = await adminSql<{ caught_up: boolean }[]>`select caught_up from market_feeds where id = ${feed!.id}`;
+        assert.equal(second!.caught_up, true);
+      } finally {
+        filings.__setFilingsFetch(null);
+      }
+    });
+
+    it('says so when NSE refuses, rather than going quiet', async () => {
+      const filings = await import('../src/server/brain/filings');
+      filings.__setFilingsFetch(fakeNse);
+      refuse = true;
+      try {
+        await filings.addFeed(mm, { symbol: 'UNITDSPR', name: 'United Spirits' });
+        const feed = (await filings.listFeeds(mm)).find((f) => f.symbol === 'UNITDSPR')!;
+        const after = (await filings.checkFeedNow(mm, feed.id))!;
+        assert.match(after.find((f) => f.symbol === 'UNITDSPR')!.lastError ?? '', /refused/i);
+      } finally {
+        refuse = false;
+        filings.__setFilingsFetch(null);
+      }
+    });
+
+    it("keeps one company's feeds from another", async () => {
+      const filings = await import('../src/server/brain/filings');
+      await filings.addFeed(mm, { symbol: 'RADICO', name: 'Radico Khaitan' });
+      const [feed] = await filings.listFeeds(mm);
+      assert.deepEqual(await filings.listFeeds(nh), []);
+      assert.equal(await filings.setFeedEnabled(nh, feed!.id, false), false);
+      assert.equal(await filings.checkFeedNow(nh, feed!.id), null);
+      await assert.rejects(() => filings.addFeed(mm, { symbol: 'not a symbol!', name: 'x' }), /NSE symbol/);
+    });
   });
 
   describe('a book is recognised as one, and a person always has the last word', () => {

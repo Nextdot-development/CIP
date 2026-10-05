@@ -1,4 +1,5 @@
 import 'server-only';
+import { checkFeedsEverywhere } from '../brain/filings';
 import { claimNextFile, processClaimedFile, recoverStuckFiles } from '../drive/processing';
 import { claimChunksNeedingEmbedding, embedClaimedChunks } from '../drive/embeddingQueue';
 import { embedUnderstandingsEverywhere } from '../drive/assetSearch';
@@ -194,6 +195,13 @@ async function runPass(): Promise<PumpTally> {
       // already recorded that against itself. Nothing to do here but carry on.
       if (outcome.status === 'synced') tally.synced += outcome.outcome.added;
     }
+  });
+
+  // 0c. New filings on the stock exchange from the listed companies being
+  //     watched, before extraction so a filing fetched now is read this pass.
+  await stage(async () => {
+    if (outOfTime()) return;
+    tally.synced += await checkFeedsEverywhere({ outOfTime });
   });
 
   // 0.5 Which brand each new file is about. Deterministic, free, and it has
