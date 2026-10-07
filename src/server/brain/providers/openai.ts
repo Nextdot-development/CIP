@@ -500,11 +500,13 @@ const CHAT_SCHEMA = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['brand', 'market', 'kind', 'statement', 'allowed', 'prohibited', 'quote'],
+        required: ['brand', 'market', 'kind', 'statement', 'allowed', 'prohibited', 'quote', 'format'],
         properties: {
           brand: { type: ['string', 'null'] },
           market: { type: ['string', 'null'] },
           kind: { type: 'string', enum: ['mandatory', 'prohibited', 'preferred', 'allowed'] },
+          // Radico's v1.1: every rule says which creatives it is for.
+          format: { type: 'string', enum: ['image', 'video', 'all'] },
           statement: { type: 'string' },
           allowed: { type: 'array', items: { type: 'string' } },
           prohibited: { type: 'array', items: { type: 'string' } },
@@ -1111,6 +1113,14 @@ export class OpenAIBrainProvider implements BrainProvider {
           'otherwise it is not a finding. human_review: report it as a warning for a person to ' +
           'decide, never as critical. A rule may list what it allows and what it forbids; the ' +
           'lists are the boundary.\n\n' +
+          // Radico's QC document v1.1, section 39: where something "is" is
+          // decided on a grid, not by eye. Without it a logo plainly in the
+          // middle of an end card was called "not centred".
+          'Where something sits is read on a 3x3 grid: top-left, top-centre, top-right, ' +
+          'middle-left, centre, middle-right, bottom-left, bottom-centre, bottom-right. An ' +
+          'element is in the cell its centre point falls in. "Centred" means the centre cell; ' +
+          '"top-right" means the top-right cell. Do not report a placement as wrong when the ' +
+          'element is in the cell the rule names.\n\n' +
           'Severity: critical is a required compliance element that is missing, or a ' +
           'forbidden one that is present. warning is a clear departure from how the brand ' +
           'consistently does something. note is minor. A rule marked "observed" is what the ' +
@@ -1258,6 +1268,15 @@ export class OpenAIBrainProvider implements BrainProvider {
           'character for character. A question, an opinion about one image, or something only in the ' +
           'sources is not a rule: leave proposedRules empty. When you propose a rule, say in the answer ' +
           'that it can be added to the QC rules below.\n\n' +
+          'Every rule has a format - which creatives it is for. video: they said video, film, reel, end ' +
+          'card, last frame, opening, or it is about duration, voiceover, music or subtitles. image: they ' +
+          'said images, banners, posts, statics, print or OOH. all: it holds for any creative - logo ' +
+          'version or colour, brand colours, fonts, spelling, terminology, legal or alcohol compliance. ' +
+          'A rule about where something sits (placement or position) that does not say which kind of ' +
+          'creative is not proposed: ask exactly "Is this for images, videos, or both?" in the answer ' +
+          'instead. Rules for images and rules for videos about the same thing do not contradict each ' +
+          'other - the logo is top-right on an image and centred on a video\'s end card. When you talk ' +
+          'about a rule, say which creatives it is for.\n\n' +
           (history ? `Conversation so far:\n${history}\n\n` : '') +
           `Sources:\n${sources || '(none - CIP has nothing stored that matches)'}\n\n` +
           `Question: ${input.question}`,
@@ -1480,6 +1499,13 @@ export class OpenAIBrainProvider implements BrainProvider {
           'do not reject whose fault can be seen, give in frame the number of the frame it shows ' +
           'most clearly in, and in box where it is in that frame, as [x, y, width, height] in ' +
           'fractions of the frame from its top-left corner. Otherwise frame is 0 and box empty.\n\n' +
+          // The same 3x3 grid the first look was told to use (QC document
+          // v1.1, section 39): a placement is settled here, at full size.
+          'A finding about where something sits is decided on a 3x3 grid of the frame at full ' +
+          'size: an element is in the cell its centre point falls in. "Centred" is the centre ' +
+          'cell. If the element is in the cell the rule names, the finding is plainly wrong: ' +
+          'reject it. An end card, final frame or last frame rule is judged on the end card ' +
+          'alone.\n\n' +
           `Findings:\n${findings}\n\n` +
           `Text read off each frame:\n${input.onScreen || '(none read)'}\n\n` +
           `Soundtrack: ${input.heard}`,
@@ -1845,7 +1871,13 @@ function videoSheetNote(sequence: VideoSequence): string {
     'Judge the video as a whole, not each frame alone. Something a rule requires is ' +
     'present if it is visible in any frame - a statutory warning shown only on the end ' +
     'card is present, not missing. Something a rule forbids is present if it is visible ' +
-    'in any frame. When a finding depends on particular frames, say which ones, by ' +
+    'in any frame. A rule that names a moment is judged only there: an end card, final ' +
+    'frame or last frame rule on the last frame alone, an opening rule on the opening ' +
+    'frames alone, and a "throughout" or "at all times" rule on every frame, where one ' +
+    'failing frame fails it. The logo standard for a video is centred on the end card: ' +
+    'a logo absent during the video is normal, and a small corner logo or watermark ' +
+    'during the video is acceptable. Never judge a video by where a logo would sit on a ' +
+    'still image. When a finding depends on particular frames, say which ones, by ' +
     'number or time. The dark lines between frames and the grid itself are how the ' +
     'video was laid out for you; they are not part of the creative and are never a ' +
     'fault. A frame is a still from moving footage, and text caught while it animates ' +

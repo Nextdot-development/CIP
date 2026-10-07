@@ -632,6 +632,33 @@ describe('A RULE SAID IN CHAT: proposed back, kept only when the person keeps it
     assert.equal(messages.find((m) => m.role === 'assistant')!.proposedRules[0]!.brand, null);
   });
 
+  // "Logo is centred for video" was saved for every creative, and then failed
+  // every banner for not having its logo in the middle.
+  it('keeps a rule for the creatives it was said about', async () => {
+    await roster(mm, 'Magic Moments');
+    const videoRule = {
+      ...blackLogo, kind: 'mandatory' as const, format: 'video' as const,
+      statement: 'The logo is centred on the end card.', quote: 'Magic Moments ka black logo bhi approved hai',
+    };
+    fake.chatAnswer = { answer: 'Noted - for videos.', citations: [], followUps: [], proposedRules: [videoRule] };
+    const { messages } = await chat.askBrain(mm, { threadId: null, message: said, activeBrand: null });
+    const answer = messages.find((m) => m.role === 'assistant')!;
+    assert.equal(answer.proposedRules[0]!.format, 'video');
+
+    await chat.decideProposedRule(mm, { messageId: answer.id, index: 0, keep: true });
+    const [rule] = await adminSql<{ format: string }[]>`select format from compliance_rules where rule = ${videoRule.statement}`;
+    assert.equal(rule!.format, 'video', 'a video rule was saved for every creative');
+  });
+
+  it('reads the scope from the words when the Brain did not say', async () => {
+    await roster(mm, 'Magic Moments');
+    const unsaid = { ...blackLogo, statement: 'The voiceover ends with the brand name.' } as Record<string, unknown>;
+    delete unsaid.format;
+    fake.chatAnswer = { answer: 'Noted.', citations: [], followUps: [], proposedRules: [unsaid as never] };
+    const { messages } = await chat.askBrain(mm, { threadId: null, message: said, activeBrand: null });
+    assert.equal(messages.find((m) => m.role === 'assistant')!.proposedRules[0]!.format, 'video');
+  });
+
   it('keeps it as a verified QC rule, with where it came from', async () => {
     await roster(mm, 'Magic Moments');
     fake.chatAnswer = { answer: 'Noted.', citations: [], followUps: [], proposedRules: [blackLogo] };

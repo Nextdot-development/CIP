@@ -1,7 +1,12 @@
 /**
  * Radico Khaitan's creative QC rules, as written in their own QC document.
  *
- *   Radico_Khaitan_AI_Creative_QC_Master_Package.md, Version 1.0, Sept 2026
+ *   Radico_Khaitan_AI_Creative_QC_Master_Package_v1.1.md, Version 1.1, Oct 2026
+ *
+ * Version 1.1 gives every rule an asset scope - IMAGE, VIDEO or ALL - and
+ * splits the logo standard: top-right on an image, centred on the end card of
+ * a video. A brand's own logo rule keeps what holds for both (the approved
+ * form, the colour); where the logo sits is the two global rules' job.
  *
  * WHY THESE ARE TYPED OUT AND NOT EXTRACTED BY A MODEL
  *
@@ -109,20 +114,31 @@ export const RADICO_QC_RULES: QcRuleSeed[] = [
     requirement: 'required',
     category: 'other',
   }),
-  G('002', {
+  G('002-IMG', {
     domain: 'Logo',
     ruleType: 'mandatory',
     severity: 'major',
     rule: 'The brand logo should sit in the top-right corner.',
-    rationale: 'Unless a documented campaign or format exception exists.',
+    rationale: 'Unless a documented campaign or format exception exists. A viewer sees an image all at once; the logo sits in a corner, visible without covering the message. v1.1: never applied to video.',
     allowed: [],
     prohibited: [],
     humanReview: true,
     requirement: 'required',
     category: 'placement',
-    // Radico's review, 30 Sep 2026: "only for image not for video". A film's
-    // logo moves with the shot and signs off on the end card.
     format: 'image',
+  }),
+  G('002-VID', {
+    domain: 'Logo',
+    ruleType: 'mandatory',
+    severity: 'major',
+    rule: 'The brand logo must appear centred on the end card (last frame). It is not required during the video, and a small corner logo or watermark during the video is acceptable.',
+    rationale: 'v1.1: the brand signs off on the end card, the moment the viewer remembers. A logo shown mid-video but not on the end card, or on the end card but not centred, breaks it. Never applied to images.',
+    allowed: ['No logo during the video', 'Small corner logo or watermark during the video'],
+    prohibited: ['No logo on the end card', 'End card logo not centred'],
+    humanReview: true,
+    requirement: 'required',
+    category: 'placement',
+    format: 'video',
   }),
   G('003', {
     domain: 'Logo',
@@ -406,7 +422,7 @@ export const RADICO_QC_RULES: QcRuleSeed[] = [
     domain: 'Logo',
     ruleType: 'mandatory',
     severity: 'major',
-    rule: 'The Whytehall logo must stay as approved, keep its colour, and sit top-right.',
+    rule: 'The Whytehall logo must stay as approved and keep its colour.',
     rationale: null,
     allowed: [],
     prohibited: ['Recoloured logo'],
@@ -477,7 +493,7 @@ export const RADICO_QC_RULES: QcRuleSeed[] = [
     domain: 'Logo',
     ruleType: 'mandatory',
     severity: 'major',
-    rule: 'The AfriBull logo stays consistent and sits top-right, and the rum colour stays accurate.',
+    rule: 'The AfriBull logo stays consistent, and the rum colour stays accurate.',
     rationale: null,
     allowed: [],
     prohibited: [],
@@ -496,7 +512,7 @@ export const RADICO_QC_RULES: QcRuleSeed[] = [
     domain: 'Logo',
     ruleType: 'mandatory',
     severity: 'major',
-    rule: 'The Magic Moments logo is blue or white, top-right, and must not be recoloured outside those two.',
+    rule: 'The Magic Moments logo is blue or white, and must not be recoloured outside those two.',
     rationale: 'Both blue and white are approved. Neither is more correct than the other.',
     allowed: ['Blue logo', 'White logo'],
     prohibited: ['Any other logo colour'],
@@ -552,7 +568,7 @@ export const RADICO_QC_RULES: QcRuleSeed[] = [
     severity: 'major',
     rule: 'Two Rampur logo identities are both valid — "Rampur Distillery" and "Rampur Indian Single Malt Whisky". Do not treat either as the only correct one.',
     rationale:
-      'Which is right depends on the client, campaign and product. Placement stays top-right unless an approved exception exists.',
+      'Which is right depends on the client, campaign and product. Placement follows the Radico standard: top-right on an image, centred on the end card of a video.',
     allowed: ['Rampur Distillery logo', 'Rampur Indian Single Malt Whisky logo'],
     prohibited: [],
     humanReview: true,
@@ -676,7 +692,7 @@ export const RADICO_QC_RULES: QcRuleSeed[] = [
     domain: 'Logo',
     ruleType: 'mandatory',
     severity: 'major',
-    rule: 'The Royal Ranthambore logo sits top-right and its approved form must be preserved.',
+    rule: 'The Royal Ranthambore logo keeps its approved form.',
     rationale: null,
     allowed: [],
     prohibited: [],

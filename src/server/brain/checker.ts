@@ -325,6 +325,33 @@ export function boxOf(raw: unknown, frame: number | null): FlagBox | null {
   return { frame, x: round(x), y: round(y), w: round(width), h: round(height) };
 }
 
+/**
+ * Which kind of creative a piece of brand knowledge is about, read from its
+ * words - the sorting order of Radico's QC document v1.1, section 2.4:
+ *
+ *   1. it says so ("for video", "[IMAGE]")             that
+ *   2. it is about time (end card, opening, VO, music)  video
+ *   3. it is about where something sits                image
+ *   4. anything else (colours, fonts, claims, logo form) all
+ *
+ * For learned facts, which carry no scope of their own. Rules carry one and
+ * are never second-guessed: a warning that must sit at the bottom is still a
+ * warning on a film, and guessing otherwise would drop a compliance rule.
+ */
+export function assetScopeOf(text: string): 'image' | 'video' | 'all' {
+  const t = text.toLowerCase();
+  if (/\[(video)\]|\b(for|in|on) (a |the )?(video|videos|film|films|reels?)\b/.test(t)) return 'video';
+  if (/\[(image)\]|\b(for|in|on) (a |the )?(image|images|statics?|banners?|posts?|print|ooh)\b/.test(t)) return 'image';
+  if (/\[(all)\]|\bfor (all|every) creatives?\b/.test(t)) return 'all';
+  if (/end card|final frame|last frame|opening|first \d+ ?s(ec(ond)?s?)?\b|first seconds|duration|throughout the (video|film)|\bscenes?\b|voice ?over|\bvo\b|audio|subtitles?|music|transitions?|pacing|\bcuts?\b/.test(t)) {
+    return 'video';
+  }
+  if (/top[- ]right|top[- ]left|bottom[- ]right|bottom[- ]left|\bcorner\b|placement|placed|positioned|\bposition\b|upper third|lower third|centred|centered|left-aligned|right-aligned/.test(t)) {
+    return 'image';
+  }
+  return 'all';
+}
+
 /** A finding that survived grounding: what it cites, and every rule it breaks. */
 export type GroundedFinding = CheckFinding & {
   target: RefTarget;
@@ -1068,7 +1095,16 @@ export async function runCheck(
       limit: MAX_FACTS,
       minEvidence: BRAIN_LIMITS.factMinEvidence,
     })
-  ).filter((f) => f.section !== 'video');
+  )
+    .filter((f) => f.section !== 'video')
+    // Radico's v1.1: a pattern learned from pictures - the logo top-right -
+    // is not an expectation of a film, and one learned from films is not of
+    // a picture. Each fact is sorted by what it is about and the other
+    // asset's are set aside.
+    .filter((f) => {
+      const forAsset = assetScopeOf(`${f.attribute}: ${f.value}`);
+      return forAsset === 'all' || forAsset === (subject.sequence ? 'video' : 'image');
+    });
 
   // What the category requires, read exactly as the planner reads it.
   // Only the rules for what this is: subtitles and the end screen are a
@@ -1155,7 +1191,9 @@ export async function runCheck(
         label:
           `The next image is frame ${frames.length} (${end.atSeconds.toFixed(1)}s), the end card, ` +
           'at full size. It is the same frame as the last one on the sheet - judge its small ' +
-          'print from here.',
+          'print, and every end card, final frame or last frame rule, from this image alone, ' +
+          'on its own 3x3 grid. On an end card, centred means in the centre cell: a logo ' +
+          'there is centred even when it sits a little above the pack shot or the middle line.',
       }];
     }
 
@@ -1831,6 +1869,8 @@ export async function addStatedRule(
     allowed: string[];
     prohibited: string[];
     note: string;
+    /** Which creatives it is for. Every kind when unsaid. */
+    format?: 'image' | 'video' | 'all';
   },
 ): Promise<string> {
   const rule = input.statement.trim().slice(0, 500);
@@ -1843,12 +1883,12 @@ export async function addStatedRule(
     const rows = await tx<{ id: string }[]>`
       insert into compliance_rules
         (company_id, brand, market, category, requirement, rule, note, source, created_by,
-         rule_type, severity, allowed, prohibited, verified_at, verified_by)
+         rule_type, severity, allowed, prohibited, verified_at, verified_by, format)
       values
         (${scope.companyId}, ${input.brand}, ${input.market}, 'other', ${requirement}, ${rule},
          ${input.note.slice(0, 1000)}, 'manual', ${scope.userId},
          ${input.kind}, ${severity}, ${list(input.allowed)}::text[], ${list(input.prohibited)}::text[],
-         now(), ${scope.userId})
+         now(), ${scope.userId}, ${input.format ?? 'all'})
       on conflict (company_id, rule, coalesce(brand, ''), coalesce(market, ''))
         do update set
           requirement = excluded.requirement,
@@ -1857,6 +1897,7 @@ export async function addStatedRule(
           allowed = excluded.allowed,
           prohibited = excluded.prohibited,
           note = excluded.note,
+          format = excluded.format,
           active = true,
           verified_at = now(),
           verified_by = excluded.verified_by,

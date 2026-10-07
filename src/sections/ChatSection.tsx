@@ -87,6 +87,9 @@ function RuleProposals({
             <Icon name="shield" size={13} />
             CIP heard a rule
             <span className={`rulekind kind-${rule.kind}`}>{RULE_KIND_LABEL[rule.kind]}</span>
+            <span className="rulekind">
+              {rule.format === 'video' ? 'Videos' : rule.format === 'image' ? 'Images' : 'All creatives'}
+            </span>
             <span className="rulescope">
               {rule.brand ?? 'Every brand'}
               {rule.market ? ` · ${rule.market}` : ''}

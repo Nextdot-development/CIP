@@ -67,6 +67,8 @@ type Report = {
   mustFix: CheckFlag[];
   toReview: CheckFlag[];
   counts: { rulesApplied: number; factsApplied: number; passed: number; flagged: number };
+  /** The other kind of creative's rules, set aside. */
+  notApplicable?: { id: string; rule: string }[];
 };
 
 /** One page's verdict, kept with the page it came from. */
@@ -1020,6 +1022,12 @@ function QcReport({
             {report.check.detected.product ? ` — ${report.check.detected.product}` : ''}
             {report.check.detected.evidence ? ` (${report.check.detected.evidence})` : ''} ·{' '}
             {Math.round(report.check.detected.confidence * 100)}% sure
+          </p>
+        )}
+        {(report.notApplicable?.length ?? 0) > 0 && (
+          <p>
+            Not applicable to {report.check.video ? 'a video' : 'an image'} ({report.notApplicable!.length}):{' '}
+            {report.notApplicable!.map((r) => r.rule).join(' · ')}
           </p>
         )}
         {report.check.video && <VideoDetails video={report.check.video} />}

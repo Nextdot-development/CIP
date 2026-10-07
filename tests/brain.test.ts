@@ -1619,6 +1619,81 @@ describe('THE CHECKER: a creative judged against the brand, and nothing else', (
     assert.deepEqual(forFilm, ['Never show a competitor logo.', 'Subtitles must match the voiceover.']);
   });
 
+  // Radico's QC document v1.1, section 42.2: the acceptance tests that can be
+  // decided without a model looking at anything.
+  describe('v1.1: image and video rules never mix', () => {
+    async function logoRules() {
+      await adminSql`
+        insert into compliance_rules (company_id, rule_code, category, requirement, rule, source, rule_type, severity, format)
+        values (${mm.companyId}, 'RADICO-GLOBAL-002-IMG', 'placement', 'required', 'The brand logo should sit in the top-right corner.', 'manual', 'mandatory', 'major', 'image'),
+               (${mm.companyId}, 'RADICO-GLOBAL-002-VID', 'placement', 'required', 'The brand logo must appear centred on the end card (last frame).', 'manual', 'mandatory', 'major', 'video'),
+               (${mm.companyId}, 'RADICO-GLOBAL-003', 'other', 'forbidden', 'Do not alter or recolour an approved logo.', 'manual', 'prohibited', 'critical', 'all')
+      `;
+    }
+
+    it('#7 an image is never judged by the video logo rule, and says it was set aside', async () => {
+      await logoRules();
+      const check = await checkedImage();
+      const sent = fake.lastCheckInput!.rules.map((r) => r.statement);
+      assert.ok(sent.includes('The brand logo should sit in the top-right corner.'));
+      assert.ok(!sent.some((s) => s.includes('end card')), 'the video logo rule reached an image');
+      const { reportOn } = await import('../src/server/brain/qc');
+      const report = await reportOn(mm, check);
+      assert.deepEqual(report.notApplicable.map((r) => r.rule), ['The brand logo must appear centred on the end card (last frame).']);
+    });
+
+    it('#8 a video is never judged by the image logo rule', async () => {
+      await logoRules();
+      const { runCheck } = await import('../src/server/brain/checker');
+      const check = await runCheck(mm, { fileId: (await uploadVideo()).id });
+      const sent = fake.lastCheckInput!.rules.map((r) => r.statement);
+      assert.ok(sent.some((s) => s.includes('end card')));
+      assert.ok(!sent.includes('The brand logo should sit in the top-right corner.'), 'the image logo rule reached a video');
+      assert.ok(sent.includes('Do not alter or recolour an approved logo.'), 'a rule for every creative was dropped');
+      const { reportOn } = await import('../src/server/brain/qc');
+      assert.deepEqual((await reportOn(mm, check)).notApplicable.map((r) => r.rule), ['The brand logo should sit in the top-right corner.']);
+    });
+
+    it('#9 a page of a PDF is judged as an image', async () => {
+      await logoRules();
+      const { buildPdf } = await import('./helpers/pdf');
+      const pdf = buildPdf([{ kind: 'text', text: 'Magic Moments. Celebrate every moment. Drink responsibly.' }]);
+      const file = await drive.uploadFile(mm, { folderId: null, filename: 'deck.pdf', mimeType: 'application/pdf', body: pdf });
+      const { runCheck } = await import('../src/server/brain/checker');
+      await runCheck(mm, { fileId: file.id, page: 1 });
+      const sent = fake.lastCheckInput!.rules.map((r) => r.statement);
+      assert.ok(sent.includes('The brand logo should sit in the top-right corner.'));
+      assert.ok(!sent.some((s) => s.includes('end card')), 'a PDF page was judged as a video');
+    });
+
+    it('sorts learned brand knowledge the way the document does', async () => {
+      const { assetScopeOf } = await import('../src/server/brain/checker');
+      assert.equal(assetScopeOf('logo placement: top-right corner'), 'image');
+      assert.equal(assetScopeOf('logo: centred on the end card'), 'video');
+      assert.equal(assetScopeOf('voiceover: warm, unhurried'), 'video');
+      assert.equal(assetScopeOf('palette: deep purple and gold'), 'all');
+      assert.equal(assetScopeOf('[VIDEO] Logo sits top-right'), 'video', 'an explicit tag wins over the words');
+      assert.equal(assetScopeOf('For images, the headline is centred'), 'image');
+    });
+
+    it("keeps a picture's placement habits out of a film's check", async () => {
+      await adminSql`
+        insert into brand_dna_facts (company_id, section, attribute, value, brand, kind, confidence, evidence_count)
+        values (${mm.companyId}, 'visual', 'logo placement', 'top-right corner', null, 'derived', 0.8, 6),
+               (${mm.companyId}, 'visual', 'palette', 'deep purple and gold', null, 'derived', 0.8, 6)
+      `;
+      const { runCheck } = await import('../src/server/brain/checker');
+      await runCheck(mm, { fileId: (await uploadVideo()).id });
+      const facts = fake.lastCheckInput!.rules.filter((r) => r.requirement === 'observed').map((r) => r.statement);
+      assert.ok(facts.some((f) => f.includes('palette')), 'a fact for every creative was dropped');
+      assert.ok(!facts.some((f) => f.includes('top-right')), "an image's placement habit was held against a film");
+
+      await checkedImage();
+      const forPicture = fake.lastCheckInput!.rules.filter((r) => r.requirement === 'observed').map((r) => r.statement);
+      assert.ok(forPicture.some((f) => f.includes('top-right')), 'the habit was lost for pictures too');
+    });
+  });
+
   // The company's own document: a human_review rule "should escalate instead
   // of making a hard judgement". It can ask; it cannot fail a creative.
   it('never lets a rule meant for a person fail a creative on its own', async () => {

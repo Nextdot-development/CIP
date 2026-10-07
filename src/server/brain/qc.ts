@@ -53,6 +53,12 @@ export type QcReport = {
    */
   toReview: CheckFlag[];
   counts: { rulesApplied: number; factsApplied: number; passed: number; flagged: number };
+  /**
+   * Rules for the other kind of creative, set aside: a video's rules when a
+   * picture was checked, and the reverse. Listed so "not applicable" is said,
+   * not silently assumed.
+   */
+  notApplicable: { id: string; rule: string }[];
 };
 
 export async function runQc(
@@ -71,6 +77,9 @@ export async function reportOn(scope: CompanyScope, check: CreativeCheck): Promi
     market: check.market,
     format: check.video ? 'video' : 'image',
   });
+  const everyFormat = await rulesForBrief(scope, { brand: check.brand, market: check.market });
+  const applied = new Set(rules.map((r) => r.id));
+  const notApplicable = everyFormat.filter((r) => !applied.has(r.id)).map((r) => ({ id: r.id, rule: r.rule }));
 
   const verifiedById = new Map(rules.map((r) => [r.id, r.verifiedAt !== null]));
   // Every rule a flag broke, not only the one it names first: a rule a fault
@@ -103,6 +112,7 @@ export async function reportOn(scope: CompanyScope, check: CreativeCheck): Promi
       mustFix: [],
       toReview: [],
       counts: { rulesApplied: 0, factsApplied: 0, passed: 0, flagged: 0 },
+      notApplicable: [],
     };
   }
 
@@ -126,6 +136,7 @@ export async function reportOn(scope: CompanyScope, check: CreativeCheck): Promi
       passed: passed.length,
       flagged: open.length,
     },
+    notApplicable,
   };
 }
 

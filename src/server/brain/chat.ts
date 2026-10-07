@@ -7,7 +7,7 @@ import type { ChatSource, ProposedRule } from './providers/types';
 import { readBrandDna } from './brandDna';
 import { brandInRequest, companyBrands } from './brands';
 import { upcoming } from './calendar';
-import { addStatedRule, listRules } from './checker';
+import { addStatedRule, assetScopeOf, listRules } from './checker';
 import { marketSignalsFor } from './market';
 import { searchMemory } from './retrieval';
 
@@ -367,10 +367,17 @@ export function groundProposals(
     const words = (values: unknown) =>
       Array.isArray(values) ? values.filter((v): v is string => typeof v === 'string' && v.trim().length > 0).slice(0, 12) : [];
 
+    // Which creatives it is for. Said by the model where it could; read from
+    // the rule's own words where it did not, the way the QC document sorts an
+    // untagged rule.
+    const format: 'image' | 'video' | 'all' =
+      raw.format === 'image' || raw.format === 'video' || raw.format === 'all' ? raw.format : assetScopeOf(statement);
+
     kept.push({
       brand,
       market: typeof raw.market === 'string' && raw.market.trim() ? raw.market.trim().slice(0, 60) : null,
       kind: raw.kind,
+      format,
       statement,
       allowed: words(raw.allowed),
       prohibited: words(raw.prohibited),
@@ -424,6 +431,7 @@ export async function decideProposedRule(
       statement: proposal.statement,
       allowed: proposal.allowed,
       prohibited: proposal.prohibited,
+      format: proposal.format ?? 'all',
       // Where it came from, in the words it was said in, so the rule on the
       // Consistency Check page can be traced to the conversation.
       note: `Added from Chat with the Brain on ${day}. Said: "${proposal.quote}"`,

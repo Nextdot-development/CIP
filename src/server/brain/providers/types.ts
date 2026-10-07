@@ -645,6 +645,8 @@ export type ProposedRule = {
   prohibited: string[];
   /** The words in the person's message the rule was taken from, verbatim. */
   quote: string;
+  /** Which creatives it is for: pictures, films, or every kind. */
+  format?: 'image' | 'video' | 'all';
 };
 
 export type ChatAnswer = {
