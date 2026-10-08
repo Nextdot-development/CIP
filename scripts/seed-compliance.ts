@@ -41,7 +41,7 @@ const RULES: NewComplianceRule[] = [
   },
   {
     market: 'India', category: 'claim', requirement: 'forbidden', source: 'regulation', referenceUrl: INDIA_ASCI,
-    rule: 'A brand-extension creative must not show or suggest the alcoholic product itself.',
+    rule: 'Only in a brand-extension (surrogate) creative - one advertising soda, water, glassware, music or another non-alcohol product under the brand name - the alcoholic product must not be shown or suggested. It does not apply to a creative for the drink itself, which shows the approved pack.',
     note: 'ASCI guidelines on brand extensions. A surrogate that is really an advert for the liquor is the thing they exist to stop.',
   },
   {
