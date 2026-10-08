@@ -949,8 +949,11 @@ export class OpenAIBrainProvider implements BrainProvider {
             .join('\n') +
           '\n\nmandatory: must be in the creative. prohibited: must not be. preferred: do it unless ' +
           'the request asks otherwise. allowed: an approved choice that may be used freely.' +
-          '\n\nA required disclaimer has to be visible in the creative itself: say where the ' +
-          'line sits and keep it clear of the product and the logo. A forbidden thing is ' +
+          '\n\nStatutory lines - health warnings, "Drink Responsibly", age marks such as 18+ ' +
+          'or 25+, and any other legal disclaimer - are never part of the picture. The design ' +
+          'team adds them at layout in the exact approved wording. Do not write them into the ' +
+          'generation prompt; keep the bottom edge of the frame calm enough for them to be ' +
+          'added later. A forbidden thing is ' +
           'only forbidden where it applies to what was asked for; do not drop the product ' +
           'from a normal product creative on account of a rule about brand-extension ads.',
       );

@@ -84,6 +84,7 @@ export class FakeBrainProvider implements BrainProvider {
   checkAssetKind: AssetKind | null = null;
   /** The last check's input, so a test can see what the Brain was given. */
   lastCheckInput: CheckInput | null = null;
+  lastBriefInput: BriefInput | null = null;
   /** What each video frame says, in order. Null: no frame has any text. */
   frameTexts: string[] | null = null;
   /** Set to make reading the frames fail, as a network error would. */
@@ -145,6 +146,7 @@ export class FakeBrainProvider implements BrainProvider {
     this.checkFindingsQueue = null;
     this.checkAssetKind = null;
     this.lastCheckInput = null;
+    this.lastBriefInput = null;
     this.frameTexts = null;
     this.frameReadFails = false;
     this.reviewVerdicts = null;
@@ -385,6 +387,7 @@ export class FakeBrainProvider implements BrainProvider {
   }
 
   async buildGenerationBrief(input: BriefInput): Promise<GenerationBrief & { usage: { durationMs: number } }> {
+    this.lastBriefInput = input;
     this.calls.brief += 1;
     this.check();
 

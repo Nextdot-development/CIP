@@ -8,7 +8,7 @@ import { knownSubjects, readBrandDna } from './brandDna';
 import { applicableLessons, craftPassages, productShots, ratedExamples, similarAssets, similarPosts } from './retrieval';
 import { companyMarkets, marketFromEvidence, marketInRequest } from './markets';
 import { brandInRequest, brandNames } from './brands';
-import { rulesForBrief } from './checker';
+import { isLegalLine, rulesForBrief } from './checker';
 
 /**
  * Deciding what to generate, before anything is generated.
@@ -324,7 +324,8 @@ export async function planGeneration(
     knownProducts: subjects.products,
     requestedShape: input.requestedShape ?? null,
     craft,
-    complianceRules: rules.map((rule) => ({
+    // Statutory lines are set at layout, not drawn: never asked of the generator.
+    complianceRules: rules.filter((rule) => !isLegalLine(rule)).map((rule) => ({
       rule: rule.rule,
       requirement: rule.requirement,
       category: rule.category,
@@ -365,20 +366,19 @@ export async function planGeneration(
     .filter((l) => l.status !== 'confirmed')
     .map((l) => ({ statement: l.statement, evidenceCount: l.evidenceCount }));
 
-  // Disclaimers this market requires on the creative itself. Added by CIP, not
-  // left to the model: a real check on a real Indian creative failed for a
-  // missing statutory warning that nothing had ever asked the generator for.
+  // The statutory lines this market requires. Listed for the team, who set
+  // them at layout in the approved wording - never handed to the generator,
+  // which draws its own warning strip, misspelt and wherever it likes.
   const mustCarry = rules
-    .filter((rule) => rule.requirement === 'required' && rule.category === 'disclaimer')
+    .filter((rule) => rule.requirement === 'required' && isLegalLine(rule))
     .map((rule) => rule.rule);
 
   const finalBrief: GenerationBrief = {
     ...brief,
     confidence,
     clarificationQuestion: clarification,
-    // First, because the prompt keeps only the first few constraints and a
-    // statutory warning is not the one to drop.
-    constraints: [...new Set([...mustCarry, ...brief.constraints])],
+    // Without any statutory line the model wrote in on its own account.
+    constraints: brief.constraints.filter((c) => !isLegalLine({ rule: c })),
     // What this brief was actually built from. The model never sees these as
     // fields to fill in; they are what the planner resolved before it asked.
     brand,

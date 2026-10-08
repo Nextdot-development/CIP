@@ -355,6 +355,22 @@ export function assetScopeOf(text: string): 'image' | 'video' | 'all' {
   return 'all';
 }
 
+/**
+ * A rule that asks for a statutory line: a health warning, "Drink
+ * Responsibly", an age mark such as 18+, a legal disclaimer.
+ *
+ * Those are set at layout by the design team, in the exact approved wording -
+ * never drawn by an image model, which misspells them and puts them where it
+ * likes. So a picture CIP makes is neither asked for them nor faulted for
+ * lacking them. A rule forbidding something (nobody who looks under 18) is
+ * not one of these.
+ */
+export function isLegalLine(rule: { category?: string | null; rule: string; ruleType?: string | null }): boolean {
+  if (rule.ruleType === 'prohibited' || rule.category === 'audience') return false;
+  if (rule.category === 'disclaimer') return true;
+  return /\b(health|statutory) warnings?\b|\bdisclaimers?\b|legal line|drink responsibly|not for sale to persons|not recommended for pregnant|\b(18|21|25) ?\+/i.test(rule.rule);
+}
+
 /** A finding that survived grounding: what it cites, and every rule it breaks. */
 export type GroundedFinding = CheckFinding & {
   target: RefTarget;
@@ -1163,7 +1179,7 @@ export async function runCheck(
   // while the film's frames are being read.
   const references = packReferences(scope, brand);
   void references.catch(() => []);
-  const [dna, rules] = await Promise.all([
+  const [dna, applicable] = await Promise.all([
     readBrandDna(scope, {
       brand,
       market,
@@ -1175,6 +1191,10 @@ export async function runCheck(
     // film's, and a picture judged against them can only fail by misreading.
     rulesForBrief(scope, { brand, market, format: subject.sequence ? 'video' : 'image' }),
   ]);
+  // A picture CIP made carries no statutory lines: they are added at layout.
+  // Checking it for them would only send the fix loop off to draw them.
+  const rules = subject.generationId ? applicable.filter((r) => !isLegalLine(r)) : applicable;
+
   const facts = dna
     .filter((f) => f.section !== 'video')
     // Radico's v1.1: a pattern learned from pictures - the logo top-right -

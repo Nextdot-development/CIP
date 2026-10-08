@@ -1988,7 +1988,7 @@ describe('THE CHECKER: a creative judged against the brand, and nothing else', (
   });
 
   it('checks a creative CIP generated with the same checker as a human one', async () => {
-    await rule('required', 'Carry a responsible drinking message.');
+    await rule('required', 'Show the approved pack.', 'regulation', null, 'other');
     fake.checkFindings = [];
     await uploadText(mm, 'voice.txt', 'Warm, celebratory, never about the alcohol itself.');
     await extractAll();
@@ -2825,7 +2825,7 @@ describe('what the Brain hands the generator', () => {
     );
   });
 
-  it('carries a required disclaimer into the prompt, rather than hoping for it', async () => {
+  it('leaves statutory lines to the layout, and tells the generator not to draw any', async () => {
     const checker = await import('../src/server/brain/checker');
     await checker.addComplianceRule(mm, {
       rule: 'Carry the statutory warning that consumption of liquor is injurious to health.',
@@ -2843,20 +2843,22 @@ describe('what the Brain hands the generator', () => {
     assert.equal(out.status, 'generated');
     if (out.status !== 'generated') return;
 
-    // The checker fails a creative for a missing statutory warning. Nothing
-    // had ever told the generator to put one there, so CIP made the mistake
-    // and then flagged itself for it.
+    // Listed for the team to add at layout...
     assert.ok(
       out.plan.mustCarry.some((rule) => rule.includes('injurious to health')),
-      'the plan does not say the warning is required',
+      'the plan does not say which line the team must add',
     );
 
+    // ...and kept out of the picture: a generator draws its own warning
+    // strip, misspelt and wherever it likes.
     const rows = await adminSql<{ prompt: string }[]>`
       select prompt from media_generations where id = ${out.generation.id}
     `;
+    assert.ok(!rows[0]!.prompt.includes('injurious to health'), 'the warning was handed to the generator');
+    assert.match(rows[0]!.prompt, /Do not include any health warning/);
     assert.ok(
-      rows[0]!.prompt.includes('injurious to health'),
-      `the required warning never reached the generator: ${rows[0]!.prompt.slice(0, 300)}`,
+      !(fake.lastBriefInput?.complianceRules ?? []).some((r) => r.rule.includes('injurious')),
+      'the brief was asked to place the warning',
     );
   });
 
@@ -2986,14 +2988,28 @@ describe('generation integration', () => {
   });
 
   /** A rule every picture this company makes is checked against. */
-  async function houseRule(text = 'Carry the statutory warning.'): Promise<void> {
+  async function houseRule(text = 'Show the approved pack.'): Promise<void> {
     await adminSql`
       insert into compliance_rules (company_id, category, requirement, rule, source)
-      values (${mm.companyId}, 'disclaimer', 'required', ${text}, 'regulation')
+      values (${mm.companyId}, 'other', 'required', ${text}, 'regulation')
     `;
   }
 
-  const missingWarning = { ref: 'R1', dimension: 'compliance' as const, severity: 'critical' as const, message: 'No statutory warning.' };
+  const missingWarning = { ref: 'R1', dimension: 'compliance' as const, severity: 'critical' as const, message: 'No approved pack.' };
+
+  it('does not fault a picture it made for a statutory line, which is added at layout', async () => {
+    await houseRule('Carry the statutory warning.');
+    await adminSql`update compliance_rules set category = 'disclaimer' where company_id = ${mm.companyId}`;
+    mediaProviders.__setProviders(null, null);
+    fake.checkFindings = [missingWarning];
+
+    const result = await brainGenerate.generateWithBrain(mm, { requestText: 'A Diwali post', mediaType: 'image' });
+    assert.equal(result.status, 'generated');
+    if (result.status !== 'generated') return;
+    // Not judged against it at all, so nothing was made again to draw it.
+    assert.equal(fake.lastCheckInput!.rules.length, 0);
+    assert.equal(result.qc!.attempts, 1);
+  });
 
   // Nothing CIP makes is called right until the checker has looked at it -
   // and it is looked at before the person sees it, not on the next worker run.
@@ -3030,13 +3046,13 @@ describe('generation integration', () => {
     assert.equal(result.qc!.attempts, 2);
     assert.deepEqual(progress, ['made 1', 'checking 1', 'fixing 2', 'made 2', 'checking 2']);
     assert.equal(result.qc!.earlier.length, 1);
-    assert.deepEqual(result.qc!.earlier[0]!.broke, ['Carry the statutory warning.']);
+    assert.deepEqual(result.qc!.earlier[0]!.broke, ['Show the approved pack.']);
 
     const first = result.qc!.earlier[0]!.generationId;
     const [second] = await adminSql<{ prompt: string; input_metadata: { basedOn: string | null } }[]>`
       select prompt, input_metadata from media_generations where id = ${result.generation.id}
     `;
-    assert.ok(second!.prompt.includes('Carry the statutory warning.'), 'the generator was not told what to fix');
+    assert.ok(second!.prompt.includes('Show the approved pack.'), 'the generator was not told what to fix');
     assert.equal(second!.input_metadata.basedOn, first, 'the fix was not built on the picture that failed');
     // The brief points at what was handed over, so rating it teaches.
     const linked = await adminSql`select id from generation_briefs where id = ${result.briefId} and generation_id = ${result.generation.id}`;
@@ -3055,7 +3071,7 @@ describe('generation integration', () => {
     assert.equal(result.qc!.verdict, 'failed', 'a picture that breaks a rule was called fine');
     assert.equal(result.qc!.attempts, 3);
     assert.equal(result.qc!.stopped, 'out_of_tries');
-    assert.equal(result.qc!.broke[0]!.rule, 'Carry the statutory warning.');
+    assert.equal(result.qc!.broke[0]!.rule, 'Show the approved pack.');
   });
 
   it('does not start another version it has no time to finish', async () => {

@@ -238,8 +238,9 @@ export async function generateWithBrain(
       ? withNotes(promptFromBrief(plan.brief), [
           referenceNote(attached.length, shots),
           framingNote(shape),
+          LEGAL_LINES_NOTE,
         ])
-      : promptFromBrief(plan.brief);
+      : withNotes(promptFromBrief(plan.brief), [LEGAL_LINES_NOTE]);
 
   const generation =
     input.mediaType === 'image'
@@ -652,6 +653,16 @@ function referenceNote(attached: number, shots: number): string | null {
 }
 
 /** Everything the generator is told beyond the brief, appended once. */
+/**
+ * Said to the generator every time. The brief already leaves statutory lines
+ * out, but a model that has seen a thousand alcohol adverts adds a warning
+ * strip of its own - misspelt, and wherever it likes. The team sets them at
+ * layout in the approved wording.
+ */
+const LEGAL_LINES_NOTE =
+  'Do not include any health warning, "Drink Responsibly" line, age mark such as 18+ or 25+, ' +
+  'or other legal disclaimer text anywhere in the image.';
+
 function withNotes(prompt: string, notes: (string | null)[]): string {
   const said = notes.filter((note): note is string => Boolean(note)).join(' ');
   if (said.length === 0) return prompt;

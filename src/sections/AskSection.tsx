@@ -752,11 +752,11 @@ function Plan({ plan }: { plan: PlanSummary }) {
         </p>
       )}
 
-      {/* What this market requires on the creative itself. The checker fails a
-          creative for a missing statutory warning, so the brief carries it. */}
+      {/* The statutory lines this market requires. Not drawn into the
+          picture - the team sets them at layout, in the approved wording. */}
       {plan.mustCarry?.length > 0 && (
         <div className="plan-block">
-          <p className="tiny muted">Required on the creative itself</p>
+          <p className="tiny muted">Add at layout, not in the picture</p>
           {plan.mustCarry.map((rule) => <p className="small" key={rule}>· {rule}</p>)}
         </div>
       )}
