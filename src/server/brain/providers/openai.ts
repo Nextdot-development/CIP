@@ -970,6 +970,8 @@ export class OpenAIBrainProvider implements BrainProvider {
 
     sections.push(
       'Build a production brief. The generation prompt must be concrete and ' +
+        'self-contained — it is sent straight to an image or video model that ' +
+        'has none of the context above.\n\n' +
         'Set `format` from what was asked for. A banner, a billboard, a story, a ' +
         'carousel card and a feed post are different shapes, and the shape decides ' +
         'the composition: a banner is wide and reads left to right with room for ' +
@@ -977,10 +979,18 @@ export class OpenAIBrainProvider implements BrainProvider {
         'the top and bottom edges where the interface sits. Compose the prompt for ' +
         'the shape you name. Do not put pixel dimensions in the prompt — the size ' +
         'is requested separately, and naming a canvas the generator was not asked ' +
-        'for produces a picture of a banner rather than a banner. ' +
-
-        'self-contained — it is sent straight to an image or video model that ' +
-        'has none of the context above.\n\n' +
+        'for produces a picture of a banner rather than a banner.\n\n' +
+        // "Use the chocolate flavour bottle" came back covered in chocolate.
+        'A flavour or variant named with the product - "chocolate flavour bottle", ' +
+        '"the Honey one", "8PM Fire" - says which pack to show, nothing more. Show that ' +
+        "variant's approved pack. Do not add the flavour's ingredient - chocolate, honey, " +
+        'bees, cinnamon, fruit - as a prop, background or decoration unless the request ' +
+        'asks for it in so many words. The pack and its name already say the flavour, and ' +
+        'that holds over any preferred rule about communicating it.\n\n' +
+        // "Text will be happy new year" was answered with a question about it.
+        'Words the person gave for the text on the creative - "text will be happy new ' +
+        'year", "headline: Cheers" - are that text. Use them exactly, set in the case the ' +
+        'design calls for, and never ask to confirm them.\n\n' +
         'Only invent what the request needs and the brand evidence supports; do not ' +
         'assert brand details that are not listed above. Set confidence honestly: low ' +
         'when there is little or no brand evidence to work from.\n\n' +
@@ -988,7 +998,9 @@ export class OpenAIBrainProvider implements BrainProvider {
         'example several campaigns or products exist and nothing in the request or the ' +
         'evidence identifies which one is meant. If the request is workable, set ' +
         'clarificationQuestion to null and proceed. Do not ask about things you can ' +
-        'reasonably decide yourself.',
+        'reasonably decide yourself. When you must ask, ask one short question of at most ' +
+        '15 words, in plain everyday words anyone would understand - no design terms such ' +
+        'as "upper third" or "serif" - with two or three short choices only where they help.',
     );
 
     const { parsed, usage } = await this.call<GenerationBrief>(
