@@ -95,7 +95,7 @@ export type CheckFlag = {
   citedFact: { id: string; attribute: string; value: string; brand: string | null } | null;
   citedRule: { id: string; rule: string; source: RuleSource; referenceUrl: string | null } | null;
   status: 'open' | 'accepted' | 'disputed';
-  disputeReason: 'exception' | 'wrong_rule' | null;
+  disputeReason: 'misread' | 'exception' | 'wrong_rule' | null;
   correction: string | null;
   /** For a video: the moments it is about, in seconds. Empty for the whole film. */
   atSeconds: number[];
@@ -857,6 +857,46 @@ async function searchFrames(
   }
 }
 
+/** Past overrulings shown per rule, at most, and how far back they are read. */
+const MAX_OVERRULINGS = 3;
+const OVERRULINGS_DAYS = 180;
+
+/**
+ * What reviewers said when they overruled each rule: the flag CIP raised and
+ * the person's own words, newest first. Only misreadings and exceptions - a
+ * rule called wrong is retired, and has nothing left to be shown beside.
+ *
+ * This is how the checker learns from being corrected. It is told, next to
+ * the rule, the situations a person has already said were not a breach.
+ */
+async function pastOverrulings(scope: CompanyScope, ruleIds: string[]): Promise<Map<string, string[]>> {
+  const found = new Map<string, string[]>();
+  if (ruleIds.length === 0) return found;
+  const rows = await withCompanyScope(scope, (tx) =>
+    tx<{ rule_id: string; message: string; correction: string | null; dispute_reason: string }[]>`
+      select rule_id, message, correction, dispute_reason
+        from (
+          select g.rule_id, g.message, g.correction, g.dispute_reason,
+                 row_number() over (partition by g.rule_id order by g.corrected_at desc) as n
+            from check_flags g
+           where g.company_id = ${scope.companyId}
+             and g.rule_id = any(${ruleIds}::uuid[])
+             and g.status = 'disputed'
+             and g.dispute_reason in ('misread', 'exception')
+             and g.corrected_at > now() - make_interval(days => ${OVERRULINGS_DAYS})
+        ) recent
+       where n <= ${MAX_OVERRULINGS}
+    `,
+  ).catch(() => []);
+  for (const row of rows) {
+    const said = row.correction ? ` - reviewer: "${row.correction.replace(/\s+/g, ' ').slice(0, 200)}"` : '';
+    const what = row.dispute_reason === 'misread' ? 'CIP misread it' : 'an allowed exception';
+    const line = `flagged "${row.message.replace(/\s+/g, ' ').slice(0, 140)}", ${what}${said}`;
+    found.set(row.rule_id, [...(found.get(row.rule_id) ?? []), line]);
+  }
+  return found;
+}
+
 /** Frames looked at again, at most. Past this each close-up costs more than it settles. */
 const MAX_CLOSE_UPS = 6;
 
@@ -951,6 +991,7 @@ export async function lookAgain<F extends { ref: string; severity: CheckFinding[
     let line = `${rule.kind ?? rule.requirement}: ${rule.statement}`;
     if (rule.allowed && rule.allowed.length > 0) line += ` (allows: ${rule.allowed.join(', ')})`;
     if (rule.prohibited && rule.prohibited.length > 0) line += ` (forbids: ${rule.prohibited.join(', ')})`;
+    if (rule.overruled && rule.overruled.length > 0) line += ` (reviewers overruled it before: ${rule.overruled.join('; ')})`;
     return line;
   };
 
@@ -1145,6 +1186,10 @@ export async function runCheck(
       return forAsset === 'all' || forAsset === (subject.sequence ? 'video' : 'image');
     });
 
+  // Where reviewers have overruled a rule before, and why: shown beside the
+  // rule, so a misreading corrected once is not made again.
+  const overruled = await pastOverrulings(scope, rules.map((r) => r.id));
+
   const refs = new Map<string, RefTarget>();
   const sent: CheckRule[] = [];
   facts.forEach((fact, index) => {
@@ -1177,6 +1222,7 @@ export async function runCheck(
       kind: rule.ruleType,
       allowed: rule.allowed ?? [],
       prohibited: rule.prohibited ?? [],
+      overruled: overruled.get(rule.id),
     });
   });
 
@@ -1558,7 +1604,7 @@ export async function listChecks(
 
 export type Correction =
   | { decision: 'accept' }
-  | { decision: 'dispute'; reason: 'exception' | 'wrong_rule'; correction?: string | null };
+  | { decision: 'dispute'; reason: 'misread' | 'exception' | 'wrong_rule'; correction?: string | null };
 
 /** What a correction changed in what CIP believes, if anything. */
 export type Learned = 'fact_rejected' | 'rule_retired' | 'rule_kept' | null;
@@ -1600,8 +1646,8 @@ export async function correctFlag(
          where id = ${flagId} and company_id = ${scope.companyId}
       `;
     } else {
-      if (correction.reason !== 'exception' && correction.reason !== 'wrong_rule') {
-        throw new CheckRejected('Say whether this creative is an exception, or the rule itself is wrong.');
+      if (correction.reason !== 'misread' && correction.reason !== 'exception' && correction.reason !== 'wrong_rule') {
+        throw new CheckRejected('Say whether CIP misread it, this creative is an exception, or the rule itself is wrong.');
       }
       const note = correction.correction?.trim().slice(0, 600) || null;
       await tx`

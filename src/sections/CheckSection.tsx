@@ -449,7 +449,7 @@ function Result({ check, onChange }: { check: CreativeCheck; onChange: (c: Creat
 function FlagRow({ flag, onChange }: { flag: CheckFlag; onChange: (c: CreativeCheck) => void }) {
   const { note } = useToast();
   const [disputing, setDisputing] = useState(false);
-  const [reason, setReason] = useState<'exception' | 'wrong_rule'>('exception');
+  const [reason, setReason] = useState<'misread' | 'exception' | 'wrong_rule'>('misread');
   const [text, setText] = useState('');
   const [saving, setSaving] = useState(false);
 
@@ -515,7 +515,7 @@ function FlagRow({ flag, onChange }: { flag: CheckFlag; onChange: (c: CreativeCh
         {flag.status === 'disputed' && (
           <div className="correctdone">
             <Icon name="check" size={12} strokeWidth={2.6} /> Feedback sent — the brain will factor this in
-            {flag.disputeReason === 'wrong_rule' ? ' (rule is wrong)' : ' (exception)'}
+            {flag.disputeReason === 'wrong_rule' ? ' (rule is wrong)' : flag.disputeReason === 'misread' ? ' (CIP misread it)' : ' (exception)'}
           </div>
         )}
         {flag.correction && <p className="small check-correction">&ldquo;{flag.correction}&rdquo;</p>}
@@ -541,6 +541,21 @@ function FlagRow({ flag, onChange }: { flag: CheckFlag; onChange: (c: CreativeCh
           >
             <fieldset>
               <legend className="small strong">What is wrong with this flag?</legend>
+              <label className="check-choice" htmlFor={`${idBase}-misread`}>
+                <input
+                  id={`${idBase}-misread`}
+                  type="radio"
+                  name={`${idBase}-reason`}
+                  checked={reason === 'misread'}
+                  onChange={() => setReason('misread')}
+                />
+                <span>
+                  <span className="small strong">CIP misread the creative</span>
+                  <span className="tiny muted">
+                    The rule is right and this creative follows it. CIP will remember, and not read it this way again.
+                  </span>
+                </span>
+              </label>
               <label className="check-choice" htmlFor={`${idBase}-exception`}>
                 <input
                   id={`${idBase}-exception`}

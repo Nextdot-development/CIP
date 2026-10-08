@@ -1121,6 +1121,12 @@ export class OpenAIBrainProvider implements BrainProvider {
           'element is in the cell its centre point falls in. "Centred" means the centre cell; ' +
           '"top-right" means the top-right cell. Do not report a placement as wrong when the ' +
           'element is in the cell the rule names.\n\n' +
+          // Corrections the team has made: the checker's memory of being wrong.
+          'Some rules say where reviewers overruled them before. Those are situations a ' +
+          'person has already decided are not a breach. Do not make the same reading again: ' +
+          'where this creative is the same situation, it is not a finding. It is not an ' +
+          'exemption - a creative that really breaks the rule in another way is still ' +
+          'reported.\n\n' +
           'Severity: critical is a required compliance element that is missing, or a ' +
           'forbidden one that is present. warning is a clear departure from how the brand ' +
           'consistently does something. note is minor. A rule marked "observed" is what the ' +
@@ -1986,5 +1992,6 @@ function describeRule(rule: CheckRule): string {
   let line = `${rule.ref} [${rule.dimension} - ${kind}] ${rule.statement}`;
   if (rule.allowed && rule.allowed.length > 0) line += ` (allows: ${rule.allowed.join(', ')})`;
   if (rule.prohibited && rule.prohibited.length > 0) line += ` (forbids: ${rule.prohibited.join(', ')})`;
+  if (rule.overruled && rule.overruled.length > 0) line += ` (reviewers overruled it before: ${rule.overruled.join('; ')})`;
   return line;
 }

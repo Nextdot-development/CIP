@@ -1930,6 +1930,30 @@ describe('THE CHECKER: a creative judged against the brand, and nothing else', (
       const rows = await adminSql<{ active: boolean }[]>`select active from compliance_rules where id = ${ruleId}`;
       assert.equal(rows[0]!.active, false);
     });
+
+    it('remembers a misreading and shows it to the checker beside the rule next time', async () => {
+      const ruleId = await rule('required', 'The brand logo should sit in the top-right corner.', 'manual');
+      fake.checkFindings = [
+        { ref: 'R1', dimension: 'compliance', severity: 'warning', message: 'Logo not top-right.' },
+      ];
+      const check = await checkedImage();
+
+      const { correctFlag } = await import('../src/server/brain/checker');
+      const result = await correctFlag(mm, check.flags[0]!.id, {
+        decision: 'dispute', reason: 'misread', correction: 'The logo is in the top-right cell.',
+      });
+
+      // Nothing is retired: the rule is right, the reading was wrong.
+      assert.equal(result.learned, null);
+      const rows = await adminSql<{ active: boolean }[]>`select active from compliance_rules where id = ${ruleId}`;
+      assert.equal(rows[0]!.active, true);
+
+      await checkedImage('banner-v2.png');
+      const sent = fake.lastCheckInput!.rules.find((r) => r.statement.includes('top-right corner'))!;
+      assert.equal(sent.overruled?.length, 1);
+      assert.match(sent.overruled![0]!, /CIP misread it/);
+      assert.match(sent.overruled![0]!, /top-right cell/);
+    });
   });
 
   it('checks a creative CIP generated with the same checker as a human one', async () => {
@@ -2973,7 +2997,7 @@ describe('generation integration', () => {
     if (result.status !== 'generated') return;
     assert.equal(result.qc!.verdict, 'passed');
     assert.equal(result.qc!.attempts, 2);
-    assert.deepEqual(progress, ['checking 1', 'fixing 2', 'checking 2']);
+    assert.deepEqual(progress, ['made 1', 'checking 1', 'fixing 2', 'made 2', 'checking 2']);
     assert.equal(result.qc!.earlier.length, 1);
     assert.deepEqual(result.qc!.earlier[0]!.broke, ['Carry the statutory warning.']);
 

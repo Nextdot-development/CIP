@@ -128,6 +128,9 @@ export type GenerationQc = {
 
 /** Progress through the check, for a caller that streams it. */
 export type QcProgress =
+  // A version exists. Shown at once, while it is checked: the wait for the
+  // verdict, and for any version made again, is not a wait to see anything.
+  | { stage: 'made'; attempt: number; generationId: string }
   | { stage: 'checking'; attempt: number }
   | { stage: 'fixing'; attempt: number; broke: string[] };
 
@@ -372,6 +375,7 @@ async function checkAndFix(
   let stopped: GenerationQc['stopped'];
 
   for (let attempt = 1; ; attempt += 1) {
+    input.onQc?.({ stage: 'made', attempt, generationId: current.id });
     input.onQc?.({ stage: 'checking', attempt });
     const check = await runCheck(scope, { generationId: current.id }).catch(() => null);
     const broke = check && check.status === 'ready' ? rulesBroken(check) : [];

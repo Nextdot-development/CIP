@@ -76,6 +76,8 @@ type PageReport = { page: number; report: Report };
 
 /** The most files checked in one go. Each takes a minute or more. */
 const MAX_BATCH = 20;
+/** Creatives of a batch checked at once. */
+const BATCH_LANES = 3;
 
 /** One creative in a batch, and where it has got to. */
 type BatchItem = {
@@ -412,12 +414,14 @@ export function QcSection({
   };
 
   /**
-   * Several creatives, one after another.
+   * Several creatives, a few at a time.
    *
-   * One at a time, each in its own requests, so no single request has to last
-   * as long as a whole campaign - a request that runs past the platform's
-   * limit is killed with nothing anybody can read. The table fills in as each
-   * one finishes; a file that fails is marked and the rest carry on.
+   * Each in its own requests, so no single request has to last as long as a
+   * whole campaign - a request that runs past the platform's limit is killed
+   * with nothing anybody can read. Three run side by side: one at a time, a
+   * batch of twenty films was a quarter of an hour of mostly waiting on the
+   * model. The table fills in as each one finishes; a file that fails is
+   * marked and the rest carry on.
    */
   const checkMany = async (items: ({ file: File } | { held: Held })[]) => {
     const list = items.slice(0, MAX_BATCH);
@@ -435,14 +439,14 @@ export function QcSection({
     const update = (index: number, change: Partial<BatchItem>) =>
       setBatch((all) => all.map((b, i) => (i === index ? { ...b, ...change } : b)));
 
-    for (const [index, item] of list.entries()) {
+    const one = async (index: number, item: (typeof list)[number]) => {
       let fileId: string;
       if ('file' in item) {
         update(index, { status: 'uploading' });
         const got = await upload(item.file);
         if ('error' in got) {
           update(index, { status: 'failed', message: got.error });
-          continue;
+          return;
         }
         fileId = got.id;
       } else {
@@ -455,7 +459,20 @@ export function QcSection({
         (page, of) => update(index, { page, of }),
       );
       update(index, failed ? { status: 'failed', message: failed } : { status: 'done' });
-    }
+    };
+
+    // Three lanes, each taking the next creative in order as it frees up.
+    let next = 0;
+    const lane = async () => {
+      while (next < list.length) {
+        const index = next;
+        next += 1;
+        await one(index, list[index]!).catch((error: unknown) =>
+          update(index, { status: 'failed', message: error instanceof Error ? error.message : 'It could not be checked.' }),
+        );
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(BATCH_LANES, list.length) }, lane));
   };
 
   const checkHeld = async (file: Held) => {

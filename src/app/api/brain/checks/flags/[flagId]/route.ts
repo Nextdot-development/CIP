@@ -14,7 +14,7 @@ export const dynamic = 'force-dynamic';
  * wrong. Only the second changes what CIP believes.
  *
  *   { "decision": "accept" }
- *   { "decision": "dispute", "reason": "exception" | "wrong_rule", "correction": "..." }
+ *   { "decision": "dispute", "reason": "misread" | "exception" | "wrong_rule", "correction": "..." }
  */
 export async function POST(request: Request, { params }: Params) {
   return withBrainScope(async (scope) => {
@@ -33,7 +33,7 @@ export async function POST(request: Request, { params }: Params) {
     let correction: Correction;
     if (body.decision === 'accept') {
       correction = { decision: 'accept' };
-    } else if (body.decision === 'dispute' && (body.reason === 'exception' || body.reason === 'wrong_rule')) {
+    } else if (body.decision === 'dispute' && (body.reason === 'misread' || body.reason === 'exception' || body.reason === 'wrong_rule')) {
       correction = {
         decision: 'dispute',
         reason: body.reason,

@@ -131,6 +131,7 @@ type PlanSummary = {
 type StreamEvent =
   | { stage: 'planning' }
   | { stage: 'planned'; plan: PlanSummary; briefId: string }
+  | { stage: 'made'; attempt: number; generationId: string }
   | { stage: 'checking'; attempt: number }
   | { stage: 'fixing'; attempt: number; broke: string[] }
   | { stage: 'done'; result: BrainResult }
@@ -173,6 +174,8 @@ export function AskSection({
   const [provider, setProvider] = useState<ImageProviderChoice>(providers.defaultImageProvider);
   const [phase, setPhase] = useState<Phase>('idle');
   const [qcStep, setQcStep] = useState<QcStep | null>(null);
+  // The latest version made, shown while it is checked.
+  const [madeId, setMadeId] = useState<string | null>(null);
   const [result, setResult] = useState<BrainResult | null>(null);
   // Held separately from `result` so the brief can be shown while the picture
   // is still being made.
@@ -224,6 +227,7 @@ export function AskSection({
     setPlanned(null);
     setFailure(null);
     setQcStep(null);
+    setMadeId(null);
     setPhase('planning');
     setStartedAt(Date.now());
 
@@ -274,6 +278,8 @@ export function AskSection({
             // explains the other half.
             setPlanned(event.plan);
             setPhase('making');
+          } else if (event.stage === 'made') {
+            setMadeId(event.generationId);
           } else if (event.stage === 'checking') {
             setQcStep({ attempt: event.attempt, fixing: null });
             setPhase('checking');
@@ -466,7 +472,7 @@ export function AskSection({
         </div>
       </Card>
 
-      {busy && <Working phase={phase} mediaType={mediaType} startedAt={startedAt} qcStep={qcStep} />}
+      {busy && <Working phase={phase} mediaType={mediaType} startedAt={startedAt} qcStep={qcStep} draft={madeId} />}
 
       {/* What CIP decided, before what it produced. Shown either way, because
           the reasoning is what makes a bad result correctable — and shown as
@@ -592,12 +598,14 @@ export function AskSection({
  * picture is about a minute, a video several, and neither provider will say.
  */
 function Working({
-  phase, mediaType, startedAt, qcStep,
+  phase, mediaType, startedAt, qcStep, draft,
 }: {
   phase: Phase;
   mediaType: MediaType;
   startedAt: number;
   qcStep: QcStep | null;
+  /** The version made so far, if any. */
+  draft: string | null;
 }) {
   const [elapsed, setElapsed] = useState(0);
 
@@ -655,9 +663,21 @@ function Working({
         </p>
       )}
 
-      {/* A placeholder in the shape of what is coming, so the page does not
+      {/* The version made so far, while it is checked or made again - or a
+          placeholder in the shape of what is coming, so the page does not
           jump when it arrives. */}
-      <div className="work-skeleton" aria-hidden />
+      {draft ? (
+        <figure className="work-draft">
+          <img src={assetUrl(draft)} alt="The version made so far" />
+          <figcaption className="tiny muted">
+            {qcStep?.fixing
+              ? 'The last version. A fixed one is being made; the final one replaces it.'
+              : 'Made. CIP is checking it against the rules before handing it over.'}
+          </figcaption>
+        </figure>
+      ) : (
+        <div className="work-skeleton" aria-hidden />
+      )}
 
       <p className="tiny muted">
         {mediaType === 'video'

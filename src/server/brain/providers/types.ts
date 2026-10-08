@@ -802,6 +802,11 @@ export type CheckRule = {
   allowed?: string[];
   /** Things the rule explicitly forbids. */
   prohibited?: string[];
+  /**
+   * When reviewers overruled this rule before, and what they said. Not an
+   * exemption: a lesson about what does not breach it.
+   */
+  overruled?: string[];
 };
 
 export type CheckInput = {
