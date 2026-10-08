@@ -551,20 +551,24 @@ async function packReferences(
     `,
   );
 
+  // Fetched side by side: one after another, three downloads were seconds of
+  // every check spent doing nothing.
   const store = driveStorage();
-  const references: { bytes: Buffer; mimeType: string; name: string }[] = [];
-  for (const row of rows) {
-    if (!row.storage_path) continue;
-    if (!CHECKABLE_IMAGES.has(row.mime_type.toLowerCase())) continue;
-    try {
-      const raw = await store.get(row.storage_path);
-      const fitted = await fitForVision(raw, row.mime_type);
-      references.push({ bytes: fitted.bytes, mimeType: fitted.mimeType, name: row.name });
-    } catch {
-      // One unreadable reference is not worth failing a check over.
-    }
-  }
-  return references;
+  const fetched = await Promise.all(
+    rows
+      .filter((row) => row.storage_path && CHECKABLE_IMAGES.has(row.mime_type.toLowerCase()))
+      .map(async (row) => {
+        try {
+          const raw = await store.get(row.storage_path!);
+          const fitted = await fitForVision(raw, row.mime_type);
+          return { bytes: fitted.bytes, mimeType: fitted.mimeType, name: row.name };
+        } catch {
+          // One unreadable reference is not worth failing a check over.
+          return null;
+        }
+      }),
+  );
+  return fetched.filter((r): r is { bytes: Buffer; mimeType: string; name: string } => r !== null);
 }
 
 async function resolveSubject(
@@ -1051,12 +1055,34 @@ export async function runCheck(
    * none: it pulls in another product's rules and fails a creative against
    * standards never written for it.
    */
+  // A picture CIP made was made for the brand its brief names. That is a
+  // decision, not a label somebody put on a file, so it is not second-guessed
+  // - and every attempt of a fix loop is spared a look of several seconds.
+  if (!brand && subject.generationId && subject.brand) brand = subject.brand;
+
+  // Wanted by most of what follows, and the same answer every time.
+  const roster = await companyBrands(scope);
+  const houseBrands = roster.map((b) => b.name);
+  const fittedSubject = fitForVision(subject.bytes, subject.mimeType);
+
+  // The words on a film's frames do not depend on whose film it is, so they
+  // are read while the brand is still being worked out.
+  const frames = subject.frames ?? [];
+  const onScreenRead = subject.sequence && frames.length > 0 ? readOnScreen(provider, subject.subject, frames) : null;
+  // When each line was on screen. Started now rather than once the rules say
+  // they need it: nearly every rule set names a warning or a legal line, and
+  // waiting for the rules put nine seconds in front of every film's check.
+  // Used only if a rule turns out to be about timing.
+  const timelineRead = subject.sequence && subject.film ? readTimeline(provider, subject.subject, subject.film) : null;
+  // Never rejected while they wait: a failure is the null each already returns.
+  void onScreenRead?.catch(() => null);
+  void timelineRead?.catch(() => null);
+
   let identified: { brand: string | null; product: string | null; confidence: number; evidence: string | null } | null = null;
   if (!brand) {
-    const roster = await companyBrands(scope);
-    const names = roster.map((b) => b.name);
+    const names = houseBrands;
     if (names.length > 0) {
-      const fitted = await fitForVision(subject.bytes, subject.mimeType);
+      const fitted = await fittedSubject;
       const said = await provider
         .identifyCreative({
           bytes: fitted.bytes,
@@ -1091,14 +1117,24 @@ export async function runCheck(
 
   // What the brand has consistently done. Patterns only - a single observation
   // is not something a creative can be faulted for departing from.
-  const facts = (
-    await readBrandDna(scope, {
+  // The brand is known: everything that depends on it is fetched at once.
+  // The pack shots are awaited only when the check is sent, so they arrive
+  // while the film's frames are being read.
+  const references = packReferences(scope, brand);
+  void references.catch(() => []);
+  const [dna, rules] = await Promise.all([
+    readBrandDna(scope, {
       brand,
       market,
       limit: MAX_FACTS,
       minEvidence: BRAIN_LIMITS.factMinEvidence,
-    })
-  )
+    }),
+    // What the category requires, read exactly as the planner reads it.
+    // Only the rules for what this is: subtitles and the end screen are a
+    // film's, and a picture judged against them can only fail by misreading.
+    rulesForBrief(scope, { brand, market, format: subject.sequence ? 'video' : 'image' }),
+  ]);
+  const facts = dna
     .filter((f) => f.section !== 'video')
     // Radico's v1.1: a pattern learned from pictures - the logo top-right -
     // is not an expectation of a film, and one learned from films is not of
@@ -1108,11 +1144,6 @@ export async function runCheck(
       const forAsset = assetScopeOf(`${f.attribute}: ${f.value}`);
       return forAsset === 'all' || forAsset === (subject.sequence ? 'video' : 'image');
     });
-
-  // What the category requires, read exactly as the planner reads it.
-  // Only the rules for what this is: subtitles and the end screen are a
-  // film's, and a picture judged against them can only fail by misreading.
-  const rules = await rulesForBrief(scope, { brand, market, format: subject.sequence ? 'video' : 'image' });
 
   const refs = new Map<string, RefTarget>();
   const sent: CheckRule[] = [];
@@ -1169,7 +1200,6 @@ export async function runCheck(
   );
   const checkId = created[0]!.id;
 
-  const frames = subject.frames ?? [];
   let video = subject.sequence ?? null;
 
   let analysis;
@@ -1178,10 +1208,8 @@ export async function runCheck(
   try {
     if (video && frames.length > 0) {
       const [onScreen, timeline] = await Promise.all([
-        readOnScreen(provider, subject.subject, frames),
-        subject.film && sent.some((r) => TIMED_TEXT.test(r.statement))
-          ? readTimeline(provider, subject.subject, subject.film)
-          : Promise.resolve(null),
+        onScreenRead ?? readOnScreen(provider, subject.subject, frames),
+        timelineRead && sent.some((r) => TIMED_TEXT.test(r.statement)) ? timelineRead : Promise.resolve(null),
       ]);
       video = { ...video, onScreen, timeline };
       // The end card again, at full size: on the sheet it is one thumbnail
@@ -1212,12 +1240,14 @@ export async function runCheck(
             brand,
             market,
             rules: forbidding,
-            houseBrands: (await companyBrands(scope)).map((b) => b.name),
+            houseBrands,
             frames,
           })
         : null;
+    // Awaited later, after the sheet's check; a failure meanwhile is handled there.
+    void closeFound?.catch(() => null);
 
-    const fitted = await fitForVision(subject.bytes, subject.mimeType);
+    const fitted = await fittedSubject;
     analysis = await provider.checkCreative({
       bytes: fitted.bytes,
       mimeType: fitted.mimeType,
@@ -1225,8 +1255,8 @@ export async function runCheck(
       brand,
       market,
       rules: sent,
-      houseBrands: (await companyBrands(scope)).map((b) => b.name),
-      references: await packReferences(scope, brand),
+      houseBrands,
+      references: await references,
       fromDocument: subject.fromDocument,
       sequence: video,
       closeUps,

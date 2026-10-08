@@ -220,7 +220,9 @@ export async function planGeneration(
   }
 
   // Everything the Brain gets to reason with, all of it this company's own.
-  const [shots, facts, assets, posts, subjects] = await Promise.all([
+  // One wait, not five: every one of these depends only on the brand, the
+  // market and the request, which are all settled by now.
+  const [shots, facts, assets, posts, subjects, examples, craft, rules, lessons] = await Promise.all([
     // Photographs of the product itself. Retrieved separately from anything
     // that merely resembles the request, and put in front of it: asked for a
     // Diwali banner, similarity returns Diwali posters, and a generator shown
@@ -245,26 +247,22 @@ export async function planGeneration(
     // the request are the part worth putting in front of the model.
     similarPosts(scope, requestText, BRAIN_LIMITS.maxReferences, brand),
     knownSubjects(scope),
+    ratedExamples(scope, { mediaType: input.mediaType, brand }),
+    // What the team's reference books say about making this. Optional: a
+    // company with no books, or an embedder that is down, still gets a brief.
+    craftPassages(scope, requestText).catch(() => []),
+    // The rules this creative will be judged against, read before it is made.
+    rulesForBrief(scope, { brand, market, format: input.mediaType === 'video' ? 'video' : 'image' }),
+    // Lessons are fetched for the context the caller already knows. The brief
+    // may identify a narrower one; that is applied on the second pass below.
+    applicableLessons(scope, {
+      brand,
+      taskType: null,
+      platform: input.platform ?? null,
+      campaign: input.campaign ?? null,
+      product: input.product ?? null,
+    }),
   ]);
-
-  const examples = await ratedExamples(scope, { mediaType: input.mediaType, brand });
-
-  // What the team's reference books say about making this. Optional: a
-  // company with no books, or an embedder that is down, still gets a brief.
-  const craft = await craftPassages(scope, requestText).catch(() => []);
-
-  // The rules this creative will be judged against, read before it is made.
-  const rules = await rulesForBrief(scope, { brand, market, format: input.mediaType === 'video' ? 'video' : 'image' });
-
-  // Lessons are fetched for the context the caller already knows. The brief may
-  // identify a narrower one; that is applied on the second pass below.
-  const lessons = await applicableLessons(scope, {
-    brand,
-    taskType: null,
-    platform: input.platform ?? null,
-    campaign: input.campaign ?? null,
-    product: input.product ?? null,
-  });
 
   const brief = await provider.buildGenerationBrief({
     requestText,

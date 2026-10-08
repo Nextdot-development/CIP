@@ -24,8 +24,38 @@ export function embedder(): Embedder {
   const model = process.env.CIP_EMBEDDING_MODEL ?? 'text-embedding-3-small';
   const forceFake = process.env.CIP_FORCE_FAKE_EMBEDDER === 'true';
 
-  cached = key && !forceFake ? new OpenAIEmbedder(key, model) : new FakeEmbedder();
+  cached = remembering(key && !forceFake ? new OpenAIEmbedder(key, model) : new FakeEmbedder());
   return cached;
+}
+
+/** How long a query's vector is kept, and how many are kept. */
+const REMEMBER_MS = 120_000;
+const REMEMBER_MAX = 200;
+
+/**
+ * The embedder, remembering the queries it was just asked.
+ *
+ * Planning one picture searches products, assets, posts, books and markets,
+ * each with the same request - and each embedded it again, a round trip to
+ * OpenAI apiece. One text, one vector: only single-text calls are kept, so
+ * the queue's batches pass straight through, and a failure is not kept.
+ */
+function remembering(inner: Embedder): Embedder {
+  const recent = new Map<string, { at: number; vectors: Promise<number[][]> }>();
+  const wrapper: Embedder = Object.create(inner);
+  wrapper.embed = (texts: string[]) => {
+    if (texts.length !== 1) return inner.embed(texts);
+    const key = texts[0]!;
+    const now = Date.now();
+    const kept = recent.get(key);
+    if (kept && now - kept.at < REMEMBER_MS) return kept.vectors;
+    const vectors = inner.embed(texts);
+    recent.set(key, { at: now, vectors });
+    vectors.catch(() => recent.delete(key));
+    if (recent.size > REMEMBER_MAX) recent.delete(recent.keys().next().value!);
+    return vectors;
+  };
+  return wrapper;
 }
 
 /** Tests swap in their own. */
