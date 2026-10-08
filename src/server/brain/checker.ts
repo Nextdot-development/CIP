@@ -343,10 +343,13 @@ export function assetScopeOf(text: string): 'image' | 'video' | 'all' {
   if (/\[(video)\]|\b(for|in|on) (a |the )?(video|videos|film|films|reels?)\b/.test(t)) return 'video';
   if (/\[(image)\]|\b(for|in|on) (a |the )?(image|images|statics?|banners?|posts?|print|ooh)\b/.test(t)) return 'image';
   if (/\[(all)\]|\bfor (all|every) creatives?\b/.test(t)) return 'all';
-  if (/end card|final frame|last frame|opening|first \d+ ?s(ec(ond)?s?)?\b|first seconds|duration|throughout the (video|film)|\bscenes?\b|voice ?over|\bvo\b|audio|subtitles?|music|transitions?|pacing|\bcuts?\b/.test(t)) {
+  // "Music props" are things in a picture, and an advert "placed" on
+  // television is a media plan, not a layout: neither says which kind of
+  // creative, so neither word decides it on its own.
+  if (/end card|end screen|final frame|last frame|(every|any|each) (shot|frame)|between frames|\bshots?\b|opening|first \d+ ?s(ec(ond)?s?)?\b|first seconds|duration|on screen (long enough|for)|flashed|throughout the (video|film)|\bscenes?\b|voice ?over|\bvo\b|audio|subtitles?|soundtrack|background music|music track|jingle|\bsongs?\b|lyrics|colou?r grad(e|ing)|transitions?|pacing|\bcuts?\b/.test(t)) {
     return 'video';
   }
-  if (/top[- ]right|top[- ]left|bottom[- ]right|bottom[- ]left|\bcorner\b|placement|placed|positioned|\bposition\b|upper third|lower third|centred|centered|left-aligned|right-aligned/.test(t)) {
+  if (/top[- ]right|top[- ]left|bottom[- ]right|bottom[- ]left|\bcorner\b|placement|positioned|\bposition\b|upper third|lower third|centred|centered|left-aligned|right-aligned/.test(t)) {
     return 'image';
   }
   return 'all';

@@ -1674,6 +1674,14 @@ describe('THE CHECKER: a creative judged against the brand, and nothing else', (
       assert.equal(assetScopeOf('palette: deep purple and gold'), 'all');
       assert.equal(assetScopeOf('[VIDEO] Logo sits top-right'), 'video', 'an explicit tag wins over the words');
       assert.equal(assetScopeOf('For images, the headline is centred'), 'image');
+      // Read off Radico's own rules: each of these was sorted wrongly once.
+      assert.equal(assetScopeOf('The pack must stay the same approved pack in every shot'), 'video');
+      assert.equal(assetScopeOf('The end screen must show the approved logo and the approved pack'), 'video');
+      assert.equal(assetScopeOf('Disclaimers must be on screen long enough to be read, not flashed'), 'video');
+      assert.equal(assetScopeOf('Song lyrics must not say what the copy may not'), 'video');
+      assert.equal(assetScopeOf('Colour grading must keep the pack its true colour'), 'video');
+      assert.equal(assetScopeOf('Whisky glasses, ice, cigars and music props are approved'), 'all');
+      assert.equal(assetScopeOf('Not placed where children are the audience, including television before 9pm'), 'all');
     });
 
     it("keeps a picture's placement habits out of a film's check", async () => {
