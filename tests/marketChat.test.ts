@@ -402,6 +402,35 @@ describe('MARKET INTELLIGENCE: only what a report actually says', () => {
       assert.equal(await filings.checkFeedNow(nh, feed!.id), null);
       await assert.rejects(() => filings.addFeed(mm, { symbol: 'not a symbol!', name: 'x' }), /NSE symbol/);
     });
+
+    it('writes the week up from what was read off the filings, and only once they are read', async () => {
+      const filings = await import('../src/server/brain/filings');
+      filings.__setFilingsFetch(fakeNse);
+      try {
+        await adminSql`delete from market_digests`;
+        await filings.addFeed(mm, { symbol: 'RADICO', name: 'Radico Khaitan' });
+        const [feed] = await filings.listFeeds(mm);
+        await filings.checkFeedNow(mm, feed!.id);
+
+        // Fetched, not yet read: a note now would only be titles.
+        assert.equal(await filings.writeDigest(mm), null);
+
+        await adminSql`
+          update market_sources m set status = 'ready', read_at = now(), summary = 'Volumes up 12% in Q1.'
+            from drive_files f where f.id = m.file_id and f.source_type = 'exchange_filing' and f.company_id = ${mm.companyId}`;
+        const digest = (await filings.writeDigest(mm))!;
+        assert.equal(digest.filings, 2);
+        assert.equal(digest.points.length, 2);
+        assert.equal(digest.points[0]!.company, 'Radico Khaitan');
+        assert.ok(digest.points.every((p) => p.fileId), 'a point does not link to its filing');
+
+        // Nothing read since: no second note, and the other company sees none.
+        assert.equal(await filings.writeDigest(mm), null);
+        assert.equal(await filings.latestDigest(nh), null);
+      } finally {
+        filings.__setFilingsFetch(null);
+      }
+    });
   });
 
   describe('a book is recognised as one, and a person always has the last word', () => {

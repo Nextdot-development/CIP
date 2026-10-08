@@ -4,6 +4,7 @@ import type { CompanyScope } from '../db';
 import { adminSql } from '../db-admin';
 import { uploadFile } from '../drive/service';
 import { registerSource } from './market';
+import { brain } from './providers';
 
 /**
  * A listed company's filings on the stock exchange, fetched as they appear.
@@ -337,4 +338,132 @@ export async function checkFeedNow(scope: CompanyScope, feedId: string): Promise
   if (!rows[0]) return null;
   await checkFeed(scope, rows[0], { maxDownloads: 3 });
   return listFeeds(scope);
+}
+
+// --- the weekly note ----------------------------------------------------------
+
+/** How often a note is written, and the stretch of filings it covers. */
+const DIGEST_EVERY_DAYS = 7;
+/** Filings put in front of the model for one note, at most - the newest. */
+const DIGEST_MAX_FILINGS = 30;
+
+export type MarketDigestDTO = {
+  id: string;
+  periodStart: string;
+  periodEnd: string;
+  headline: string;
+  points: { company: string; point: string; fileId: string | null }[];
+  filings: number;
+  createdAt: string;
+};
+
+/**
+ * Writes the note on the filings fetched since the last one, from what CIP
+ * read off each. Null when none of them has been read yet - a note about
+ * PDFs nobody has opened would only be their titles.
+ */
+export async function writeDigest(scope: CompanyScope): Promise<MarketDigestDTO | null> {
+  const provider = brain();
+  if (!provider.configured) return null;
+
+  const gathered = await withCompanyScope(scope, async (tx) => {
+    const [company] = await tx<{ name: string }[]>`select name from companies where id = ${scope.companyId}`;
+    const [last] = await tx<{ period_end: Date }[]>`
+      select period_end from market_digests where company_id = ${scope.companyId}
+       order by period_end desc limit 1
+    `;
+    const since = last?.period_end ?? new Date(Date.now() - DIGEST_EVERY_DAYS * 86_400_000);
+    const filings = await tx<{ file_id: string; company: string; published_at: Date | null; title: string; summary: string | null; signals: string[] | null }[]>`
+      select i.file_id, f.display_name as company, i.published_at, i.title, s.summary,
+             (select array_agg(g.statement order by g.created_at)
+                from market_signals g
+               where g.company_id = i.company_id and g.file_id = i.file_id and g.status <> 'rejected') as signals
+        from market_feed_items i
+        join market_feeds f on f.id = i.feed_id and f.company_id = i.company_id
+        join market_sources s on s.file_id = i.file_id and s.company_id = i.company_id
+       where i.company_id = ${scope.companyId}
+         and i.status = 'fetched'
+         and s.status = 'ready'
+         and s.read_at > ${since}
+       order by i.published_at desc nulls last
+       limit ${DIGEST_MAX_FILINGS}
+    `;
+    return { companyName: company?.name ?? 'the company', since, filings };
+  });
+  if (gathered.filings.length === 0) return null;
+
+  const refs = gathered.filings.map((f, i) => ({ ...f, ref: `F${i + 1}` }));
+  const digest = await provider.digestFilings({
+    companyName: gathered.companyName,
+    filings: refs.map((f) => ({
+      ref: f.ref,
+      company: f.company,
+      date: f.published_at?.toISOString().slice(0, 10) ?? null,
+      title: f.title.slice(0, 300),
+      summary: (f.summary ?? '').slice(0, 1_200),
+      signals: (f.signals ?? []).slice(0, 8).map((s) => s.slice(0, 240)),
+    })),
+  });
+  if (!digest.headline && digest.points.length === 0) return null;
+
+  const byRef = new Map(refs.map((f) => [f.ref, f.file_id]));
+  const points = digest.points.map((p) => ({ company: p.company, point: p.point, fileId: byRef.get(p.ref) ?? null }));
+  const now = new Date();
+  await withCompanyScope(scope, (tx) => tx`
+    insert into market_digests (company_id, period_start, period_end, headline, points, filings)
+    values (${scope.companyId}, ${gathered.since}, ${now}, ${digest.headline}, ${tx.json(points)}, ${refs.length})
+  `);
+  return latestDigest(scope);
+}
+
+export async function latestDigest(scope: CompanyScope): Promise<MarketDigestDTO | null> {
+  const [row] = await withCompanyScope(scope, (tx) => tx<{
+    id: string; period_start: Date; period_end: Date; headline: string;
+    points: MarketDigestDTO['points']; filings: number; created_at: Date;
+  }[]>`
+    select id, period_start, period_end, headline, points, filings, created_at
+      from market_digests where company_id = ${scope.companyId}
+     order by created_at desc limit 1
+  `);
+  if (!row) return null;
+  return {
+    id: row.id,
+    periodStart: row.period_start.toISOString(),
+    periodEnd: row.period_end.toISOString(),
+    headline: row.headline,
+    points: Array.isArray(row.points) ? row.points : [],
+    filings: row.filings,
+    createdAt: row.created_at.toISOString(),
+  };
+}
+
+/** Writes the week's note for every company watching filings whose last note is a week old. */
+export async function digestsEverywhere(options: { outOfTime: () => boolean }): Promise<number> {
+  const sql = adminSql();
+  let due: { company_id: string; user_id: string | null }[];
+  try {
+    due = await sql`
+      select f.company_id,
+             (select m.user_id from memberships m where m.company_id = f.company_id
+               order by (m.role = 'owner') desc limit 1) as user_id
+        from market_feeds f
+       where f.enabled
+       group by f.company_id
+      having not exists (
+        select 1 from market_digests d
+         where d.company_id = f.company_id
+           and d.created_at > now() - make_interval(days => ${DIGEST_EVERY_DAYS})
+      )
+       limit 5
+    `;
+  } finally {
+    await sql.end();
+  }
+  let written = 0;
+  for (const company of due) {
+    if (options.outOfTime() || !company.user_id) break;
+    const scope: CompanyScope = { companyId: company.company_id, userId: company.user_id, role: 'owner' };
+    if (await writeDigest(scope).catch(() => null)) written += 1;
+  }
+  return written;
 }

@@ -24,6 +24,8 @@ import type {
   ReadFramesInput,
   ReviewAnalysis,
   ReviewInput,
+  DigestInput,
+  FilingsDigest,
   ReviewVerdict,
   FramesCheckAnalysis,
   FramesCheckInput,
@@ -62,7 +64,7 @@ export class FakeBrainProvider implements BrainProvider {
   /** Set by tests to exercise a failure path. */
   failWith: BrainFailed | null = null;
   /** Counts calls, so idempotency can be proved rather than assumed. */
-  calls = { image: 0, frames: 0, document: 0, pdfPage: 0, feedback: 0, brief: 0, check: 0, identify: 0, market: 0, chat: 0, ideas: 0, ocr: 0, frameText: 0, review: 0, closePass: 0 };
+  calls = { image: 0, frames: 0, document: 0, pdfPage: 0, feedback: 0, brief: 0, check: 0, identify: 0, market: 0, chat: 0, ideas: 0, ocr: 0, frameText: 0, review: 0, closePass: 0, digest: 0 };
 
   /**
    * What the next checks report. Null means a clean pass.
@@ -154,7 +156,7 @@ export class FakeBrainProvider implements BrainProvider {
     this.marketSignals = null;
     this.chatAnswer = null;
     this.lastChatInput = null;
-    this.calls = { image: 0, frames: 0, document: 0, pdfPage: 0, feedback: 0, brief: 0, check: 0, identify: 0, market: 0, chat: 0, ideas: 0, ocr: 0, frameText: 0, review: 0, closePass: 0 };
+    this.calls = { image: 0, frames: 0, document: 0, pdfPage: 0, feedback: 0, brief: 0, check: 0, identify: 0, market: 0, chat: 0, ideas: 0, ocr: 0, frameText: 0, review: 0, closePass: 0, digest: 0 };
   }
 
   private check(): void {
@@ -587,6 +589,16 @@ export class FakeBrainProvider implements BrainProvider {
         frame: this.reviewPlaces?.[i]?.frame ?? 0,
         box: this.reviewPlaces?.[i]?.box ?? [],
       })),
+      usage: { durationMs: 1 },
+    };
+  }
+
+  async digestFilings(input: DigestInput): Promise<FilingsDigest> {
+    this.calls.digest += 1;
+    this.check();
+    return {
+      headline: `${input.filings.length} filings this week.`,
+      points: input.filings.slice(0, 8).map((f) => ({ ref: f.ref, company: f.company, point: f.summary.slice(0, 120) })),
       usage: { durationMs: 1 },
     };
   }

@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { Pill } from '../components/ui/Bits';
 import { Icon } from '../components/ui/Icon';
 import { useToast } from '@/context/toast';
-import type { MarketFeedDTO } from '@/server/brain/filings';
+import type { MarketDigestDTO, MarketFeedDTO } from '@/server/brain/filings';
 
 /** "3 hours ago", roughly. */
 function ago(iso: string | null): string {
@@ -30,12 +30,17 @@ export function FilingsCard() {
   const [symbol, setSymbol] = useState('');
   const [name, setName] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
+  const [digest, setDigest] = useState<MarketDigestDTO | null>(null);
 
   useEffect(() => {
     let stopped = false;
     void fetch('/api/market/feeds', { cache: 'no-store' })
       .then((res) => (res.ok ? (res.json() as Promise<{ feeds: MarketFeedDTO[] }>) : null))
       .then((body) => { if (!stopped && body) setFeeds(body.feeds); })
+      .catch(() => {});
+    void fetch('/api/market/digest', { cache: 'no-store' })
+      .then((res) => (res.ok ? (res.json() as Promise<{ digest: MarketDigestDTO | null }>) : null))
+      .then((body) => { if (!stopped && body) setDigest(body.digest); })
       .catch(() => {});
     return () => { stopped = true; };
   }, []);
@@ -53,6 +58,18 @@ export function FilingsCard() {
     }
   };
 
+  const writeNow = async () => {
+    setBusy('digest');
+    try {
+      const res = await fetch('/api/market/digest', { method: 'POST' }).catch(() => null);
+      const body = (await res?.json().catch(() => null)) as { digest?: MarketDigestDTO; message?: string } | null;
+      if (!res?.ok || !body?.digest) { note(body?.message ?? 'The note could not be written. Try again in a moment.'); return; }
+      setDigest(body.digest);
+    } finally {
+      setBusy(null);
+    }
+  };
+
   if (!feeds) return null;
 
   return (
@@ -65,6 +82,41 @@ export function FilingsCard() {
         Results, earnings call transcripts, investor presentations and press releases are fetched within a few
         hours of being filed, and read like any report. Routine notices are left out.
       </p>
+
+      {feeds.length > 0 && (
+        <div className="filing-digest">
+          <div className="row" style={{ justifyContent: 'space-between', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+            <p className="small strong">
+              {digest ? `The week to ${new Date(digest.periodEnd).toLocaleDateString()}` : 'This week'}
+            </p>
+            <button type="button" className="btn btn-sm btn-ghost" disabled={busy !== null} onClick={() => void writeNow()}>
+              {busy === 'digest' ? 'Writing…' : 'Write it now'}
+            </button>
+          </div>
+          {digest ? (
+            <>
+              <p className="small">{digest.headline}</p>
+              <ul className="filing-list">
+                {digest.points.map((p, i) => (
+                  <li key={i}>
+                    <strong>{p.company}</strong>{' — '}{p.point}{' '}
+                    {p.fileId && (
+                      <a className="tiny" href={`/api/drive/files/${p.fileId}/content?disposition=inline`} target="_blank" rel="noreferrer">
+                        filing
+                      </a>
+                    )}
+                  </li>
+                ))}
+              </ul>
+              <p className="tiny muted">From {digest.filings} filings, as CIP read them. Written every week.</p>
+            </>
+          ) : (
+            <p className="tiny muted">
+              A short note on what these companies filed is written every week, once their filings have been read.
+            </p>
+          )}
+        </div>
+      )}
 
       {feeds.map((feed) => (
         <div key={feed.id} className="filing-feed">

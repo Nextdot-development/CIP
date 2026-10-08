@@ -1,5 +1,5 @@
 import 'server-only';
-import { checkFeedsEverywhere } from '../brain/filings';
+import { checkFeedsEverywhere, digestsEverywhere } from '../brain/filings';
 import { claimNextFile, processClaimedFile, recoverStuckFiles } from '../drive/processing';
 import { claimChunksNeedingEmbedding, embedClaimedChunks } from '../drive/embeddingQueue';
 import { embedUnderstandingsEverywhere } from '../drive/assetSearch';
@@ -340,6 +340,14 @@ async function runPass(): Promise<PumpTally> {
       if (!outcome) break;
       if (outcome.status === 'learned') tally.lessons += outcome.lessons;
     }
+  });
+
+  // 9. Once a week, a short note on what the watched companies filed, from
+  //    what was read off each filing. Last: it reads what the stages above
+  //    have just finished.
+  await stage(async () => {
+    if (outOfTime() || !brain().configured) return;
+    await digestsEverywhere({ outOfTime });
   });
 
   return tally;

@@ -21,6 +21,11 @@ const nextConfig: NextConfig = {
   outputFileTracingIncludes: {
     '/api/brain/qc': ['./node_modules/ffmpeg-static/ffmpeg*'],
     '/api/brain/checks': ['./node_modules/ffmpeg-static/ffmpeg*'],
+    // pdf.js runs its "fake worker" by importing pdf.worker.mjs at runtime,
+    // by a path the tracer never sees. Without it every PDF read on Vercel
+    // failed with "Setting up fake worker failed" - eight exchange filings
+    // in a row. Any route can end up reading a PDF, so every route ships it.
+    '/**': ['./node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs'],
   },
   // Next writes AGENTS.md/CLAUDE.md by default; this repo keeps its own docs.
   agentRules: false,

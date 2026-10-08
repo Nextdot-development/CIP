@@ -381,5 +381,6 @@ a.gtag:hover { color: var(--ink-900); border-color: var(--ink-400); }
 .filings { margin-bottom: 16px; }
 .filing-feed { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
 .filing-list { margin: 6px 0 0; padding-left: 16px; font-size: 12.5px; display: flex; flex-direction: column; gap: 3px; }
+.filing-digest { margin-top: 12px; padding: 12px; border-radius: var(--r-sm); background: var(--ink-050); }
 .filing-add { gap: 8px; margin-top: 12px; flex-wrap: wrap; }
 .filing-add input { flex: 1 1 160px; min-width: 0; }

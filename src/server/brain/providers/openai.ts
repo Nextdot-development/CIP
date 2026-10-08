@@ -47,6 +47,8 @@ import type {
   ReadFramesInput,
   ReviewAnalysis,
   ReviewInput,
+  DigestInput,
+  FilingsDigest,
   ReviewVerdict,
   VideoSequence,
 } from './types';
@@ -555,6 +557,29 @@ const FRAME_TEXT_SCHEMA = {
         properties: {
           frame: { type: 'integer' },
           text: { type: 'string' },
+        },
+      },
+    },
+  },
+} as const;
+
+/** A week of filings, written up. */
+const DIGEST_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['headline', 'points'],
+  properties: {
+    headline: { type: 'string' },
+    points: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['ref', 'company', 'point'],
+        properties: {
+          ref: { type: 'string' },
+          company: { type: 'string' },
+          point: { type: 'string' },
         },
       },
     },
@@ -1335,6 +1360,49 @@ export class OpenAIBrainProvider implements BrainProvider {
 
     const { parsed, usage } = await this.call<{ concepts: ConceptDraft[] }>(content, IDEAS_SCHEMA, 'campaign_concepts', 5_000);
     return { concepts: Array.isArray(parsed.concepts) ? parsed.concepts : [], usage };
+  }
+
+  async digestFilings(input: DigestInput): Promise<FilingsDigest> {
+    const filings = input.filings
+      .map((f) =>
+        `${f.ref} ${f.company}${f.date ? `, ${f.date}` : ''}: ${f.title}\n   Read: ${f.summary}` +
+        (f.signals.length > 0 ? `\n   Figures: ${f.signals.join(' | ')}` : ''),
+      )
+      .join('\n');
+
+    const { parsed, usage } = await this.call<{ headline: string; points: { ref: string; company: string; point: string }[] }>(
+      [
+        {
+          type: 'text',
+          text:
+            `Write this week's note for the marketing team at ${input.companyName} on what the ` +
+            'listed companies they watch filed on the stock exchange. Below is what was read ' +
+            'off each filing.\n\n' +
+            'headline: the week in one sentence of at most 20 words.\n' +
+            'points: at most 8, the ones a brand or marketing team would act on - launches, ' +
+            'results and how sales or market share moved, new markets, pricing, big deals. ' +
+            `${input.companyName}'s own filings first, then the others. Each point is one sentence ` +
+            'of at most 30 words, names the company, keeps every figure exactly as written, and ' +
+            'gives the ref of the filing it came from. Leave out routine notices - board meeting ' +
+            'dates, trading windows, certificates, share transfers. Say nothing that is not in ' +
+            'the filings below: no background, no forecasts of your own. Plain words, no jargon.\n\n' +
+            `Filings:\n${filings}`,
+        },
+      ],
+      DIGEST_SCHEMA,
+      'filings_digest',
+      1_500,
+    );
+    const refs = new Set(input.filings.map((f) => f.ref));
+    return {
+      headline: typeof parsed.headline === 'string' ? parsed.headline.trim().slice(0, 300) : '',
+      points: (Array.isArray(parsed.points) ? parsed.points : [])
+        // A point that cites no filing in front of it came from somewhere else.
+        .filter((p) => typeof p.point === 'string' && p.point.trim() && refs.has(p.ref))
+        .slice(0, 8)
+        .map((p) => ({ ref: p.ref, company: String(p.company ?? '').slice(0, 80), point: p.point.trim().slice(0, 400) })),
+      usage,
+    };
   }
 
   async transcribePage(input: TranscribeInput): Promise<Transcription> {

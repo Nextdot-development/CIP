@@ -550,6 +550,15 @@ export interface BrainProvider {
    * written on it: no summary, no description, no translation.
    */
   transcribePage(input: TranscribeInput): Promise<Transcription>;
+
+  /**
+   * A week of stock exchange filings, as a few plain lines.
+   *
+   * Implementations send what CIP already read off each filing - its summary
+   * and the figures taken from it - and nothing else. Every point must come
+   * from those; nothing is added from what the model happens to know.
+   */
+  digestFilings(input: DigestInput): Promise<FilingsDigest>;
 }
 
 /** What a market signal is about. A closed list, so the page can group them. */
@@ -745,6 +754,31 @@ export type ReviewVerdict = {
   /** The frame the fault shows most clearly in, and where in it. 0 and empty when it is not in one. */
   frame?: number;
   box?: number[];
+};
+
+/** A week of filings to write up. */
+export type DigestInput = {
+  /** The company the note is for, so its own filings come first. */
+  companyName: string;
+  filings: {
+    ref: string;
+    /** The listed company that filed it. */
+    company: string;
+    date: string | null;
+    title: string;
+    /** What CIP read off it. */
+    summary: string;
+    /** Figures and claims taken from it, one line each. */
+    signals: string[];
+  }[];
+};
+
+export type FilingsDigest = {
+  /** One line: the week in a sentence. */
+  headline: string;
+  /** At most eight, each one sentence, each from one filing. */
+  points: { ref: string; company: string; point: string }[];
+  usage: BrainUsage;
 };
 
 export type ReviewAnalysis = {
