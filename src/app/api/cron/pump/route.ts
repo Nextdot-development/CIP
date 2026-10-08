@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
 import { pumpQueues } from '@/server/jobs/pump';
+import { isSchedulerToken, recordPumpEnd, recordPumpStart, rememberPumpUrl } from '@/server/jobs/runtime';
+import type { PumpTrigger } from '@/server/jobs/runtime';
 import { noStore } from '@/server/brain/http';
 
 /**
@@ -31,22 +33,41 @@ export const maxDuration = 300;
 
 export async function GET(request: Request) {
   const secret = process.env.CRON_SECRET;
-  if (!secret) {
-    return NextResponse.json(
-      {
-        error: 'NOT_CONFIGURED',
-        message: 'Set CRON_SECRET before scheduling this. It spends money when it runs.',
-      },
-      { status: 503, headers: noStore },
-    );
+  const bearer = (request.headers.get('authorization') ?? '').replace(/^Bearer /, '');
+
+  // Two callers are let in: GitHub and Vercel with CRON_SECRET, and the
+  // database's own scheduler with the token it made for itself (0051).
+  let trigger: PumpTrigger | null = null;
+  if (secret && bearer === secret) {
+    trigger = /vercel-cron/i.test(request.headers.get('user-agent') ?? '') ? 'vercel' : 'github';
+    // Where the deployment lives, as they reached it: the scheduler calls here.
+    await rememberPumpUrl(new URL(request.url).origin);
+  } else if (await isSchedulerToken(bearer)) {
+    trigger = 'scheduler';
   }
 
-  if (request.headers.get('authorization') !== `Bearer ${secret}`) {
+  if (!trigger) {
+    if (!secret) {
+      return NextResponse.json(
+        {
+          error: 'NOT_CONFIGURED',
+          message: 'Set CRON_SECRET before scheduling this. It spends money when it runs.',
+        },
+        { status: 503, headers: noStore },
+      );
+    }
     // No detail: an attacker learns nothing from the difference between a
     // wrong secret and a missing one.
     return NextResponse.json({ error: 'NOT_FOUND' }, { status: 404, headers: noStore });
   }
 
-  const tally = await pumpQueues();
-  return NextResponse.json({ tally }, { headers: noStore });
+  const run = await recordPumpStart(trigger);
+  try {
+    const tally = await pumpQueues();
+    await recordPumpEnd(run, { tally });
+    return NextResponse.json({ tally }, { headers: noStore });
+  } catch (error) {
+    await recordPumpEnd(run, { error: error instanceof Error ? error.message : 'The pass failed.' });
+    throw error;
+  }
 }

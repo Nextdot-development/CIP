@@ -384,3 +384,9 @@ a.gtag:hover { color: var(--ink-900); border-color: var(--ink-400); }
 .filing-digest { margin-top: 12px; padding: 12px; border-radius: var(--r-sm); background: var(--ink-050); }
 .filing-add { gap: 8px; margin-top: 12px; flex-wrap: wrap; }
 .filing-add input { flex: 1 1 160px; min-width: 0; }
+
+/* Whether CIP is keeping up: a quiet line, or the problems in sentences. */
+.health-ok { margin: 8px 0 0; display: flex; align-items: center; gap: 6px; }
+.health { margin-top: 12px; border-left: 3px solid var(--warn-500, #d97706); }
+.health.is-stop { border-left-color: var(--stop-700, #b91c1c); }
+.health ul { margin: 6px 0; padding-left: 18px; display: grid; gap: 4px; }

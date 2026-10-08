@@ -403,6 +403,32 @@ describe('MARKET INTELLIGENCE: only what a report actually says', () => {
       await assert.rejects(() => filings.addFeed(mm, { symbol: 'not a symbol!', name: 'x' }), /NSE symbol/);
     });
 
+    it("lets the database's scheduler call the pump with a token only it holds, and records each pass", async () => {
+      const runtime = await import('../src/server/jobs/runtime');
+      const [token] = await adminSql<{ value: string }[]>`select value from cip_runtime where key = 'pump_token'`;
+      assert.ok(token && token.value.length === 64, 'the migration did not make a token');
+      assert.equal(await runtime.isSchedulerToken(token!.value), true);
+      assert.equal(await runtime.isSchedulerToken('not-it'), false);
+      assert.equal(await runtime.isSchedulerToken(''), false);
+
+      // Only a real address is remembered for the scheduler to call.
+      await adminSql`delete from cip_runtime where key = 'pump_url'`;
+      await runtime.rememberPumpUrl('http://localhost:3000');
+      assert.equal((await adminSql`select 1 from cip_runtime where key = 'pump_url'`).length, 0);
+      await runtime.rememberPumpUrl('https://cip.example.com');
+      const [url] = await adminSql<{ value: string }[]>`select value from cip_runtime where key = 'pump_url'`;
+      assert.equal(url!.value, 'https://cip.example.com');
+
+      const id = await runtime.recordPumpStart('github');
+      await runtime.recordPumpEnd(id, { tally: { synced: 0, extracted: 1, embedded: 0, understood: 0, lessons: 0, failed: 0, moreWaiting: false } });
+      const health = await runtime.pumpHealth();
+      assert.equal(health.lastTrigger, 'github');
+      assert.ok(health.lastFinishedAt);
+      assert.ok(health.passesLastDay >= 1);
+      // No pg_cron in the test database: nothing pretends to be scheduled.
+      assert.equal(health.scheduled, false);
+    });
+
     it('writes the week up from what was read off the filings, and only once they are read', async () => {
       const filings = await import('../src/server/brain/filings');
       filings.__setFilingsFetch(fakeNse);

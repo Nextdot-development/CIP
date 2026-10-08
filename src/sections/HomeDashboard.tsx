@@ -8,6 +8,7 @@ import type { AskMode } from '@/context/NavContext';
 import { PromptSuggestions, RequestComposer } from '../components/RequestComposer';
 import { Card, EmptyState, LogoMark } from '../components/ui/Bits';
 import { Icon } from '../components/ui/Icon';
+import { HealthCard } from './HealthCard';
 import type { IconName } from '../components/ui/Icon';
 import type { KnowledgeOverview } from '@/server/brain/overview';
 
@@ -90,6 +91,8 @@ export function HomeDashboard({ overview }: { overview: KnowledgeOverview }) {
           </div>
 
           <KnowledgePanel overview={overview} />
+
+          <HealthCard />
 
           {(learned.posts > 0 || learned.lessons > 0) && (
             <div className="metrics">
