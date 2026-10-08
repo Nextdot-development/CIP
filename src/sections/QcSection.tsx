@@ -6,6 +6,7 @@ import { assetUrl } from '@/types/media';
 import type { CheckFlag, ClosePass, SecondLook } from '@/server/brain/checker';
 import type { Revision } from '@/server/brain/revisions';
 import { relativeDay } from '@/lib/format';
+import { AccuracyCard, TestSetMark } from './AccuracyCard';
 
 /**
  * Creative QC.
@@ -744,6 +745,8 @@ export function QcSection({
           <Deck pages={pages} showPassed={showPassed} onTogglePassed={() => setShowPassed((v) => !v)} />
         )}
       </div>
+
+      <AccuracyCard />
     </>
   );
 }
@@ -1054,6 +1057,9 @@ function QcReport({
       </details>
 
       <RevisionNote checkId={report.check.id} />
+      {report.check.fileId && (report.verdict === 'pass' || report.verdict === 'fix' || report.verdict === 'review') && (
+        <TestSetMark checkId={report.check.id} page={page} verdict={report.verdict} />
+      )}
 
       {/* With nothing flagged, the summary is the only account of the
           creative there is. With flags, it only says them again. */}

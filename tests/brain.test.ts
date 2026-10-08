@@ -1931,6 +1931,37 @@ describe('THE CHECKER: a creative judged against the brand, and nothing else', (
       assert.equal(rows[0]!.active, false);
     });
 
+    it('scores the checker against a test set of creatives with known answers', async () => {
+      await rule('required', 'Carry "Drink Responsibly".', 'manual');
+      fake.checkFindings = [
+        { ref: 'R1', dimension: 'compliance', severity: 'critical', message: 'Missing.' },
+      ];
+      const check = await checkedImage('test-set.png');
+
+      const { addBenchmark, startBenchmarkRun, runBenchmarkItem, listBenchmarks } = await import('../src/server/brain/benchmark');
+      const added = await addBenchmark(mm, { checkId: check.id, page: 1, expected: 'flag' });
+      assert.equal(added.items.length, 1);
+      assert.deepEqual(added.items[0]!.expectedRules, ['Carry "Drink Responsibly".']);
+
+      // Same finding again: flagged for the rule the person confirmed - right.
+      const first = await startBenchmarkRun(mm);
+      assert.equal((await runBenchmarkItem(mm, first.runId, first.ids[0]!)).correct, true);
+
+      // Now the checker finds nothing: it says pass where a person said flag - wrong.
+      fake.checkFindings = [];
+      const second = await startBenchmarkRun(mm);
+      assert.equal((await runBenchmarkItem(mm, second.runId, second.ids[0]!)).correct, false);
+
+      const summary = await listBenchmarks(mm);
+      assert.deepEqual(
+        { done: summary.lastRun!.done, correct: summary.lastRun!.correct },
+        { done: 1, correct: 0 },
+        'the score is the newest run',
+      );
+      assert.equal(summary.items[0]!.last!.got, 'pass');
+      assert.deepEqual(summary.items[0]!.last!.missed, ['Carry "Drink Responsibly".']);
+    });
+
     it('remembers a misreading and shows it to the checker beside the rule next time', async () => {
       const ruleId = await rule('required', 'The brand logo should sit in the top-right corner.', 'manual');
       fake.checkFindings = [
