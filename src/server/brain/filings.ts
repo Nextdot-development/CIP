@@ -3,6 +3,7 @@ import { withCompanyScope } from '../db';
 import type { CompanyScope } from '../db';
 import { adminSql } from '../db-admin';
 import { uploadFile } from '../drive/service';
+import { driveStorage } from '../drive/storage';
 import { registerSource } from './market';
 import { brain } from './providers';
 
@@ -466,4 +467,90 @@ export async function digestsEverywhere(options: { outOfTime: () => boolean }): 
     if (await writeDigest(scope).catch(() => null)) written += 1;
   }
   return written;
+}
+
+// --- letting go of a filing once it is read -------------------------------------
+
+/**
+ * Deletes the PDF of every filing CIP has finished reading.
+ *
+ * What a filing says lives on after it: its text, its chunks and vectors, the
+ * market figures taken from it, the weekly note. The PDF itself is public and
+ * stays on the exchange, so keeping a copy only spent storage. Opening one
+ * afterwards goes to NSE (see filingSourceUrl), and it can be fetched again
+ * from there should it ever need reading twice.
+ *
+ * Only once every reading is done: extracted, every chunk embedded, nothing
+ * waiting on OCR or on a page being looked at, and the market reading over.
+ */
+export async function releaseReadFilings(options: { limit: number; outOfTime: () => boolean }): Promise<number> {
+  const sql = adminSql();
+  let released = 0;
+  try {
+    const rows = await sql<{ id: string; storage_path: string; url: string | null }[]>`
+      select f.id, f.storage_path, i.url
+        from drive_files f
+        join market_sources s on s.file_id = f.id and s.company_id = f.company_id
+        join market_feed_items i on i.file_id = f.id and i.company_id = f.company_id
+       where f.source_type = 'exchange_filing'
+         and f.archived_at is null and f.bytes_retained and f.storage_path is not null
+         and f.processing_status = 'processed'
+         and s.status in ('ready', 'no_text')
+         and i.url is not null
+         and not exists (select 1 from file_ocr o where o.file_id = f.id and o.status in ('pending', 'reading'))
+         and not exists (select 1 from pdf_page_understanding p
+                          where p.file_id = f.id and p.status not in ('ready', 'failed', 'unsupported'))
+         and not exists (select 1 from asset_understanding u
+                          where u.file_id = f.id and u.status not in ('ready', 'failed', 'unsupported'))
+       order by f.created_at
+       limit ${options.limit}
+    `;
+    // Files with a chunk still waiting for its vector. Asked apart, because a
+    // database without pgvector has no vectors to wait for (nor the columns).
+    const embedding = new Set(
+      rows.length === 0
+        ? []
+        : (await sql<{ file_id: string }[]>`
+            select distinct c.file_id
+              from drive_file_chunks c
+             where c.file_id = any(${rows.map((r) => r.id)}::uuid[]) and c.embedding_error is null
+               and not exists (select 1 from drive_file_embeddings e where e.chunk_id = c.id)
+          `.catch(() => [])).map((r) => r.file_id),
+    );
+    for (const row of rows) {
+      if (options.outOfTime()) break;
+      if (embedding.has(row.id)) continue;
+      try {
+        await driveStorage().remove(row.storage_path);
+      } catch {
+        // Still there; the next pass tries again.
+        continue;
+      }
+      await sql`
+        update drive_files
+           set bytes_retained = false, storage_path = null,
+               metadata = coalesce(metadata, '{}'::jsonb) || ${sql.json({ released: new Date().toISOString(), sourceUrl: row.url })}
+         where id = ${row.id}
+      `;
+      released += 1;
+    }
+  } finally {
+    await sql.end();
+  }
+  return released;
+}
+
+/** Where a filing CIP no longer keeps can be read: on the exchange. Null for anything else. */
+export async function filingSourceUrl(scope: CompanyScope, fileId: string): Promise<string | null> {
+  if (!/^[0-9a-f-]{36}$/i.test(fileId)) return null;
+  const [row] = await withCompanyScope(scope, (tx) => tx<{ url: string | null }[]>`
+    select coalesce(f.metadata->>'sourceUrl', i.url) as url
+      from drive_files f
+      left join market_feed_items i on i.file_id = f.id and i.company_id = f.company_id
+     where f.id = ${fileId} and f.company_id = ${scope.companyId}
+       and f.source_type = 'exchange_filing' and not f.bytes_retained
+     limit 1
+  `);
+  const url = row?.url ?? null;
+  return url && /^https:\/\/(nsearchives|archives|www)\.nseindia\.com\//i.test(url) ? url : null;
 }

@@ -1,5 +1,6 @@
 import { withDriveScope } from '@/server/drive/http';
 import { readFile, readThumbnail } from '@/server/drive/service';
+import { filingSourceUrl } from '@/server/brain/filings';
 import { THUMBNAIL_EDGES } from '@/server/drive/storage';
 import type { ThumbnailEdge } from '@/server/drive/storage';
 import { canPreviewInline, specFor } from '@/lib/fileTypes';
@@ -38,6 +39,11 @@ export async function GET(request: Request, { params }: Params) {
         });
       }
     }
+
+    // A stock exchange filing CIP has read and let go of: it is public, so it
+    // is opened where it lives rather than kept here as a copy.
+    const onExchange = await filingSourceUrl(scope, id);
+    if (onExchange) return Response.redirect(onExchange, 302);
 
     const { file, body, filename } = await readFile(scope, id);
 

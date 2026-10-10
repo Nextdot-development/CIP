@@ -429,6 +429,40 @@ describe('MARKET INTELLIGENCE: only what a report actually says', () => {
       assert.equal(health.scheduled, false);
     });
 
+    it('lets go of a filing once it is read, and opens it on the exchange after', async () => {
+      const filings = await import('../src/server/brain/filings');
+      const { driveStorage } = await import('../src/server/drive/storage');
+      filings.__setFilingsFetch(fakeNse);
+      try {
+        await filings.addFeed(mm, { symbol: 'RADICO', name: 'Radico Khaitan' });
+        const [feed] = await filings.listFeeds(mm);
+        await filings.checkFeedNow(mm, feed!.id);
+        const files = await adminSql<{ id: string; storage_path: string }[]>`
+          select id, storage_path from drive_files where company_id = ${mm.companyId} and source_type = 'exchange_filing' order by name`;
+        assert.equal(files.length, 2);
+
+        // Not read yet: nothing is let go of.
+        assert.equal(await filings.releaseReadFilings({ limit: 10, outOfTime: () => false }), 0);
+
+        // One read in full, the other still waiting on its market reading.
+        await adminSql`update drive_files set processing_status = 'processed' where id = ${files[0]!.id}`;
+        await adminSql`update market_sources set status = 'ready' where file_id = ${files[0]!.id}`;
+        assert.equal(await filings.releaseReadFilings({ limit: 10, outOfTime: () => false }), 1);
+
+        const [after] = await adminSql<{ bytes_retained: boolean }[]>`select bytes_retained from drive_files where id = ${files[0]!.id}`;
+        assert.equal(after!.bytes_retained, false);
+        await assert.rejects(() => driveStorage().get(files[0]!.storage_path), 'the PDF was kept');
+        await driveStorage().get(files[1]!.storage_path);
+
+        // Opened on the exchange from now on - and only by this company.
+        assert.match((await filings.filingSourceUrl(mm, files[0]!.id))!, /^https:\/\/nsearchives\.nseindia\.com\//);
+        assert.equal(await filings.filingSourceUrl(mm, files[1]!.id), null, 'a kept filing is served from CIP');
+        assert.equal(await filings.filingSourceUrl(nh, files[0]!.id), null);
+      } finally {
+        filings.__setFilingsFetch(null);
+      }
+    });
+
     it('writes the week up from what was read off the filings, and only once they are read', async () => {
       const filings = await import('../src/server/brain/filings');
       filings.__setFilingsFetch(fakeNse);

@@ -1,5 +1,5 @@
 import 'server-only';
-import { checkFeedsEverywhere, digestsEverywhere } from '../brain/filings';
+import { checkFeedsEverywhere, digestsEverywhere, releaseReadFilings } from '../brain/filings';
 import { restoreFromSources } from '../drive/restore';
 import { claimNextFile, processClaimedFile, recoverStuckFiles } from '../drive/processing';
 import { claimChunksNeedingEmbedding, embedClaimedChunks } from '../drive/embeddingQueue';
@@ -349,6 +349,13 @@ async function runPass(): Promise<PumpTally> {
       if (!outcome) break;
       if (outcome.status === 'learned') tally.lessons += outcome.lessons;
     }
+  });
+
+  // 8. A filing that has been read in full is not kept: what it said is in
+  //    the database, and the PDF is public on the exchange.
+  await stage(async () => {
+    if (outOfTime()) return;
+    await releaseReadFilings({ limit: 20, outOfTime });
   });
 
   // 9. Once a week, a short note on what the watched companies filed, from
