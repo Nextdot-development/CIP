@@ -1931,6 +1931,30 @@ describe('THE CHECKER: a creative judged against the brand, and nothing else', (
       assert.equal(rows[0]!.active, false);
     });
 
+    it('answers the same check again from the last one, until a rule changes', async () => {
+      process.env.CIP_CHECK_CACHE = 'on';
+      try {
+        await rule('required', 'Show the approved pack.', 'manual', null, 'other');
+        fake.checkFindings = [{ ref: 'R1', dimension: 'compliance', severity: 'warning', message: 'No pack.' }];
+        const { runCheck } = await import('../src/server/brain/checker');
+        const file = await uploadImage(mm, 'cached.png');
+
+        const first = await runCheck(mm, { fileId: file.id, brand: 'Magic Moments' });
+        const asked = fake.calls.check;
+        const again = await runCheck(mm, { fileId: file.id, brand: 'Magic Moments' });
+        assert.equal(again.id, first.id, 'the same check was paid for twice');
+        assert.equal(fake.calls.check, asked);
+
+        // A new rule is a different question, so it is asked.
+        await rule('forbidden', 'No competitor logos.', 'manual', null, 'other');
+        const changed = await runCheck(mm, { fileId: file.id, brand: 'Magic Moments' });
+        assert.notEqual(changed.id, first.id);
+        assert.equal(fake.calls.check, asked + 1);
+      } finally {
+        delete process.env.CIP_CHECK_CACHE;
+      }
+    });
+
     it('scores the checker against a test set of creatives with known answers', async () => {
       await rule('required', 'Carry "Drink Responsibly".', 'manual');
       fake.checkFindings = [

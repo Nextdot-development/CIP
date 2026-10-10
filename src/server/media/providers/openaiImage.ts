@@ -1,4 +1,5 @@
 import 'server-only';
+import { recordUsage } from '../../brain/usage';
 import { MEDIA_LIMITS, ProviderFailed, SUPPORTED_IMAGE_TYPES } from './types';
 import type { GeneratedAsset, ImageGenerationProvider, ImageRequest, ImageResult } from './types';
 
@@ -102,6 +103,14 @@ export class OpenAIImageProvider implements ImageGenerationProvider {
     }
 
     const [width, height] = size.split('x').map(Number);
+
+    // Written down with every other call to a model, at the published price.
+    await recordUsage({
+      feature: request.references.length > 0 ? 'image_edit' : 'image_generation',
+      model: this.model,
+      inputTokens: tokensAt(payload, 'input_tokens') ?? 0,
+      outputTokens: tokensAt(payload, 'output_tokens') ?? 0,
+    });
 
     return {
       assets: assets.map((asset) => ({ ...asset, width: width ?? null, height: height ?? null })),

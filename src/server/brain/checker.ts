@@ -1,4 +1,5 @@
 import 'server-only';
+import { createHash } from 'node:crypto';
 import { withCompanyScope } from '../db';
 import type { CompanyScope } from '../db';
 import { adminSql } from '../db-admin';
@@ -1117,25 +1118,67 @@ export async function runCheck(
   // - and every attempt of a fix loop is spared a look of several seconds.
   if (!brand && subject.generationId && subject.brand) brand = subject.brand;
 
+  // Checks of the same creative, asked the same way, are answered from the
+  // last one rather than paid for again (see fingerprint below). Off for the
+  // fake provider: tests check one file twice on purpose, with new answers.
+  const reuse = provider.name !== 'fake' || process.env.CIP_CHECK_CACHE === 'on';
+
+  let identified: { brand: string | null; product: string | null; confidence: number; evidence: string | null } | null = null;
+
+  // The same file looked at again: the brand it was found to be last time,
+  // rather than another look at it.
+  if (!brand && reuse && subject.fileId) {
+    const [prior] = await withCompanyScope(scope, (tx) => tx<{
+      brand: string; detected_product: string | null; detected_confidence: string | null; detected_evidence: string | null;
+    }[]>`
+      select brand, detected_product, detected_confidence, detected_evidence
+        from creative_checks
+       where company_id = ${scope.companyId} and file_id = ${subject.fileId}
+         and status = 'ready' and brand is not null
+         and created_at > now() - interval '30 days'
+       order by created_at desc
+       limit 1
+    `);
+    if (prior) {
+      brand = prior.brand;
+      if (prior.detected_confidence !== null) {
+        identified = {
+          brand: prior.brand,
+          product: prior.detected_product,
+          confidence: Number(prior.detected_confidence),
+          evidence: prior.detected_evidence,
+        };
+      }
+    }
+  }
+
   // Wanted by most of what follows, and the same answer every time.
   const roster = await companyBrands(scope);
   const houseBrands = roster.map((b) => b.name);
   const fittedSubject = fitForVision(subject.bytes, subject.mimeType);
 
   // The words on a film's frames do not depend on whose film it is, so they
-  // are read while the brand is still being worked out.
+  // are read while the brand is still being worked out. When the brand is
+  // already known they wait until it is clear the check is not a repeat.
   const frames = subject.frames ?? [];
-  const onScreenRead = subject.sequence && frames.length > 0 ? readOnScreen(provider, subject.subject, frames) : null;
-  // When each line was on screen. Started now rather than once the rules say
+  let onScreenRead: Promise<string[] | null> | null = null;
+  // When each line was on screen. Started early rather than once the rules say
   // they need it: nearly every rule set names a warning or a legal line, and
   // waiting for the rules put nine seconds in front of every film's check.
   // Used only if a rule turns out to be about timing.
-  const timelineRead = subject.sequence && subject.film ? readTimeline(provider, subject.subject, subject.film) : null;
-  // Never rejected while they wait: a failure is the null each already returns.
-  void onScreenRead?.catch(() => null);
-  void timelineRead?.catch(() => null);
+  let timelineRead: ReturnType<typeof readTimeline> | null = null;
+  let reading = false;
+  const startReading = () => {
+    if (reading) return;
+    reading = true;
+    onScreenRead = subject.sequence && frames.length > 0 ? readOnScreen(provider, subject.subject, frames) : null;
+    timelineRead = subject.sequence && subject.film ? readTimeline(provider, subject.subject, subject.film) : null;
+    // Never rejected while they wait: a failure is the null each already returns.
+    void onScreenRead?.catch(() => null);
+    void timelineRead?.catch(() => null);
+  };
+  if (!brand) startReading();
 
-  let identified: { brand: string | null; product: string | null; confidence: number; evidence: string | null } | null = null;
   if (!brand) {
     const names = houseBrands;
     if (names.length > 0) {
@@ -1246,6 +1289,38 @@ export async function runCheck(
     });
   });
 
+  // Everything the answer depends on. The deployed commit stands for the
+  // prompts and the code, so a release never serves an answer it did not give.
+  let fingerprint: string | null = null;
+  if (reuse && (subject.fileId || subject.generationId)) {
+    const [file] = subject.fileId
+      ? await withCompanyScope(scope, (tx) => tx<{ checksum_sha256: string | null }[]>`
+          select checksum_sha256 from drive_files where id = ${subject.fileId} and company_id = ${scope.companyId}
+        `)
+      : [];
+    fingerprint = createHash('sha256')
+      .update(JSON.stringify({
+        release: process.env.VERCEL_GIT_COMMIT_SHA ?? 'local',
+        file: file?.checksum_sha256 ?? subject.fileId ?? `${subject.generationId}:${input.assetId ?? ''}`,
+        page: input.page ?? 1,
+        brand,
+        market,
+        model: provider.model,
+        sent,
+      }))
+      .digest('hex');
+    const [same] = await withCompanyScope(scope, (tx) => tx<{ id: string }[]>`
+      select id from creative_checks
+       where company_id = ${scope.companyId} and fingerprint = ${fingerprint} and status = 'ready'
+         and created_at > now() - interval '30 days'
+       order by created_at desc
+       limit 1
+    `);
+    const earlier = same ? await getCheck(scope, same.id) : null;
+    if (earlier) return earlier;
+  }
+  startReading();
+
   const judged: Record<CheckDimension, boolean> = {
     visual: sent.some((r) => r.dimension === 'visual'),
     verbal: sent.some((r) => r.dimension === 'verbal'),
@@ -1256,11 +1331,11 @@ export async function runCheck(
     tx<{ id: string }[]>`
       insert into creative_checks
         (company_id, file_id, generation_id, brand, market, status,
-         facts_considered, rules_considered, provider, model, created_by)
+         facts_considered, rules_considered, provider, model, created_by, fingerprint)
       values
         (${scope.companyId}, ${subject.fileId}, ${subject.generationId}, ${brand}, ${market},
          'pending', ${facts.length}, ${rules.length}, ${provider.name}, ${provider.model},
-         ${scope.userId})
+         ${scope.userId}, ${fingerprint})
       returning id
     `,
   );

@@ -1,4 +1,5 @@
 import 'server-only';
+import { recordUsage } from '../usage';
 import { marketPrompt } from './prompts';
 import {
   BRAIN_LIMITS,
@@ -1662,7 +1663,10 @@ export class OpenAIBrainProvider implements BrainProvider {
           // Reasoning tokens are billed against the budget above. This is
           // extraction, not deduction, so the cheapest setting is the right one
           // and leaves the budget for the answer.
-          ...(this.model.startsWith('gpt-5') ? { reasoning_effort: 'low' } : {}),
+          ...(this.model.startsWith('gpt-5') ? { reasoning_effort: effortFor(schemaName) } : {}),
+          // Calls of one kind share their long fixed instructions; naming the
+          // kind lets the provider serve that part from its cache, at a tenth.
+          prompt_cache_key: `cip-${schemaName}`,
         }),
         signal: AbortSignal.timeout(BRAIN_LIMITS.requestTimeoutMs),
       });
@@ -1680,8 +1684,23 @@ export class OpenAIBrainProvider implements BrainProvider {
 
     const body = (await response.json().catch(() => null)) as {
       choices?: { message?: { content?: string }; finish_reason?: string }[];
-      usage?: { prompt_tokens?: number; completion_tokens?: number };
+      usage?: {
+        prompt_tokens?: number;
+        completion_tokens?: number;
+        prompt_tokens_details?: { cached_tokens?: number };
+        completion_tokens_details?: { reasoning_tokens?: number };
+      };
     } | null;
+
+    // Written down whether or not the answer turns out usable: it was paid for.
+    await recordUsage({
+      feature: schemaName,
+      model: this.model,
+      inputTokens: body?.usage?.prompt_tokens ?? 0,
+      cachedTokens: body?.usage?.prompt_tokens_details?.cached_tokens ?? 0,
+      outputTokens: body?.usage?.completion_tokens ?? 0,
+      reasoningTokens: body?.usage?.completion_tokens_details?.reasoning_tokens ?? 0,
+    });
 
     const text = body?.choices?.[0]?.message?.content;
     if (!text) {
@@ -1716,6 +1735,20 @@ export class OpenAIBrainProvider implements BrainProvider {
       },
     };
   }
+}
+
+/**
+ * How hard a model thinks, by what it is asked to do.
+ *
+ * Reading what is plainly there - the words on a page or a frame, which brand a
+ * label names - needs no reasoning, and reasoning is billed as output at eight
+ * times the input rate. Judging a creative against rules, or writing a brief,
+ * keeps the low setting it always had.
+ */
+const LOOKING_ONLY = new Set(['page_transcript', 'frame_text', 'creative_context']);
+
+function effortFor(schemaName: string): 'minimal' | 'low' {
+  return LOOKING_ONLY.has(schemaName) && process.env.CIP_MINIMAL_REASONING !== 'false' ? 'minimal' : 'low';
 }
 
 /**
