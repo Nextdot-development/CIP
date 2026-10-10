@@ -1,5 +1,6 @@
 import 'server-only';
 import { checkFeedsEverywhere, digestsEverywhere } from '../brain/filings';
+import { restoreFromSources } from '../drive/restore';
 import { claimNextFile, processClaimedFile, recoverStuckFiles } from '../drive/processing';
 import { claimChunksNeedingEmbedding, embedClaimedChunks } from '../drive/embeddingQueue';
 import { embedUnderstandingsEverywhere } from '../drive/assetSearch';
@@ -202,6 +203,14 @@ async function runPass(): Promise<PumpTally> {
   await stage(async () => {
     if (outOfTime()) return;
     tally.synced += await checkFeedsEverywhere({ outOfTime });
+  });
+
+  // 0d. Files that came from Google Drive or the exchange, fetched again into
+  //     the object store after Supabase's was lost to its free-plan limit.
+  //     A few a pass; none left, and it costs one query.
+  await stage(async () => {
+    if (outOfTime()) return;
+    await restoreFromSources({ limit: 10, outOfTime });
   });
 
   // 0.5 Which brand each new file is about. Deterministic, free, and it has

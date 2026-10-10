@@ -129,7 +129,7 @@ export async function nseAnnouncements(symbol: string, since: Date): Promise<Nse
 }
 
 /** A filing's PDF, or null when it is not a PDF or is too large to keep. */
-async function download(url: string): Promise<Buffer | null> {
+export async function downloadFiling(url: string): Promise<Buffer | null> {
   if (!/^https:\/\/(nsearchives|archives|www)\.nseindia\.com\//i.test(url)) return null;
   const res = await fetcher(url, { headers: { ...HEADERS, accept: 'application/pdf,*/*' }, signal: AbortSignal.timeout(60_000) });
   if (!res.ok) throw new FilingsRefused(`NSE refused a filing (${res.status}).`);
@@ -216,7 +216,7 @@ export async function checkFeed(
         waiting += 1;
         continue;
       }
-      const bytes = await download(a.attchmntFile);
+      const bytes = await downloadFiling(a.attchmntFile);
       if (!bytes) {
         await record('skipped', null);
         skipped += 1;

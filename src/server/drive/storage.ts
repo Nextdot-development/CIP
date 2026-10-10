@@ -3,6 +3,7 @@ import { MAX_FILE_BYTES } from '@/lib/fileTypes';
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve, sep } from 'node:path';
+import { S3Storage } from './s3Storage';
 import { SupabaseStorage } from './supabaseStorage';
 
 /**
@@ -181,6 +182,19 @@ let cached: DriveStorage | null = null;
  */
 export function driveStorage(): DriveStorage {
   if (cached) return cached;
+
+  // An S3-compatible store, when one is configured, comes first: it replaced
+  // Supabase Storage once the free project ran out of room.
+  const s3 = {
+    endpoint: process.env.B2_ENDPOINT,
+    bucket: process.env.B2_BUCKET,
+    keyId: process.env.B2_KEY_ID,
+    secret: process.env.B2_APP_KEY,
+  };
+  if (s3.endpoint && s3.bucket && s3.keyId && s3.secret && process.env.CIP_FORCE_LOCAL_STORAGE !== 'true') {
+    cached = new S3Storage(s3.endpoint, s3.bucket, s3.keyId, s3.secret);
+    return cached;
+  }
 
   const url = process.env.SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
