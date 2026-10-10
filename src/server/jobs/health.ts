@@ -3,7 +3,6 @@ import { withCompanyScope } from '../db';
 import type { CompanyScope } from '../db';
 import { EXTRACTABLE_TYPES } from '../drive/extraction';
 import { pumpHealth } from './runtime';
-import { spendThisMonth } from '../brain/usage';
 import type { PumpHealth } from './runtime';
 
 /**
@@ -23,21 +22,10 @@ export type HealthProblem = { severity: 'stop' | 'warn'; text: string; href?: st
 export type HealthReport = {
   pump: PumpHealth;
   problems: HealthProblem[];
-  /** What AI has cost this month, in US dollars, by what it was for. */
-  spend: { month: number; parts: { label: string; usd: number }[]; cachedShare: number };
 };
 
-/** The calls, grouped as a person thinks of the work. */
-const SPEND_GROUPS: [string, RegExp][] = [
-  ['Making images', /^(image_generation|image_edit|generation_brief)$/],
-  ['QC checks', /^(creative_check|frames_check|finding_review|frame_text|creative_context)$/],
-  ['Reading files', /^(asset_analysis|document_analysis|video_analysis|pdf_page_analysis|page_transcript)$/],
-  ['Chat', /^brain_answer$/],
-  ['Market', /^(market_reading|filings_digest)$/],
-];
-
 export async function healthReport(scope: CompanyScope): Promise<HealthReport> {
-  const [pump, counts, spent] = await Promise.all([
+  const [pump, counts] = await Promise.all([
     pumpHealth(),
     withCompanyScope(scope, async (tx) => {
       const [row] = await tx<{
@@ -66,19 +54,7 @@ export async function healthReport(scope: CompanyScope): Promise<HealthReport> {
       `;
       return { ...row!, feeds };
     }),
-    spendThisMonth(),
   ]);
-
-  const parts = new Map<string, number>();
-  for (const f of spent.byFeature) {
-    const label = SPEND_GROUPS.find(([, re]) => re.test(f.feature))?.[0] ?? 'Other';
-    parts.set(label, (parts.get(label) ?? 0) + f.usd);
-  }
-  const spend = {
-    month: spent.month,
-    parts: [...parts.entries()].map(([label, usd]) => ({ label, usd })).sort((a, b) => b.usd - a.usd),
-    cachedShare: spent.cachedShare,
-  };
 
   const problems: HealthProblem[] = [];
   const hoursSince = pump.lastFinishedAt ? (Date.now() - new Date(pump.lastFinishedAt).getTime()) / 3_600_000 : null;
@@ -106,5 +82,5 @@ export async function healthReport(scope: CompanyScope): Promise<HealthReport> {
   for (const feed of counts.feeds) {
     problems.push({ severity: 'warn', text: `${feed.display_name}'s filings: ${feed.last_error}`, href: '/market' });
   }
-  return { pump, problems, spend };
+  return { pump, problems };
 }

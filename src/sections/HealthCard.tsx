@@ -33,27 +33,14 @@ export function HealthCard() {
   }, []);
 
   if (!health) return null;
-  const { pump, problems, spend } = health;
-
-  // What AI cost this month, biggest part first. Shown whether or not
-  // anything is wrong: it is the other thing an owner wants to know.
-  const money = (usd: number) => (usd < 0.01 ? '<$0.01' : `$${usd.toFixed(2)}`);
-  const spendLine = spend && spend.month > 0 && (
-    <p className="tiny muted health-spend">
-      AI this month: <strong>{money(spend.month)}</strong>
-      {spend.parts.length > 0 && ` · ${spend.parts.slice(0, 4).map((p) => `${p.label} ${money(p.usd)}`).join(' · ')}`}
-    </p>
-  );
+  const { pump, problems } = health;
 
   if (problems.length === 0) {
     return (
-      <>
-        <p className="tiny muted health-ok">
-          <Icon name="check" size={12} /> Keeping up · background work last ran {pump.lastFinishedAt ? ago(pump.lastFinishedAt) : 'recently'}
-          {pump.scheduled ? ', every 15 minutes' : ''}
-        </p>
-        {spendLine}
-      </>
+      <p className="tiny muted health-ok">
+        <Icon name="check" size={12} /> Keeping up · background work last ran {pump.lastFinishedAt ? ago(pump.lastFinishedAt) : 'recently'}
+        {pump.scheduled ? ', every 15 minutes' : ''}
+      </p>
     );
   }
 
@@ -74,7 +61,6 @@ export function HealthCard() {
       {pump.lastFinishedAt && (
         <p className="tiny muted">Background work last ran {ago(pump.lastFinishedAt)} · {pump.passesLastDay} passes in the last day</p>
       )}
-      {spendLine}
     </section>
   );
 }
