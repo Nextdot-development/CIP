@@ -233,15 +233,19 @@ export async function generateWithBrain(
 
   // Both notes appended in one go, and the prompt trimmed once. Appending them
   // separately meant the second one's trim could cut the first one off.
+  // With a brand, its approved logo is placed afterwards: every ask to draw
+  // one comes out of the prompt, and the corner it goes in is asked for first.
+  const stamping = input.mediaType === 'image' && Boolean(plan.brief.brand);
+  const briefPrompt = stamping ? `${LOGO_LEAD} ${withoutLogoAsks(promptFromBrief(plan.brief))}` : promptFromBrief(plan.brief);
   const prompt =
     input.mediaType === 'image'
-      ? withNotes(promptFromBrief(plan.brief), [
+      ? withNotes(briefPrompt, [
           referenceNote(attached.length, shots),
           framingNote(shape),
           LEGAL_LINES_NOTE,
-          plan.brief.brand ? LOGO_NOTE : null,
+          stamping ? LOGO_NOTE : null,
         ])
-      : withNotes(promptFromBrief(plan.brief), [LEGAL_LINES_NOTE]);
+      : withNotes(briefPrompt, [LEGAL_LINES_NOTE]);
 
   const generation =
     input.mediaType === 'image'
@@ -668,6 +672,36 @@ function referenceNote(attached: number, shots: number): string | null {
 const LOGO_NOTE =
   "Do not draw any brand logo, emblem or wordmark anywhere except as printed on the product's own " +
   'label. Keep the top-right corner free of text and busy detail: the approved logo is placed there afterwards.';
+
+/** Said first, because a generator weighs the start of a prompt most. */
+const LOGO_LEAD =
+  'Leave the top-right corner of the frame - about a fifth of its width - as plain background: ' +
+  'no text, no logo, no objects.';
+
+/**
+ * The prompt without any ask to draw a logo.
+ *
+ * The brief faithfully repeats the brand's rule - "place the logo top-right" -
+ * up to three times, and a generator told that and then told not to draw one
+ * drew one anyway: the approved logo then landed on top of its imitation.
+ * A clause about the product's own label stays: that logo is printed on the pack.
+ */
+export function withoutLogoAsks(prompt: string): string {
+  const LOGO = /\b(logos?|wordmarks?|emblems?|logotypes?)\b/i;
+  const LABEL = /\b(label|pack|bottle)\b/i;
+  return prompt
+    .split(/(?<=[.;])\s+/)
+    .map((sentence) => {
+      if (!LOGO.test(sentence) || LABEL.test(sentence)) return sentence;
+      // Only the clauses about the logo go: "do NOT show people, do NOT alter the logo" keeps the first.
+      const kept = sentence.split(/,\s+/).filter((clause) => !LOGO.test(clause));
+      if (kept.length === 0) return '';
+      const joined = kept.join(', ');
+      return /[.;]$/.test(joined) ? joined : `${joined}.`;
+    })
+    .filter((sentence) => sentence.trim() && !/^[A-Za-z ]+:\s*[.;]?$/.test(sentence.trim()))
+    .join(' ');
+}
 
 const LEGAL_LINES_NOTE =
   'Do not include any health warning, "Drink Responsibly" line, age mark such as 18+ or 25+, ' +

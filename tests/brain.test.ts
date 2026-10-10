@@ -2825,6 +2825,21 @@ describe('what the Brain hands the generator', () => {
     );
   });
 
+  it('takes every ask to draw a logo out of the prompt, but not the product label', async () => {
+    const { withoutLogoAsks } = await import('../src/server/brain/generate');
+    const out = withoutLogoAsks(
+      'Branding: place the small Magic Moments logo in the top-right corner. ' +
+        'Prohibitions: do NOT include chocolate pieces, do NOT alter the brand logo, do NOT show people. ' +
+        'Brand logo must sit in the top-right corner.; Keep the bottom edge calm. ' +
+        'Reproduce the product exactly: the same label, the same logo.',
+    );
+    assert.doesNotMatch(out, /top-right corner/);
+    assert.doesNotMatch(out, /alter the brand logo/);
+    assert.match(out, /do NOT include chocolate pieces, do NOT show people/);
+    assert.match(out, /Keep the bottom edge calm/);
+    assert.match(out, /the same label, the same logo/);
+  });
+
   it("places the brand's own logo top-right, in the version that stands out", async () => {
     const { createCanvas } = await import('@napi-rs/canvas');
     const solid = (w: number, h: number, colour: string) => {
