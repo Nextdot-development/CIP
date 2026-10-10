@@ -474,11 +474,6 @@ export function AskSection({
 
       {busy && <Working phase={phase} mediaType={mediaType} startedAt={startedAt} qcStep={qcStep} draft={madeId} />}
 
-      {/* What CIP decided, before what it produced. Shown either way, because
-          the reasoning is what makes a bad result correctable — and shown as
-          soon as it exists, which is well before the picture. */}
-      {(result?.plan ?? planned) && <Plan plan={(result?.plan ?? planned)!} />}
-
       {failure && (
         <Card className="pad">
           <p className="strong" style={{ marginBottom: 4 }}>
@@ -528,6 +523,10 @@ export function AskSection({
           onBuildOn={(g) => setBasedOn({ id: g.id, prompt: g.prompt })}
         />
       )}
+
+      {/* How CIP made it, under the picture and folded away: the picture is
+          what a person came for, and the reasoning is there when they want it. */}
+      {(result?.plan ?? planned) && <Plan plan={(result?.plan ?? planned)!} />}
 
       <div className="sec-head">
         <div>
@@ -691,120 +690,74 @@ function Working({
 /** What CIP decided to make, and what it leaned on to decide it. */
 function Plan({ plan }: { plan: PlanSummary }) {
   const context = [plan.campaign, plan.product, plan.platform].filter(Boolean);
+  const shape = plan.deliveredShape ?? plan.aspectRatio;
+  const noPhoto = !(plan.productShots?.length > 0);
+
+  // At most three of each, short: the full brief is not what a person reads.
+  const few = (items: string[]) => {
+    const unique = [...new Set(items)];
+    return { shown: unique.slice(0, 3), more: Math.max(0, unique.length - 3) };
+  };
+  const sections: { title: string; items: string[] }[] = [
+    { title: 'Add at layout, not in the picture', items: plan.mustCarry ?? [] },
+    { title: 'Brand rules followed', items: plan.brandRules },
+    { title: 'From your feedback', items: plan.learnedPreferences },
+    { title: 'Avoided', items: plan.avoid },
+  ];
 
   return (
-    <Card className="pad">
-      <div className="row" style={{ justifyContent: 'space-between', marginBottom: 10 }}>
-        <p className="strong">What CIP understood</p>
-        <Pill tone={plan.confidence >= 0.6 ? 'ok' : 'warn'}>
-          {Math.round(plan.confidence * 100)}% sure
-        </Pill>
+    <details className="card pad plan-fold">
+      <summary className="row" style={{ justifyContent: 'space-between', gap: 8, cursor: 'pointer' }}>
+        <span className="small">
+          <strong>How CIP made this</strong>
+          <span className="muted"> · {[plan.formatLabel, ...context, shape].filter(Boolean).join(' · ')}</span>
+          {noPhoto && <span style={{ color: 'var(--warn-700)' }}> · ⚠ no product photo</span>}
+        </span>
+        <span className="row" style={{ gap: 8 }}>
+          <Pill tone={plan.confidence >= 0.6 ? 'ok' : 'warn'}>{Math.round(plan.confidence * 100)}% sure</Pill>
+          <Icon name="chevron-down" size={14} className="plan-chevron" />
+        </span>
+      </summary>
+
+      <div style={{ marginTop: 10 }}>
+        {noPhoto ? (
+          <p className="small" style={{ color: 'var(--warn-700)' }}>
+            <Icon name="alert" size={13} /> No photo of this product, so the bottle is made up. Add one under
+            {' '}&ldquo;Add data to brain&rdquo;.
+          </p>
+        ) : (
+          <p className="small muted">
+            <Icon name="image" size={13} /> Used your product photo: {plan.productShots[0]!.replace(/\.[a-z0-9]+$/i, '')}
+          </p>
+        )}
+
+        {plan.switchedProvider && (
+          <p className="small muted">Made with {IMAGE_PROVIDER_LABELS[plan.switchedProvider.to]}: {plan.switchedProvider.because}.</p>
+        )}
+        {!plan.exactShape && !plan.deliveredShape && (
+          <p className="small" style={{ color: 'var(--warn-700)' }}>
+            <Icon name="alert" size={13} /> Closest shape the generator makes{plan.aspectRatio ? ` (${plan.aspectRatio})` : ''}.
+          </p>
+        )}
+
+        {sections.filter((x) => x.items.length > 0).map((section) => {
+          const { shown, more } = few(section.items);
+          return (
+            <div className="plan-block" key={section.title}>
+              <p className="tiny muted">{section.title}</p>
+              {shown.map((item) => <p className="small" key={item}>· {item}</p>)}
+              {more > 0 && <p className="tiny muted">+{more} more</p>}
+            </div>
+          );
+        })}
+
+        {plan.references.length > 0 && (
+          <p className="tiny muted" style={{ marginTop: 8 }}>
+            Based on {plan.references.length} of your file{plan.references.length === 1 ? '' : 's'}
+          </p>
+        )}
       </div>
-
-      <p className="small muted" style={{ marginBottom: 10 }}>
-        {[plan.formatLabel, ...context].join(' · ')}
-        {/* The shape delivered, which is the one that was asked for. The
-            generator's own shape is an implementation detail of getting
-            there. */}
-        {plan.deliveredShape ? ` · ${plan.deliveredShape}` : plan.aspectRatio ? ` · ${plan.aspectRatio}` : ''}
-      </p>
-
-      {/* Only when something was actually trimmed. This used to say "your
-          generator makes 1:1, so CIP makes that and cuts it to 1:1 for you",
-          which described the mechanism and read as nonsense. */}
-      {plan.cropped && plan.deliveredShape && plan.aspectRatio && (
-        <p className="small muted" style={{ marginBottom: 10 }}>
-          Your generator makes {plan.aspectRatio}, so CIP makes that and cuts it to
-          {' '}{plan.deliveredShape} for you.
-        </p>
-      )}
-
-      {plan.switchedProvider && (
-        <p className="small muted" style={{ marginBottom: 10 }}>
-          Made with {IMAGE_PROVIDER_LABELS[plan.switchedProvider.to]}: {plan.switchedProvider.because}.
-        </p>
-      )}
-
-      {/* Only when nothing can be done about it — a video, which is not
-          re-cut here. An image is always delivered in the shape asked for. */}
-      {!plan.exactShape && !plan.deliveredShape && (
-        <p className="small" style={{ marginBottom: 10, color: 'var(--warn-700)' }}>
-          <Icon name="alert" size={14} /> Your generator cannot make a
-          {' '}{plan.formatLabel.toLowerCase()} exactly. This is the closest shape it offers
-          {plan.aspectRatio ? ` (${plan.aspectRatio})` : ''}.
-        </p>
-      )}
-
-      {/* Whether the generator was shown the actual product. Without it the
-          bottle on the result is the model's idea of a bottle, with a label
-          carrying words nobody printed — which is worth saying before somebody
-          takes it for the real thing. */}
-      {plan.productShots?.length > 0 ? (
-        <p className="small muted" style={{ marginBottom: 10 }}>
-          <Icon name="image" size={14} /> Built from your own product photo
-          {plan.productShots.length > 1 ? 's' : ''}: {plan.productShots.join(', ')}
-        </p>
-      ) : (
-        <p className="small" style={{ marginBottom: 10, color: 'var(--warn-700)' }}>
-          <Icon name="alert" size={14} /> CIP has no photograph of this product, so the pack in
-          this result is invented. Add one under &ldquo;Add data to brain&rdquo; and it will be
-          copied instead.
-        </p>
-      )}
-
-      {/* The statutory lines this market requires. Not drawn into the
-          picture - the team sets them at layout, in the approved wording. */}
-      {plan.mustCarry?.length > 0 && (
-        <div className="plan-block">
-          <p className="tiny muted">Add at layout, not in the picture</p>
-          {plan.mustCarry.map((rule) => <p className="small" key={rule}>· {rule}</p>)}
-        </div>
-      )}
-
-      {plan.brandRules.length > 0 && (
-        <div className="plan-block">
-          <p className="tiny muted">From your brand</p>
-          {plan.brandRules.map((rule) => <p className="small" key={rule}>· {rule}</p>)}
-        </div>
-      )}
-
-      {plan.learnedPreferences.length > 0 && (
-        <div className="plan-block">
-          <p className="tiny muted">Learned from your feedback</p>
-          {plan.learnedPreferences.map((p) => <p className="small" key={p}>· {p}</p>)}
-        </div>
-      )}
-
-      {plan.avoid.length > 0 && (
-        <div className="plan-block">
-          <p className="tiny muted">Avoiding</p>
-          {plan.avoid.map((a) => <p className="small" key={a}>· {a}</p>)}
-        </div>
-      )}
-
-      {/* Used, like everything above, but standing on one or two ratings. The
-          page showed these exactly as it shows a pattern forty assets agree
-          on, so a single "make the bottle enormous" read as the brand's rule. */}
-      {plan.pendingLessons?.length > 0 && (
-        <div className="plan-block">
-          <p className="tiny muted">Used, but not settled yet</p>
-          {plan.pendingLessons.map((lesson) => (
-            <p className="small" key={lesson.statement}>
-              · {lesson.statement}{' '}
-              <span className="muted">
-                ({lesson.evidenceCount} rating{lesson.evidenceCount === 1 ? '' : 's'} so far)
-              </span>
-            </p>
-          ))}
-        </div>
-      )}
-
-      {plan.references.length > 0 && (
-        <p className="tiny muted" style={{ marginTop: 10 }}>
-          Looked at {plan.references.map((r) => r.fileName).join(', ')}
-        </p>
-      )}
-    </Card>
+    </details>
   );
 }
 

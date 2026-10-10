@@ -102,6 +102,12 @@
    they can correct.
    --------------------------------------------------------------------------- */
 .plan-block { margin-top: 12px; }
+/* How CIP made it: one line, folded, under the picture. */
+.plan-fold { margin-top: 12px; }
+.plan-fold summary { list-style: none; }
+.plan-fold summary::-webkit-details-marker { display: none; }
+.plan-fold .plan-chevron { transition: transform .15s ease; }
+.plan-fold[open] .plan-chevron { transform: rotate(180deg); }
 .plan-block p.small { margin-top: 2px; color: var(--ink-700); }
 
 .gen-list { display: grid; gap: 12px; }
