@@ -22,6 +22,8 @@ import {
 import type { MediaAssetDTO, MediaGenerationDTO, MediaStatus, MediaType } from './types';
 import { fitForVision } from '../brain/fitImage';
 import { reframe } from './reframe';
+import { stampLogo } from './logoStamp';
+import type { StampOutcome } from './logoStamp';
 import type { TargetShape } from './reframe';
 
 /**
@@ -116,6 +118,11 @@ export type ImageGenerationInput = {
    * image goes in as a reference image like any other.
    */
   basedOnGenerationId?: unknown;
+  /**
+   * The brand whose approved logo is placed on the picture once it is made.
+   * Null or absent: nothing is placed.
+   */
+  stampLogoFor?: string | null;
 };
 
 export type VideoGenerationInput = {
@@ -214,7 +221,27 @@ export async function generateImage(
         )
       : result.assets;
 
-    await completeGeneration(scope, id, assets, result.usage, result.model);
+    // The brand's own logo, placed rather than drawn: a generator only ever
+    // draws its impression of one.
+    let logo: StampOutcome | null = null;
+    const finished = input.stampLogoFor
+      ? await Promise.all(
+          assets.map(async (asset) => {
+            const stamped = await stampLogo(scope, input.stampLogoFor!, asset);
+            logo = stamped.outcome;
+            return { ...asset, bytes: stamped.bytes, mimeType: stamped.mimeType };
+          }),
+        )
+      : assets;
+
+    await completeGeneration(scope, id, finished, result.usage, result.model);
+    if (logo) {
+      await withCompanyScope(scope, (tx) => tx`
+        update media_generations
+           set output_metadata = coalesce(output_metadata, '{}'::jsonb) || ${tx.json({ logo })}
+         where id = ${id} and company_id = ${scope.companyId}
+      `);
+    }
   } catch (error) {
     await failGeneration(scope, id, error);
     // Re-thrown so the caller learns immediately rather than polling a record

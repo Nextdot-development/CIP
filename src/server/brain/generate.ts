@@ -239,6 +239,7 @@ export async function generateWithBrain(
           referenceNote(attached.length, shots),
           framingNote(shape),
           LEGAL_LINES_NOTE,
+          plan.brief.brand ? LOGO_NOTE : null,
         ])
       : withNotes(promptFromBrief(plan.brief), [LEGAL_LINES_NOTE]);
 
@@ -261,6 +262,7 @@ export async function generateWithBrain(
           // person asked for, and the one that comes back.
           deliverShape: shape.deliver,
           basedOnGenerationId: input.basedOnGenerationId,
+          stampLogoFor: plan.brief.brand ?? null,
         })
       : await generateVideo(scope, {
           prompt,
@@ -659,6 +661,14 @@ function referenceNote(attached: number, shots: number): string | null {
  * strip of its own - misspelt, and wherever it likes. The team sets them at
  * layout in the approved wording.
  */
+/**
+ * The approved logo is placed on the picture afterwards (see logoStamp), so
+ * the generator draws none of its own and keeps the corner it goes in clear.
+ */
+const LOGO_NOTE =
+  "Do not draw any brand logo, emblem or wordmark anywhere except as printed on the product's own " +
+  'label. Keep the top-right corner free of text and busy detail: the approved logo is placed there afterwards.';
+
 const LEGAL_LINES_NOTE =
   'Do not include any health warning, "Drink Responsibly" line, age mark such as 18+ or 25+, ' +
   'or other legal disclaimer text anywhere in the image.';

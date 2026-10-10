@@ -285,6 +285,31 @@ export const RADICO_QC_RULES: QcRuleSeed[] = [
     category: 'other',
   }),
 
+  // ---- Said by the Radico team, 10 Oct 2026 ------------------------------
+  // Not in the document. "Use the chocolate flavour bottle" came back covered
+  // in chocolate; the flavour is the pack, not a prop.
+  {
+    code: 'RADICO-GEN-FLAV-001',
+    from: 'Radico team instruction, 10 Oct 2026',
+    brand: null,
+    product: null,
+    market: null,
+    domain: 'Visual',
+    ruleType: 'preferred',
+    severity: 'minor',
+    rule:
+      'A flavour named in the request - Chocolate, Honey, Fire - is the variant whose approved pack is shown. ' +
+      'Do not add the flavour itself (chocolate, honey, bees, cinnamon, fruit) to the picture unless the request asks for it.',
+    rationale:
+      'The pack and its name already say the flavour. Ingredient imagery added on its own reads as a different product.',
+    allowed: ['The flavour variant\'s approved pack', 'Flavour imagery when the request asks for it'],
+    prohibited: ['Chocolate, honey or other flavour ingredients added without being asked for'],
+    humanReview: false,
+    requirement: 'forbidden',
+    category: 'other',
+    format: 'all',
+  },
+
   // ---- §8 8PM Honey ----------------------------------------------------
   {
     code: '8PM_HONEY_VIS_001',

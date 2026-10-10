@@ -2825,6 +2825,46 @@ describe('what the Brain hands the generator', () => {
     );
   });
 
+  it("places the brand's own logo top-right, in the version that stands out", async () => {
+    const { createCanvas } = await import('@napi-rs/canvas');
+    const solid = (w: number, h: number, colour: string) => {
+      const c = createCanvas(w, h);
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = colour;
+      ctx.fillRect(0, 0, w, h);
+      return c.toBuffer('image/png');
+    };
+    const put = async (name: string, body: Buffer) => {
+      const file = await drive.uploadFile(mm, { folderId: null, filename: name, mimeType: 'image/png', body });
+      await adminSql`update drive_files set brand = 'Magic Moments' where id = ${file.id}`;
+    };
+    await put('mm logo white.png', solid(200, 80, '#ffffff'));
+    await put('mm logo dark.png', solid(200, 80, '#101010'));
+
+    const { stampLogo } = await import('../src/server/media/logoStamp');
+    const { loadImage } = await import('@napi-rs/canvas');
+    const pixelAt = async (bytes: Buffer, x: number, y: number) => {
+      const img = await loadImage(bytes);
+      const c = createCanvas(img.width, img.height).getContext('2d');
+      c.drawImage(img, 0, 0);
+      return Array.from(c.getImageData(x, y, 1, 1).data.slice(0, 3));
+    };
+
+    // A dark picture gets the white logo, top-right; the rest is untouched.
+    const dark = await stampLogo(mm, 'Magic Moments', { bytes: solid(1000, 1000, '#202020'), mimeType: 'image/png' });
+    assert.deepEqual(dark.outcome, { status: 'stamped', logo: 'mm logo white.png' });
+    assert.deepEqual(await pixelAt(dark.bytes, 1000 - 45 - 90, 45 + 30), [255, 255, 255]);
+    assert.deepEqual(await pixelAt(dark.bytes, 100, 900), [32, 32, 32]);
+
+    // A light one gets the dark logo.
+    const light = await stampLogo(mm, 'Magic Moments', { bytes: solid(1000, 1000, '#f4f4f4'), mimeType: 'image/png' });
+    assert.deepEqual(light.outcome, { status: 'stamped', logo: 'mm logo dark.png' });
+
+    // A brand with no logo file: the picture comes back as it was, and says why.
+    const none = await stampLogo(mm, 'Rampur', { bytes: solid(100, 100, '#808080'), mimeType: 'image/png' });
+    assert.deepEqual(none.outcome, { status: 'no_logo' });
+  });
+
   it('leaves statutory lines to the layout, and tells the generator not to draw any', async () => {
     const checker = await import('../src/server/brain/checker');
     await checker.addComplianceRule(mm, {
