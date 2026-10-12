@@ -85,6 +85,8 @@ const SAFE_KEY = new RegExp(
     // A frame a video check was judged on, kept small so a flag can show the
     // moment it is about. Numbered, never named: 1 to 99, nothing a caller chose.
     `|check-frames\\/${UUID}\\/(?:[1-9]|[1-9][0-9])` +
+    // A finished film from the video editor, named by its edit.
+    `|video-edits\\/${UUID}` +
     `)${EXTENSION}$`,
   'i',
 );
@@ -101,6 +103,11 @@ export function thumbnailKeyFor(companyId: string, fileId: string, edge: Thumbna
 /** Where frame `n` (from 1) of a video check lives. */
 export function checkFrameKeyFor(companyId: string, checkId: string, n: number): string {
   return `companies/${companyId}/check-frames/${checkId}/${n}.jpg`;
+}
+
+/** Where the finished film of one video edit lives. */
+export function videoEditKeyFor(companyId: string, editId: string): string {
+  return `companies/${companyId}/video-edits/${editId}.mp4`;
 }
 
 /** Where one rendered page of a PDF lives. */

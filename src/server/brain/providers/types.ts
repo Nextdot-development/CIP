@@ -561,6 +561,13 @@ export interface BrainProvider {
    * from those; nothing is added from what the model happens to know.
    */
   digestFilings(input: DigestInput): Promise<FilingsDigest>;
+
+  /**
+   * Plans the edit of a talking-head recording: the fumbles to cut, the title,
+   * the on-screen points and the b-roll. Implementations send the words and
+   * their times, the doctor's name and the rules - nothing else.
+   */
+  planVideoEdit(input: VideoPlanInput): Promise<VideoPlan>;
 }
 
 /** What a market signal is about. A closed list, so the page can group them. */
@@ -784,6 +791,29 @@ export type FilingsDigest = {
   headline: string;
   /** At most eight, each one sentence, each from one filing. */
   points: { ref: string; company: string; point: string }[];
+  usage: BrainUsage;
+};
+
+/** A doctor's talking-head recording, word by word, to plan the edit of. */
+export type VideoPlanInput = {
+  doctorName: string;
+  category?: 'alcohol' | 'healthcare' | 'general';
+  /** Every word, with when it starts and ends, in seconds. */
+  words: { w: string; from: number; to: number }[];
+  /** The company's rules, so a key point that breaks one is caught here. */
+  rules: { ref: string; rule: string }[];
+};
+
+/** What to cut, what to say on screen, and where b-roll goes. Times are in the source recording. */
+export type VideoPlan = {
+  /** The topic, for the title card. The doctor's name is added by CIP, never written by the model. */
+  title: string;
+  /** Fumbles, false starts and retakes to remove. */
+  cuts: { from: number; to: number; reason: string }[];
+  /** On-screen key points, each shown while the doctor says it. */
+  points: { text: string; from: number; to: number; concern: string | null; ruleRefs: string[] }[];
+  /** Moments a cutaway would help, and what to show. */
+  broll: { query: string; from: number; to: number }[];
   usage: BrainUsage;
 };
 

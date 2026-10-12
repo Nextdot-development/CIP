@@ -26,6 +26,8 @@ import type {
   ReviewInput,
   DigestInput,
   FilingsDigest,
+  VideoPlan,
+  VideoPlanInput,
   ReviewVerdict,
   FramesCheckAnalysis,
   FramesCheckInput,
@@ -64,7 +66,7 @@ export class FakeBrainProvider implements BrainProvider {
   /** Set by tests to exercise a failure path. */
   failWith: BrainFailed | null = null;
   /** Counts calls, so idempotency can be proved rather than assumed. */
-  calls = { image: 0, frames: 0, document: 0, pdfPage: 0, feedback: 0, brief: 0, check: 0, identify: 0, market: 0, chat: 0, ideas: 0, ocr: 0, frameText: 0, review: 0, closePass: 0, digest: 0 };
+  calls = { image: 0, frames: 0, document: 0, pdfPage: 0, feedback: 0, brief: 0, check: 0, identify: 0, market: 0, chat: 0, ideas: 0, ocr: 0, frameText: 0, review: 0, closePass: 0, digest: 0, videoPlan: 0 };
 
   /**
    * What the next checks report. Null means a clean pass.
@@ -147,6 +149,7 @@ export class FakeBrainProvider implements BrainProvider {
     this.checkAssetKind = null;
     this.lastCheckInput = null;
     this.lastBriefInput = null;
+    this.videoPlan = null;
     this.frameTexts = null;
     this.frameReadFails = false;
     this.reviewVerdicts = null;
@@ -158,7 +161,7 @@ export class FakeBrainProvider implements BrainProvider {
     this.marketSignals = null;
     this.chatAnswer = null;
     this.lastChatInput = null;
-    this.calls = { image: 0, frames: 0, document: 0, pdfPage: 0, feedback: 0, brief: 0, check: 0, identify: 0, market: 0, chat: 0, ideas: 0, ocr: 0, frameText: 0, review: 0, closePass: 0, digest: 0 };
+    this.calls = { image: 0, frames: 0, document: 0, pdfPage: 0, feedback: 0, brief: 0, check: 0, identify: 0, market: 0, chat: 0, ideas: 0, ocr: 0, frameText: 0, review: 0, closePass: 0, digest: 0, videoPlan: 0 };
   }
 
   private check(): void {
@@ -592,6 +595,24 @@ export class FakeBrainProvider implements BrainProvider {
         frame: this.reviewPlaces?.[i]?.frame ?? 0,
         box: this.reviewPlaces?.[i]?.box ?? [],
       })),
+      usage: { durationMs: 1 },
+    };
+  }
+
+  /** What the next video plan says; a plain one is made from the words when unset. */
+  videoPlan: Omit<VideoPlan, 'usage'> | null = null;
+
+  async planVideoEdit(input: VideoPlanInput): Promise<VideoPlan> {
+    this.calls.videoPlan += 1;
+    this.check();
+    const end = input.words.at(-1)?.to ?? 0;
+    return {
+      ...(this.videoPlan ?? {
+        title: input.words.slice(0, 4).map((w) => w.w).join(' '),
+        cuts: [],
+        points: end > 3 ? [{ text: input.words.slice(0, 3).map((w) => w.w).join(' '), from: 0, to: Math.min(end, 4), concern: null, ruleRefs: [] }] : [],
+        broll: [],
+      }),
       usage: { durationMs: 1 },
     };
   }

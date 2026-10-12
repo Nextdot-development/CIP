@@ -48,9 +48,9 @@ export async function getWorkspace(session: AuthenticatedSession): Promise<W.Wor
 
 async function loadCompany(tx: TransactionSql, scope: CompanyScope): Promise<W.CompanyDTO> {
   const rows = await tx<
-    { id: string; slug: string; name: string; legal_name: string | null; industry: string | null; logo_url: string | null }[]
+    { id: string; slug: string; name: string; legal_name: string | null; industry: string | null; category: W.CompanyDTO['category'] | null; logo_url: string | null }[]
   >`
-    select id, slug, name, legal_name, industry, logo_url
+    select id, slug, name, legal_name, industry, category, logo_url
       from companies where id = ${scope.companyId}
   `;
   const row = rows[0];
@@ -61,6 +61,7 @@ async function loadCompany(tx: TransactionSql, scope: CompanyScope): Promise<W.C
     name: row.name,
     legalName: row.legal_name,
     industry: row.industry,
+    category: row.category ?? 'general',
     logoUrl: row.logo_url,
   };
 }

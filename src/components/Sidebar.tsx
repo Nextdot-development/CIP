@@ -47,6 +47,8 @@ const MODULE_NAV: NavItem[] = [
   { label: 'Social Calendar', icon: 'calendar', href: '/calendar' },
 ];
 
+const VIDEO_STUDIO: NavItem = { label: 'Video Studio', icon: 'play', href: '/video' };
+
 export function Sidebar({
   notices,
   brands,
@@ -146,7 +148,11 @@ export function Sidebar({
       <div className="navdivider" />
 
       <div className="navlabel">Modules</div>
-      <div className="navgroup">{MODULE_NAV.map(renderItem)}</div>
+      <div className="navgroup">
+        {MODULE_NAV.map(renderItem)}
+        {/* Doctors' recordings into films: a hospital's module, not a distiller's. */}
+        {workspace.category === 'healthcare' && renderItem(VIDEO_STUDIO)}
+      </div>
 
       <div className="side-foot">
         <SideDrawers initial={notices} />

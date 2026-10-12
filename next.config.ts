@@ -26,6 +26,10 @@ const nextConfig: NextConfig = {
     // failed with "Setting up fake worker failed" - eight exchange filings
     // in a row. Any route can end up reading a PDF, so every route ships it.
     '/**': ['./node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs'],
+    // The video editor cuts with ffmpeg and draws its cards in a font that
+    // ships with CIP; both are read from disk, so both are named here.
+    '/api/cron/pump': ['./node_modules/ffmpeg-static/ffmpeg*', './src/server/video/fonts/*'],
+    '/api/video/**': ['./node_modules/ffmpeg-static/ffmpeg*', './src/server/video/fonts/*'],
   },
   // Next writes AGENTS.md/CLAUDE.md by default; this repo keeps its own docs.
   agentRules: false,

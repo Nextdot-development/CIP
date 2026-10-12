@@ -20,6 +20,7 @@
     "storage:gc": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/storage-gc.ts",
     "embed:assets": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/embed-assets.ts",
     "calendar:health": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/load-health-days.ts",
+    "video:render": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/render-video.ts",
     "rules:load": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/load-qc-rules.ts",
     "qc:eval": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/qc-eval.ts",
     "export:training": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/export-training.ts",

@@ -1,6 +1,7 @@
 import 'server-only';
 import { checkFeedsEverywhere, digestsEverywhere, releaseReadFilings } from '../brain/filings';
 import { restoreFromSources } from '../drive/restore';
+import { renderApprovedEdits } from '../video/edit';
 import { claimNextFile, processClaimedFile, recoverStuckFiles } from '../drive/processing';
 import { claimChunksNeedingEmbedding, embedClaimedChunks } from '../drive/embeddingQueue';
 import { embedUnderstandingsEverywhere } from '../drive/assetSearch';
@@ -349,6 +350,13 @@ async function runPass(): Promise<PumpTally> {
       if (!outcome) break;
       if (outcome.status === 'learned') tally.lessons += outcome.lessons;
     }
+  });
+
+  // 7.5 A film a person has approved, made from its plan. One a pass: a film
+  //     takes minutes.
+  await stage(async () => {
+    if (outOfTime()) return;
+    await renderApprovedEdits({ outOfTime });
   });
 
   // 8. A filing that has been read in full is not kept: what it said is in

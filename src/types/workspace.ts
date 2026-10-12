@@ -20,6 +20,8 @@ export type CompanyDTO = {
   name: string;
   legalName: string | null;
   industry: string | null;
+  /** What kind of company: alcohol, healthcare or general. Decides wording and modules. */
+  category: 'alcohol' | 'healthcare' | 'general';
   logoUrl: string | null;
 };
 

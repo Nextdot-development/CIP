@@ -85,6 +85,7 @@ export function toView(w: W.WorkspaceDTO, now: Date = new Date()) {
     name: w.company.name,
     legalName: w.company.legalName,
     industry: w.company.industry,
+    category: w.company.category,
     logoUrl: w.company.logoUrl,
 
     user: {

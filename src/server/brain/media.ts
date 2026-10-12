@@ -51,6 +51,14 @@ function ffmpegPath(): string {
   return process.env.CIP_FFMPEG_PATH ?? bundledFfmpeg ?? 'ffmpeg';
 }
 
+/**
+ * Runs ffmpeg with the given arguments. For the video editor, which builds
+ * its own filter graphs; everything here keeps its own narrower helpers.
+ */
+export async function runFfmpeg(args: string[], timeoutMs: number): Promise<void> {
+  await run(ffmpegPath(), args, { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 });
+}
+
 function ffprobePath(): string {
   return process.env.CIP_FFPROBE_PATH ?? 'ffprobe';
 }

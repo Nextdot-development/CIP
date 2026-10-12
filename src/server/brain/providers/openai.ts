@@ -51,6 +51,8 @@ import type {
   ReviewInput,
   DigestInput,
   FilingsDigest,
+  VideoPlan,
+  VideoPlanInput,
   ReviewVerdict,
   VideoSequence,
 } from './types';
@@ -566,6 +568,49 @@ const FRAME_TEXT_SCHEMA = {
 } as const;
 
 /** A week of filings, written up. */
+/** The edit of a talking-head recording. */
+const VIDEO_PLAN_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['title', 'cuts', 'points', 'broll'],
+  properties: {
+    title: { type: 'string' },
+    cuts: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['from', 'to', 'reason'],
+        properties: { from: { type: 'number' }, to: { type: 'number' }, reason: { type: 'string' } },
+      },
+    },
+    points: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['text', 'from', 'to', 'concern', 'ruleRefs'],
+        properties: {
+          text: { type: 'string' },
+          from: { type: 'number' },
+          to: { type: 'number' },
+          concern: { type: ['string', 'null'] },
+          ruleRefs: { type: 'array', items: { type: 'string' } },
+        },
+      },
+    },
+    broll: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['query', 'from', 'to'],
+        properties: { query: { type: 'string' }, from: { type: 'number' }, to: { type: 'number' } },
+      },
+    },
+  },
+} as const;
+
 const DIGEST_SCHEMA = {
   type: 'object',
   additionalProperties: false,
@@ -1379,6 +1424,68 @@ export class OpenAIBrainProvider implements BrainProvider {
 
     const { parsed, usage } = await this.call<{ concepts: ConceptDraft[] }>(content, IDEAS_SCHEMA, 'campaign_concepts', 5_000);
     return { concepts: Array.isArray(parsed.concepts) ? parsed.concepts : [], usage };
+  }
+
+  async planVideoEdit(input: VideoPlanInput): Promise<VideoPlan> {
+    const end = input.words.at(-1)?.to ?? 0;
+    // One word a line, with when it starts: precise enough to cut on.
+    const transcript = input.words.map((w) => `${w.from.toFixed(2)} ${w.w}`).join('\n');
+    const rules = input.rules.map((r) => `${r.ref} ${r.rule}`).join('\n');
+
+    const { parsed, usage } = await this.call<Omit<VideoPlan, 'usage'>>(
+      [
+        {
+          type: 'text',
+          text:
+            'Below is a recording of a doctor speaking to camera, word by word, each line the time in ' +
+            'seconds the word starts and the word. Plan its edit into a short, clean film.\n\n' +
+            'cuts: the fumbles to remove - false starts, repeated words, a sentence begun again, long ' +
+            '"um"s, and anything said twice where the second take is the one to keep. Each from the start ' +
+            'of the first unwanted word to the start of the next wanted one. Never cut to change what the ' +
+            'doctor means, and never cut mid-sentence otherwise.\n\n' +
+            'title: the topic in at most eight plain words, as a viewer would search for it. Do not include ' +
+            "the doctor's name; it is added separately.\n\n" +
+            'points: three to six on-screen key points, each at most eight words, each shown from when the ' +
+            'doctor begins saying it to when they finish (at least three seconds). Use the doctor\'s own ' +
+            'claim, never a stronger one: "may help" stays "may help", never "cures". Check every point ' +
+            'against the rules below; where a point could break one, give the concern in a few words and the ' +
+            'rule refs, otherwise concern is null and ruleRefs empty.\n\n' +
+            'broll: up to four moments where a cutaway would help the viewer - a body part, a procedure, a ' +
+            'hospital setting - each with a short search query for footage, and from/to of three to six ' +
+            'seconds. Never over a moment the doctor is demonstrating something to camera.\n\n' +
+            `Rules:\n${rules || '(none)'}\n\nTranscript (${end.toFixed(1)} seconds):\n${transcript}`,
+        },
+      ],
+      VIDEO_PLAN_SCHEMA,
+      'video_plan',
+      6_000,
+    );
+
+    // Times only within the recording, each span the right way round.
+    const span = <T extends { from: number; to: number }>(x: T): T | null => {
+      const from = Math.max(0, Math.min(Number(x.from) || 0, end));
+      const to = Math.max(0, Math.min(Number(x.to) || 0, end));
+      return to > from ? { ...x, from, to } : null;
+    };
+    const refs = new Set(input.rules.map((r) => r.ref));
+    return {
+      title: typeof parsed.title === 'string' ? parsed.title.trim().slice(0, 120) : '',
+      cuts: (Array.isArray(parsed.cuts) ? parsed.cuts : []).map(span).filter((c): c is NonNullable<typeof c> => c !== null)
+        .map((c) => ({ from: c.from, to: c.to, reason: String(c.reason ?? '').slice(0, 120) })),
+      points: (Array.isArray(parsed.points) ? parsed.points : []).map(span).filter((p): p is NonNullable<typeof p> => p !== null && Boolean(p.text?.trim()))
+        .slice(0, 8)
+        .map((p) => ({
+          text: p.text.trim().slice(0, 80),
+          from: p.from,
+          to: p.to,
+          concern: typeof p.concern === 'string' && p.concern.trim() ? p.concern.trim().slice(0, 200) : null,
+          ruleRefs: (Array.isArray(p.ruleRefs) ? p.ruleRefs : []).filter((r) => refs.has(r)),
+        })),
+      broll: (Array.isArray(parsed.broll) ? parsed.broll : []).map(span).filter((b): b is NonNullable<typeof b> => b !== null && Boolean(b.query?.trim()))
+        .slice(0, 6)
+        .map((b) => ({ query: b.query.trim().slice(0, 120), from: b.from, to: b.to })),
+      usage,
+    };
   }
 
   async digestFilings(input: DigestInput): Promise<FilingsDigest> {
