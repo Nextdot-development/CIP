@@ -1,5 +1,6 @@
 import 'server-only';
 import { recordUsage } from '../usage';
+import { WORDS } from '../categoryWords';
 import { marketPrompt } from './prompts';
 import {
   BRAIN_LIMITS,
@@ -621,9 +622,9 @@ const MESSAGE_STYLE =
   'ref and the others in alsoBreaks; otherwise leave alsoBreaks empty.\n\n' +
   'Write each message as a crisp one-liner of at most 12 words: what is wrong and where, and ' +
   'the fix when it is not obvious. Do not restate or quote the rule - it is shown beside the ' +
-  'message - and do not explain why it matters. Good: "No \'Drink Responsibly\' line anywhere." ' +
+  'message - and do not explain why it matters. Good: "No required disclaimer anywhere." ' +
   '"Logo bottom-right on end card; move top-right." "Headline not in capitals." ' +
-  '"Smirnoff bottle on back shelf, frame 5." Bad: "Ghana requirement missing: the creative does ' +
+  '"Competitor logo on back shelf, frame 5." Bad: "Market requirement missing: the creative does ' +
   'not display the required ...".\n\n';
 
 /** Frames read in one call. More, and which text belongs to which frame blurs. */
@@ -950,13 +951,13 @@ export class OpenAIBrainProvider implements BrainProvider {
             .join('\n') +
           '\n\nmandatory: must be in the creative. prohibited: must not be. preferred: do it unless ' +
           'the request asks otherwise. allowed: an approved choice that may be used freely.' +
-          '\n\nStatutory lines - health warnings, "Drink Responsibly", age marks such as 18+ ' +
-          'or 25+, and any other legal disclaimer - are never part of the picture. The design ' +
+          `\n\n${WORDS[input.category ?? 'alcohol'].legalLinesBrief} The design ` +
           'team adds them at layout in the exact approved wording. Do not write them into the ' +
           'generation prompt; keep the bottom edge of the frame calm enough for them to be ' +
-          'added later. A forbidden thing is ' +
-          'only forbidden where it applies to what was asked for; do not drop the product ' +
-          'from a normal product creative on account of a rule about brand-extension ads.',
+          'added later. A forbidden thing is only forbidden where it applies to what was asked for' +
+          ((input.category ?? 'alcohol') === 'alcohol'
+            ? '; do not drop the product from a normal product creative on account of a rule about brand-extension ads.'
+            : '.'),
       );
     }
 
@@ -982,12 +983,14 @@ export class OpenAIBrainProvider implements BrainProvider {
         'is requested separately, and naming a canvas the generator was not asked ' +
         'for produces a picture of a banner rather than a banner.\n\n' +
         // "Use the chocolate flavour bottle" came back covered in chocolate.
-        'A flavour or variant named with the product - "chocolate flavour bottle", ' +
-        '"the Honey one", "8PM Fire" - says which pack to show, nothing more. Show that ' +
-        "variant's approved pack. Do not add the flavour's ingredient - chocolate, honey, " +
-        'bees, cinnamon, fruit - as a prop, background or decoration unless the request ' +
-        'asks for it in so many words. The pack and its name already say the flavour, and ' +
-        'that holds over any preferred rule about communicating it.\n\n' +
+        (input.category === 'healthcare'
+          ? ''
+          : 'A flavour or variant named with the product - "chocolate flavour bottle", ' +
+            '"the Honey one", "8PM Fire" - says which pack to show, nothing more. Show that ' +
+            "variant's approved pack. Do not add the flavour's ingredient - chocolate, honey, " +
+            'bees, cinnamon, fruit - as a prop, background or decoration unless the request ' +
+            'asks for it in so many words. The pack and its name already say the flavour, and ' +
+            'that holds over any preferred rule about communicating it.\n\n') +
         // "Text will be happy new year" was answered with a question about it.
         'Words the person gave for the text on the creative - "text will be happy new ' +
         'year", "headline: Cheers" - are that text. Use them exactly, set in the case the ' +
@@ -1318,7 +1321,7 @@ export class OpenAIBrainProvider implements BrainProvider {
           'Every rule has a format - which creatives it is for. video: they said video, film, reel, end ' +
           'card, last frame, opening, or it is about duration, voiceover, music or subtitles. image: they ' +
           'said images, banners, posts, statics, print or OOH. all: it holds for any creative - logo ' +
-          'version or colour, brand colours, fonts, spelling, terminology, legal or alcohol compliance. ' +
+          `version or colour, brand colours, fonts, spelling, terminology, ${WORDS[input.category ?? 'alcohol'].complianceKind}. ` +
           'A rule about where something sits (placement or position) that does not say which kind of ' +
           'creative is not proposed: ask exactly "Is this for images, videos, or both?" in the answer ' +
           'instead. Rules for images and rules for videos about the same thing do not contradict each ' +
@@ -1362,8 +1365,8 @@ export class OpenAIBrainProvider implements BrainProvider {
           'Build every concept on the numbered sources below - what this brand looks like, how it sounds, ' +
           'what it has done before, what the market is doing and what is coming up. In groundedIn list the refs ' +
           'of the sources each concept stands on; a concept that stands on none of them is thrown away, so do not ' +
-          'propose a generic idea. Every concept must respect every rule source (R refs): never show under-age ' +
-          'people, never promise effects of drinking, and never plan content for a dry day.' +
+          'propose a generic idea. Every concept must respect every rule source (R refs): ' +
+          WORDS[input.category ?? 'alcohol'].ideationGuards +
           (input.brand ? ` Stay inside ${input.brand}'s own look and voice; do not borrow another brand's.` : '') +
           '\n\n' +
           'Each concept: a title of at most four words; a pitch of one or two plain sentences saying what it is ' +

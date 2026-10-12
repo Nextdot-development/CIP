@@ -1,4 +1,6 @@
 import 'server-only';
+import { companyProfile, WORDS } from './category';
+import type { Category, LogoCorner } from './category';
 import type { CompanyScope } from '../db';
 import { generateImage, generateVideo } from '../media/generation';
 import type { MediaGenerationDTO } from '../media/types';
@@ -235,17 +237,23 @@ export async function generateWithBrain(
   // separately meant the second one's trim could cut the first one off.
   // With a brand, its approved logo is placed afterwards: every ask to draw
   // one comes out of the prompt, and the corner it goes in is asked for first.
-  const stamping = input.mediaType === 'image' && Boolean(plan.brief.brand);
-  const briefPrompt = stamping ? `${LOGO_LEAD} ${withoutLogoAsks(promptFromBrief(plan.brief))}` : promptFromBrief(plan.brief);
+  // The company's kind decides the statutory lines; its own rule, the corner
+  // its logo is placed in - none until somebody has said where.
+  const profile = await companyProfile(scope);
+  const words = WORDS[profile.category];
+  const stamping = input.mediaType === 'image' && Boolean(plan.brief.brand) && profile.logoCorner !== null;
+  const briefPrompt = stamping
+    ? `${logoLead(profile.logoCorner!)} ${withoutLogoAsks(promptFromBrief(plan.brief))}`
+    : promptFromBrief(plan.brief);
   const prompt =
     input.mediaType === 'image'
       ? withNotes(briefPrompt, [
-          referenceNote(attached.length, shots),
+          referenceNote(attached.length, shots, profile.category),
           framingNote(shape),
-          LEGAL_LINES_NOTE,
-          stamping ? LOGO_NOTE : null,
+          words.legalLinesNote,
+          stamping ? logoNote(profile.logoCorner!) : null,
         ])
-      : withNotes(briefPrompt, [LEGAL_LINES_NOTE]);
+      : withNotes(briefPrompt, [words.legalLinesNote]);
 
   const generation =
     input.mediaType === 'image'
@@ -266,7 +274,7 @@ export async function generateWithBrain(
           // person asked for, and the one that comes back.
           deliverShape: shape.deliver,
           basedOnGenerationId: input.basedOnGenerationId,
-          stampLogoFor: plan.brief.brand ?? null,
+          stampLogoFor: stamping ? { brand: plan.brief.brand!, corner: profile.logoCorner! } : null,
         })
       : await generateVideo(scope, {
           prompt,
@@ -631,7 +639,7 @@ function framingNote(shape: ChosenShape): string | null {
  * because they ask for opposite things: copy this one exactly, take only the
  * manner of that one.
  */
-function referenceNote(attached: number, shots: number): string | null {
+function referenceNote(attached: number, shots: number, category: Category = 'alcohol'): string | null {
   if (attached === 0) return null;
 
   const notes: string[] = [];
@@ -639,10 +647,14 @@ function referenceNote(attached: number, shots: number): string | null {
   if (shots > 0) {
     notes.push(
       `The first ${shots === 1 ? 'attached image shows' : `${shots} attached images show`} ` +
-        'the real product, as photographed or as its label artwork. Reproduce that product ' +
-        'exactly: the same bottle shape and proportions, the same cap, the same label, the ' +
-        'same logo, the same wording and the same colours. Do not redesign the label, do not ' +
-        'invent or translate any text on it, and do not substitute a similar bottle.',
+        (category === 'alcohol'
+          ? 'the real product, as photographed or as its label artwork. Reproduce that product ' +
+            'exactly: the same bottle shape and proportions, the same cap, the same label, the ' +
+            'same logo, the same wording and the same colours. Do not redesign the label, do not ' +
+            'invent or translate any text on it, and do not substitute a similar bottle.'
+          : 'the real thing, as photographed. Reproduce it faithfully: the same shape, the same ' +
+            'signage and logo, the same wording and the same colours. Do not redesign it, do not ' +
+            'invent or translate any text on it, and do not substitute something similar.'),
     );
   }
 
@@ -669,14 +681,18 @@ function referenceNote(attached: number, shots: number): string | null {
  * The approved logo is placed on the picture afterwards (see logoStamp), so
  * the generator draws none of its own and keeps the corner it goes in clear.
  */
-const LOGO_NOTE =
-  "Do not draw any brand logo, emblem or wordmark anywhere except as printed on the product's own " +
-  'label. Keep the top-right corner free of text and busy detail: the approved logo is placed there afterwards.';
+function logoNote(corner: LogoCorner): string {
+  return (
+    "Do not draw any brand logo, emblem or wordmark anywhere except as printed on the product's own " +
+    `label. Keep the ${corner} corner free of text and busy detail: the approved logo is placed there afterwards.`
+  );
+}
 
 /** Said first, because a generator weighs the start of a prompt most. */
-const LOGO_LEAD =
-  'Leave the top-right corner of the frame - about a fifth of its width - as plain background: ' +
-  'no text, no logo, no objects.';
+function logoLead(corner: LogoCorner): string {
+  return `Leave the ${corner} corner of the frame - about a fifth of its width - as plain background: no text, no logo, no objects.`;
+}
+
 
 /**
  * The prompt without any ask to draw a logo.
@@ -702,10 +718,6 @@ export function withoutLogoAsks(prompt: string): string {
     .filter((sentence) => sentence.trim() && !/^[A-Za-z ]+:\s*[.;]?$/.test(sentence.trim()))
     .join(' ');
 }
-
-const LEGAL_LINES_NOTE =
-  'Do not include any health warning, "Drink Responsibly" line, age mark such as 18+ or 25+, ' +
-  'or other legal disclaimer text anywhere in the image.';
 
 function withNotes(prompt: string, notes: (string | null)[]): string {
   const said = notes.filter((note): note is string => Boolean(note)).join(' ');

@@ -3,6 +3,7 @@ import { createCanvas, loadImage } from '@napi-rs/canvas';
 import { withCompanyScope } from '../db';
 import type { CompanyScope } from '../db';
 import { driveStorage } from '../drive/storage';
+import type { LogoCorner } from '../brain/category';
 
 /**
  * The brand's own logo, put on a picture CIP made.
@@ -78,6 +79,7 @@ export async function stampLogo(
   scope: CompanyScope,
   brand: string,
   image: { bytes: Buffer; mimeType: string },
+  corner: LogoCorner = 'top-right',
 ): Promise<{ bytes: Buffer; mimeType: string; outcome: StampOutcome }> {
   const unchanged = (outcome: StampOutcome) => ({ bytes: image.bytes, mimeType: image.mimeType, outcome });
   const files = await brandLogos(scope, brand).catch(() => []);
@@ -93,8 +95,11 @@ export async function stampLogo(
 
     const logoWidth = Math.round(width * LOGO_WIDTH);
     const margin = Math.round(Math.min(width, height) * MARGIN);
-    const corner = ctx.getImageData(width - logoWidth - margin, margin, logoWidth, Math.max(1, Math.round(logoWidth * 0.6)));
-    const cornerBrightness = brightness(corner.data);
+    const probeHeight = Math.max(1, Math.round(logoWidth * 0.6));
+    const left = corner.endsWith('left') ? margin : width - logoWidth - margin;
+    const topOf = (logoHeight: number) => (corner.startsWith('top') ? margin : height - logoHeight - margin);
+    const area = ctx.getImageData(left, topOf(probeHeight), logoWidth, probeHeight);
+    const cornerBrightness = brightness(area.data);
 
     // Every readable version, scored by how far its brightness is from the corner's.
     const versions: { name: string; logo: Awaited<ReturnType<typeof loadImage>>; contrast: number }[] = [];
@@ -114,7 +119,7 @@ export async function stampLogo(
 
     const best = versions.sort((a, b) => b.contrast - a.contrast)[0]!;
     const logoHeight = Math.round((best.logo.height / best.logo.width) * logoWidth);
-    ctx.drawImage(best.logo, width - logoWidth - margin, margin, logoWidth, logoHeight);
+    ctx.drawImage(best.logo, left, topOf(logoHeight), logoWidth, logoHeight);
 
     return { bytes: canvas.toBuffer('image/png'), mimeType: 'image/png', outcome: { status: 'stamped', logo: best.name } };
   } catch (error) {

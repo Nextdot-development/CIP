@@ -1,6 +1,7 @@
 import 'server-only';
 import type { CompanyScope } from '../db';
 import { brain } from './providers';
+import { companyProfile } from './category';
 import { brandInRequest, companyBrands } from './brands';
 import { gatherSources } from './chat';
 import type { ChatSourceDTO } from './chat';
@@ -44,7 +45,9 @@ export async function ideate(
   const brand = brandInRequest(brief, roster.map((b) => b.name)) ?? input.activeBrand ?? null;
   const sources = await gatherSources(scope, brief, brand);
 
+  const { category } = await companyProfile(scope);
   const result = await brain().ideateConcepts({
+    category,
     brief,
     brand,
     sources: sources.map((s) => s.forModel),

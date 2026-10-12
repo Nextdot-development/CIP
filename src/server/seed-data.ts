@@ -12,6 +12,8 @@ export type SeedCompany = {
   name: string;
   legalName: string;
   industry: string;
+  /** What kind of company: decides statutory lines, guards and calendar wording. */
+  category: 'alcohol' | 'healthcare' | 'general';
   branding: {
     primaryColor: string;
     deepColor: string;
@@ -79,6 +81,7 @@ export const magicMoments: SeedCompany = {
   name: 'Magic Moments',
   legalName: 'Magic Moments Premium Spirits',
   industry: 'Premium spirits',
+  category: 'alcohol',
   branding: {
     primaryColor: '#7C4DFF',
     deepColor: '#4B2FB0',
@@ -202,6 +205,7 @@ export const narayanaHealth: SeedCompany = {
   name: 'Narayana Health',
   legalName: 'Narayana Health Group',
   industry: 'Healthcare',
+  category: 'healthcare',
   branding: {
     primaryColor: '#1D6FE0',
     deepColor: '#134A96',

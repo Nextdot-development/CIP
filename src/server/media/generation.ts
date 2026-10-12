@@ -24,6 +24,7 @@ import { fitForVision } from '../brain/fitImage';
 import { reframe } from './reframe';
 import { stampLogo } from './logoStamp';
 import type { StampOutcome } from './logoStamp';
+import type { LogoCorner } from '../brain/category';
 import type { TargetShape } from './reframe';
 
 /**
@@ -122,7 +123,7 @@ export type ImageGenerationInput = {
    * The brand whose approved logo is placed on the picture once it is made.
    * Null or absent: nothing is placed.
    */
-  stampLogoFor?: string | null;
+  stampLogoFor?: { brand: string; corner: LogoCorner } | null;
 };
 
 export type VideoGenerationInput = {
@@ -227,7 +228,7 @@ export async function generateImage(
     const finished = input.stampLogoFor
       ? await Promise.all(
           assets.map(async (asset) => {
-            const stamped = await stampLogo(scope, input.stampLogoFor!, asset);
+            const stamped = await stampLogo(scope, input.stampLogoFor!.brand, asset, input.stampLogoFor!.corner);
             logo = stamped.outcome;
             return { ...asset, bytes: stamped.bytes, mimeType: stamped.mimeType };
           }),

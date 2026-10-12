@@ -2,6 +2,7 @@ import 'server-only';
 import { withCompanyScope } from '../db';
 import type { CompanyScope } from '../db';
 import { semanticSearch } from '../drive/semanticSearch';
+import { companyProfile, WORDS } from './category';
 import { brain } from './providers';
 import type { ChatSource, ProposedRule } from './providers/types';
 import { readBrandDna } from './brandDna';
@@ -103,7 +104,7 @@ export async function gatherSources(scope: CompanyScope, question: string, brand
     return terms.reduce((n, term) => n + (lower.includes(term) ? 1 : 0), 0);
   };
 
-  const [facts, passages, signals, occasions, rules] = await Promise.all([
+  const [facts, passages, signals, occasions, rules, profile] = await Promise.all([
     // Wide, then narrowed to the question below: the thirty most-evidenced
     // facts about a brand are mostly its palette, and a question about its
     // tagline needs the fact about its tagline.
@@ -112,6 +113,7 @@ export async function gatherSources(scope: CompanyScope, question: string, brand
     marketSignalsFor(scope, { brand, limit: 200 }),
     upcoming(scope, { withinDays: 120, limit: 40 }),
     listRules(scope),
+    companyProfile(scope),
   ]);
 
   // Files that belong to a sibling brand do not answer a question about this one.
@@ -178,7 +180,7 @@ export async function gatherSources(scope: CompanyScope, question: string, brand
     push(
       'C',
       'occasion',
-      `${occasion.occasion}, ${when}, ${occasion.market ?? 'every market'}${occasion.kind === 'restricted' ? ' - a dry day: publish nothing showing alcohol' : ` (${occasion.kind.replace('_', ' ')})`}`,
+      `${occasion.occasion}, ${when}, ${occasion.market ?? 'every market'}${occasion.kind === 'restricted' ? ` - ${WORDS[profile.category].restrictedDay}` : ` (${occasion.kind.replace('_', ' ')})`}`,
       `${occasion.occasion} · ${occasion.market ?? 'every market'} · ${occasion.startsOn}`,
       '/calendar',
     );
@@ -279,7 +281,9 @@ export async function askBrain(
     .map((m) => ({ role: m.role, content: clip(m.content, 1_200) }));
 
   const provider = brain();
+  const { category } = await companyProfile(scope);
   const answer = await provider.answerQuestion({
+    category,
     question,
     brand,
     history,

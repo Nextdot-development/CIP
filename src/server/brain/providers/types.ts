@@ -381,6 +381,8 @@ export type GenerationBrief = {
 };
 
 export type BriefInput = {
+  /** What kind of company: decides the statutory lines and what may be promised. */
+  category?: 'alcohol' | 'healthcare' | 'general';
   requestText: string;
   mediaType: 'image' | 'video';
   /** Everything retrieved from this company's memory, already scoped. */
@@ -623,6 +625,8 @@ export type ChatSource = {
 };
 
 export type ChatInput = {
+  /** What kind of company: decides which compliance a rule's format names. */
+  category?: 'alcohol' | 'healthcare' | 'general';
   question: string;
   brand: string | null;
   history: { role: 'user' | 'assistant'; content: string }[];
@@ -669,6 +673,8 @@ export type ChatAnswer = {
 };
 
 export type IdeationInput = {
+  /** What kind of company: decides what every concept must never do. */
+  category?: 'alcohol' | 'healthcare' | 'general';
   brief: string;
   brand: string | null;
   sources: ChatSource[];

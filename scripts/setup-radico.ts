@@ -74,9 +74,10 @@ async function main() {
 
   // --- the company ---------------------------------------------------------
   const [company] = await admin<{ id: string }[]>`
-    insert into companies (slug, name, industry)
-    values (${SLUG}, 'Radico Khaitan', 'Spirits')
-    on conflict (slug) do update set name = excluded.name, industry = excluded.industry
+    insert into companies (slug, name, industry, category, logo_corner)
+    values (${SLUG}, 'Radico Khaitan', 'Spirits', 'alcohol', 'top-right')
+    on conflict (slug) do update set name = excluded.name, industry = excluded.industry,
+      category = excluded.category, logo_corner = coalesce(companies.logo_corner, excluded.logo_corner)
     returning id
   `;
   const companyId = company!.id;

@@ -81,8 +81,8 @@ async function seedCompany(
   log: (m: string) => void,
 ): Promise<void> {
   const [company] = await sql<{ id: string }[]>`
-    insert into companies (slug, name, legal_name, industry)
-    values (${c.slug}, ${c.name}, ${c.legalName}, ${c.industry})
+    insert into companies (slug, name, legal_name, industry, category)
+    values (${c.slug}, ${c.name}, ${c.legalName}, ${c.industry}, ${c.category})
     returning id
   `;
   const companyId = company!.id;

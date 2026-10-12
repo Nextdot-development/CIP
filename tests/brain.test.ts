@@ -2904,6 +2904,22 @@ describe('what the Brain hands the generator', () => {
     assert.deepEqual(none.outcome, { status: 'no_logo' });
   });
 
+  it("speaks to a hospital in a hospital's words, not a distiller's", async () => {
+    mediaProviders.__setProviders(null, null);
+    const out = await brainGenerate.generateWithBrain(nh, { requestText: 'A World Heart Day post', mediaType: 'image' });
+    assert.equal(out.status, 'generated');
+    if (out.status !== 'generated') return;
+
+    const [row] = await adminSql<{ prompt: string }[]>`select prompt from media_generations where id = ${out.generation.id}`;
+    assert.match(row!.prompt, /medical disclaimer/);
+    assert.doesNotMatch(row!.prompt, /Drink Responsibly|bottle/i);
+    assert.equal(fake.lastBriefInput?.category, 'healthcare');
+
+    // A distiller is still spoken to as one.
+    await brainGenerate.generateWithBrain(mm, { requestText: 'A Diwali post', mediaType: 'image' });
+    assert.equal(fake.lastBriefInput?.category, 'alcohol');
+  });
+
   it('leaves statutory lines to the layout, and tells the generator not to draw any', async () => {
     const checker = await import('../src/server/brain/checker');
     await checker.addComplianceRule(mm, {

@@ -9,6 +9,7 @@ import { applicableLessons, craftPassages, productShots, ratedExamples, similarA
 import { companyMarkets, marketFromEvidence, marketInRequest } from './markets';
 import { brandInRequest, brandNames } from './brands';
 import { isLegalLine, rulesForBrief } from './checker';
+import { companyProfile } from './category';
 
 /**
  * Deciding what to generate, before anything is generated.
@@ -264,7 +265,9 @@ export async function planGeneration(
     }),
   ]);
 
+  const { category } = await companyProfile(scope);
   const brief = await provider.buildGenerationBrief({
+    category,
     requestText,
     mediaType: input.mediaType,
     brandFacts: facts.map((f) => ({
