@@ -1,5 +1,13 @@
 import postgres from 'postgres';
 import { RADICO_QC_RULES } from '../src/server/brain/radicoRules';
+import type { QcRuleSeed } from '../src/server/brain/radicoRules';
+import { HEALTHCARE_QC_RULES } from '../src/server/brain/healthcareRules';
+
+/** Which document each company's rules come from. */
+const RULE_SETS: Record<string, QcRuleSeed[]> = {
+  'radico-khaitan': RADICO_QC_RULES,
+  'narayana-health': HEALTHCARE_QC_RULES,
+};
 
 /**
  * Loads Radico's QC document into the rules CIP checks against.
@@ -47,6 +55,8 @@ async function main(): Promise<void> {
       select id, name from companies where slug = ${slug}
     `;
     if (!company) throw new Error(`no company "${slug}"`);
+    const RULES = RULE_SETS[slug];
+    if (!RULES) throw new Error(`no rule document for "${slug}"; known: ${Object.keys(RULE_SETS).join(', ')}`);
 
     // A rule filed under a brand nobody has heard of reaches nothing: the
     // checker matches on the brand name as the roster spells it.
@@ -62,19 +72,19 @@ async function main(): Promise<void> {
     const already = new Set(existing.map((r) => r.rule_code));
 
     const unknownBrands = new Set<string>();
-    for (const rule of RADICO_QC_RULES) {
+    for (const rule of RULES) {
       if (rule.brand && !known.has(rule.brand.toLowerCase())) unknownBrands.add(rule.brand);
     }
 
     console.log(`\n  ${company.name}\n`);
-    console.log(`    rules in the document      ${RADICO_QC_RULES.length}`);
+    console.log(`    rules in the document      ${RULES.length}`);
     console.log(`    already loaded             ${already.size}`);
-    console.log(`    would be added             ${RADICO_QC_RULES.filter((r) => !already.has(r.code)).length}`);
-    console.log(`    would be updated           ${RADICO_QC_RULES.filter((r) => already.has(r.code)).length}`);
+    console.log(`    would be added             ${RULES.filter((r) => !already.has(r.code)).length}`);
+    console.log(`    would be updated           ${RULES.filter((r) => already.has(r.code)).length}`);
 
-    const bySeverity = tally(RADICO_QC_RULES.map((r) => r.severity));
-    const byType = tally(RADICO_QC_RULES.map((r) => r.ruleType));
-    const byFormat = tally(RADICO_QC_RULES.map((r) => r.format ?? 'all'));
+    const bySeverity = tally(RULES.map((r) => r.severity));
+    const byType = tally(RULES.map((r) => r.ruleType));
+    const byFormat = tally(RULES.map((r) => r.format ?? 'all'));
     console.log(`\n    by severity                ${describe(bySeverity)}`);
     console.log(`    by kind                    ${describe(byType)}`);
     console.log(`    by format                  ${describe(byFormat)}`);
@@ -94,7 +104,7 @@ async function main(): Promise<void> {
     }
 
     let written = 0;
-    for (const r of RADICO_QC_RULES) {
+    for (const r of RULES) {
       await sql`
         insert into compliance_rules
           (company_id, rule_code, brand, product, market, domain, rule_type, severity,
