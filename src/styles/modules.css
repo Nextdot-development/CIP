@@ -408,3 +408,7 @@ a.gtag:hover { color: var(--ink-900); border-color: var(--ink-400); }
 .video-template { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin-top: 10px; }
 .video-template label { display: grid; gap: 4px; }
 .video-wide { grid-column: 1 / -1; }
+
+.video-block { display: grid; gap: 6px; margin-top: 10px; padding: 10px; border: 1px solid var(--ink-100); border-radius: var(--r-sm); }
+.video-block.has-concern { border-left: 3px solid var(--warn-500, #d97706); }
+.video-block .video-heading { font-weight: 600; }

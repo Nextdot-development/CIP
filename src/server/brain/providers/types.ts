@@ -810,10 +810,20 @@ export type VideoPlan = {
   title: string;
   /** Fumbles, false starts and retakes to remove. */
   cuts: { from: number; to: number; reason: string }[];
-  /** On-screen key points, each shown while the doctor says it. */
-  points: { text: string; from: number; to: number; concern: string | null; ruleRefs: string[] }[];
-  /** Moments a cutaway would help, and what to show. */
-  broll: { query: string; from: number; to: number }[];
+  /**
+   * The on-screen text, as timed blocks like presentation slides: a specific
+   * heading, a few short pointers, and what to show while it is up.
+   */
+  blocks: {
+    heading: string;
+    bullets: string[];
+    from: number;
+    to: number;
+    /** Supportive visuals or b-roll for the block. Never a new claim. */
+    visuals: string;
+    concern: string | null;
+    ruleRefs: string[];
+  }[];
   usage: BrainUsage;
 };
 

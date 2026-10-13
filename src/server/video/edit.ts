@@ -39,12 +39,50 @@ export class VideoEditRejected extends Error {
   }
 }
 
+/**
+ * One block of on-screen text: a specific heading and a few pointers, up while
+ * the doctor says it, with what to show behind it.
+ */
+export type EditBlock = {
+  heading: string;
+  bullets: string[];
+  from: number;
+  to: number;
+  /** The visual the plan suggests. */
+  visuals: string;
+  /** Footage for it from the company's own library, when there is any. */
+  footage: { fileId: string; fileName: string } | null;
+  concern: string | null;
+  /** The rules the block may break, in words. */
+  rules: string[];
+};
+
 export type EditPlan = {
   title: string;
   cuts: { from: number; to: number; reason: string }[];
-  points: { text: string; from: number; to: number; concern: string | null; rules: string[] }[];
-  broll: { query: string; from: number; to: number; fileId: string | null; fileName: string | null }[];
+  blocks: EditBlock[];
 };
+
+/** The longest stretch of a block b-roll covers; the doctor is seen again after it. */
+const BROLL_SECONDS = 6;
+
+const clock = (s: number) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+
+/**
+ * The plan as the house's OST sheet: one Markdown table, three columns, a
+ * bold heading first in every cell, a bullet a line.
+ */
+export function ostTable(plan: EditPlan): string {
+  const cell = (s: string) => s.replace(/\|/g, '/').replace(/\s+/g, ' ').trim();
+  const rows = plan.blocks.map((b) =>
+    `| ${clock(b.from)}–${clock(b.to)} | ${[`• **${cell(b.heading)}**`, ...b.bullets.map((x) => `• ${cell(x)}`)].join('<br>')} | ${cell(b.visuals) || '—'} |`,
+  );
+  return [
+    '| Timecode / Section | On-Screen Text (OST – Pointer Format) | Visuals / B-roll Suggestions |',
+    '|---|---|---|',
+    ...rows,
+  ].join('\n') + '\n';
+}
 
 export type VideoEditDTO = {
   id: string;
@@ -206,22 +244,21 @@ export async function createEdit(
       doctorName, category: profile.category, words: heard.words, rules: refs,
     });
 
-    // Footage for each cutaway, from the company's own library.
-    const broll = await Promise.all(planned.broll.map(async (b) => {
-      const hit = (await searchAssets(scope, b.query, 12).catch(() => []))
-        .find((h) => h.mimeType.startsWith('video/') && h.fileId !== input.fileId);
-      return { ...b, fileId: hit?.fileId ?? null, fileName: hit?.fileName ?? null };
-    }));
+    // Footage for each block's visual, from the company's own library.
     const byRef = new Map(refs.map((r) => [r.ref, r.rule]));
-    const plan: EditPlan = {
-      title: planned.title,
-      cuts: planned.cuts,
-      points: planned.points.map((p) => ({
-        text: p.text, from: p.from, to: p.to, concern: p.concern,
-        rules: p.ruleRefs.map((r) => byRef.get(r)).filter((r): r is string => Boolean(r)),
-      })),
-      broll,
-    };
+    const blocks = await Promise.all(planned.blocks.map(async (b): Promise<EditBlock> => {
+      const hit = b.visuals
+        ? (await searchAssets(scope, b.visuals, 12).catch(() => []))
+            .find((h) => h.mimeType.startsWith('video/') && h.fileId !== input.fileId)
+        : undefined;
+      return {
+        heading: b.heading, bullets: b.bullets, from: b.from, to: b.to, visuals: b.visuals,
+        footage: hit ? { fileId: hit.fileId, fileName: hit.fileName } : null,
+        concern: b.concern,
+        rules: b.ruleRefs.map((r) => byRef.get(r)).filter((r): r is string => Boolean(r)),
+      };
+    }));
+    const plan: EditPlan = { title: planned.title, cuts: planned.cuts, blocks };
 
     await withCompanyScope(scope, (tx) => tx`
       update video_edits
@@ -252,11 +289,18 @@ export async function updatePlan(scope: CompanyScope, id: string, plan: EditPlan
     title: String(plan.title ?? '').trim().slice(0, 120),
     cuts: (plan.cuts ?? []).map(span).filter((c): c is NonNullable<typeof c> => c !== null)
       .map((c) => ({ from: c.from, to: c.to, reason: String(c.reason ?? '').slice(0, 120) })),
-    points: (plan.points ?? []).map(span).filter((p): p is NonNullable<typeof p> => p !== null && Boolean(String(p.text ?? '').trim()))
-      .map((p) => ({ text: String(p.text).trim().slice(0, 80), from: p.from, to: p.to, concern: p.concern ?? null, rules: p.rules ?? [] })),
-    broll: (plan.broll ?? []).map(span).filter((b): b is NonNullable<typeof b> => b !== null)
-      .map((b) => ({ query: String(b.query ?? '').slice(0, 120), from: b.from, to: b.to,
-        fileId: b.fileId && UUID.test(b.fileId) ? b.fileId : null, fileName: b.fileName ?? null })),
+    blocks: (plan.blocks ?? []).map(span)
+      .filter((b): b is NonNullable<typeof b> => b !== null && Boolean(String(b.heading ?? '').trim()))
+      .map((b) => ({
+        heading: String(b.heading).trim().slice(0, 80),
+        bullets: (Array.isArray(b.bullets) ? b.bullets : []).map((x) => String(x).trim().slice(0, 90)).filter(Boolean).slice(0, 5),
+        from: b.from,
+        to: b.to,
+        visuals: String(b.visuals ?? '').trim().slice(0, 200),
+        footage: b.footage && UUID.test(b.footage.fileId) ? { fileId: b.footage.fileId, fileName: String(b.footage.fileName ?? '') } : null,
+        concern: b.concern ?? null,
+        rules: Array.isArray(b.rules) ? b.rules : [],
+      })),
   };
   if (!clean.title) throw new VideoEditRejected('The film needs a title.');
   await withCompanyScope(scope, (tx) => tx`
@@ -296,11 +340,14 @@ export async function renderEdit(scope: CompanyScope, id: string): Promise<void>
   const template = await getTemplate(scope);
   const source = await readFile(scope, row.source_file_id);
   const logo = template.logoFileId ? await readFile(scope, template.logoFileId).then((f) => f.body).catch(() => null) : null;
+  // B-roll opens a block and gives way to the doctor again.
   const broll = [];
-  for (const b of row.plan.broll) {
-    if (!b.fileId) continue;
-    const footage = await readFile(scope, b.fileId).catch(() => null);
-    if (footage) broll.push({ from: b.from, to: b.to, footage: footage.body, extension: footage.filename.split('.').pop() || 'mp4' });
+  for (const b of row.plan.blocks) {
+    if (!b.footage) continue;
+    const footage = await readFile(scope, b.footage.fileId).catch(() => null);
+    if (footage) {
+      broll.push({ from: b.from, to: Math.min(b.to, b.from + BROLL_SECONDS), footage: footage.body, extension: footage.filename.split('.').pop() || 'mp4' });
+    }
   }
 
   const film = await renderFilm({
@@ -313,7 +360,7 @@ export async function renderEdit(scope: CompanyScope, id: string): Promise<void>
     doctorTitle: row.doctor_title,
     title: row.plan.title,
     cuts: row.plan.cuts,
-    points: row.plan.points,
+    blocks: row.plan.blocks.map((b) => ({ heading: b.heading, bullets: b.bullets, from: b.from, to: b.to })),
     broll,
     introSeconds: template.introSeconds,
     // Only the hospital's own wording: CIP never writes a disclaimer.

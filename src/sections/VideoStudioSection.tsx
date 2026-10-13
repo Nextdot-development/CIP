@@ -82,8 +82,8 @@ export function VideoStudioSection() {
         <p className="eyebrow">Video Studio</p>
         <h1>Doctor recordings into finished films</h1>
         <p className="lede">
-          Choose a recording. CIP cuts the fumbles, writes the title and key points, finds b-roll in your library and
-          checks every point against your rules. You read the plan and approve it before the film is made.
+          Choose a recording. CIP cuts the fumbles, writes the title and the on-screen text block by block, finds b-roll in your library
+          and checks every block against your rules. You read the plan and approve it before the film is made.
         </p>
       </header>
 
@@ -159,10 +159,10 @@ function PlanEditor({ edit, onChanged }: { edit: VideoEditDTO; onChanged: (e: Vi
       setSaving(false);
     }
   };
-  const drop = <K extends 'cuts' | 'points' | 'broll'>(key: K, i: number) =>
-    setPlan({ ...plan, [key]: plan[key].filter((_, j) => j !== i) });
+  const setBlock = (i: number, change: Partial<EditPlan['blocks'][number]>) =>
+    setPlan({ ...plan, blocks: plan.blocks.map((b, j) => (j === i ? { ...b, ...change } : b)) });
 
-  const concerns = plan.points.filter((p) => p.concern).length;
+  const concerns = plan.blocks.filter((b) => b.concern).length;
 
   return (
     <section className="card pad" style={{ marginTop: 16 }}>
@@ -185,19 +185,33 @@ function PlanEditor({ edit, onChanged }: { edit: VideoEditDTO; onChanged: (e: Vi
       <input className="field-input" value={plan.title} disabled={locked} onChange={(e) => setPlan({ ...plan, title: e.target.value })} />
       <p className="tiny muted">Shown at the start with {edit.doctorName}{edit.doctorTitle ? ` · ${edit.doctorTitle}` : ''}.</p>
 
-      <p className="small strong video-head">Key points on screen</p>
+      <div className="row" style={{ justifyContent: 'space-between', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+        <p className="small strong video-head">On-screen text ({plan.blocks.length} blocks)</p>
+        <a className="linkbtn tiny" href={`/api/video/edits/${edit.id}/ost`}>Download OST sheet</a>
+      </div>
       {concerns > 0 && (
         <p className="tiny" style={{ color: 'var(--warn-700)' }}>
-          <Icon name="alert" size={12} /> {concerns} point{concerns === 1 ? '' : 's'} may break a rule. Reword or remove before approving.
+          <Icon name="alert" size={12} /> {concerns} block{concerns === 1 ? '' : 's'} may break a rule. Reword or remove before approving.
         </p>
       )}
-      {plan.points.map((p, i) => (
-        <div key={i} className={`video-item ${p.concern ? 'has-concern' : ''}`}>
-          <span className="tiny muted">{clock(p.from)}–{clock(p.to)}</span>
-          <input className="field-input" value={p.text} disabled={locked}
-            onChange={(e) => setPlan({ ...plan, points: plan.points.map((x, j) => (j === i ? { ...x, text: e.target.value } : x)) })} />
-          {!locked && <button type="button" className="linkbtn tiny" onClick={() => drop('points', i)}>Remove</button>}
-          {p.concern && <p className="tiny video-concern">{p.concern}{p.rules.length ? ` — ${p.rules.join('; ')}` : ''}</p>}
+      {plan.blocks.map((b, i) => (
+        <div key={i} className={`video-block ${b.concern ? 'has-concern' : ''}`}>
+          <div className="row" style={{ justifyContent: 'space-between', gap: 8 }}>
+            <span className="tiny muted">{clock(b.from)}–{clock(b.to)}</span>
+            {!locked && (
+              <button type="button" className="linkbtn tiny"
+                onClick={() => setPlan({ ...plan, blocks: plan.blocks.filter((_, j) => j !== i) })}>Remove</button>
+            )}
+          </div>
+          <input className="field-input video-heading" value={b.heading} disabled={locked}
+            onChange={(e) => setBlock(i, { heading: e.target.value })} />
+          <textarea className="field-input" rows={Math.max(2, b.bullets.length)} disabled={locked}
+            value={b.bullets.join('\n')} placeholder="One pointer a line"
+            onChange={(e) => setBlock(i, { bullets: e.target.value.split('\n') })} />
+          <p className="tiny muted">
+            Visuals: {b.visuals || '—'} · {b.footage ? `footage: ${b.footage.fileName}` : 'no matching footage in your library'}
+          </p>
+          {b.concern && <p className="tiny video-concern">{b.concern}{b.rules.length ? ` — ${b.rules.join('; ')}` : ''}</p>}
         </div>
       ))}
 
@@ -207,18 +221,10 @@ function PlanEditor({ edit, onChanged }: { edit: VideoEditDTO; onChanged: (e: Vi
         <div key={i} className="video-item">
           <span className="tiny muted">{clock(c.from)}–{clock(c.to)}</span>
           <span className="small">{c.reason}</span>
-          {!locked && <button type="button" className="linkbtn tiny" onClick={() => drop('cuts', i)}>Keep it in</button>}
-        </div>
-      ))}
-
-      <p className="small strong video-head">B-roll</p>
-      {plan.broll.length === 0 && <p className="tiny muted">None.</p>}
-      {plan.broll.map((b, i) => (
-        <div key={i} className="video-item">
-          <span className="tiny muted">{clock(b.from)}–{clock(b.to)}</span>
-          <span className="small">{b.query}</span>
-          <span className="tiny muted">{b.fileName ?? 'No matching footage in your library'}</span>
-          {!locked && <button type="button" className="linkbtn tiny" onClick={() => drop('broll', i)}>Remove</button>}
+          {!locked && (
+            <button type="button" className="linkbtn tiny"
+              onClick={() => setPlan({ ...plan, cuts: plan.cuts.filter((_, j) => j !== i) })}>Keep it in</button>
+          )}
         </div>
       ))}
 

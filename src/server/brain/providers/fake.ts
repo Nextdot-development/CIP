@@ -610,8 +610,9 @@ export class FakeBrainProvider implements BrainProvider {
       ...(this.videoPlan ?? {
         title: input.words.slice(0, 4).map((w) => w.w).join(' '),
         cuts: [],
-        points: end > 3 ? [{ text: input.words.slice(0, 3).map((w) => w.w).join(' '), from: 0, to: Math.min(end, 4), concern: null, ruleRefs: [] }] : [],
-        broll: [],
+        blocks: end > 3
+          ? [{ heading: input.words.slice(0, 3).map((w) => w.w).join(' '), bullets: [], from: 0, to: Math.min(end, 4), visuals: '', concern: null, ruleRefs: [] }]
+          : [],
       }),
       usage: { durationMs: 1 },
     };

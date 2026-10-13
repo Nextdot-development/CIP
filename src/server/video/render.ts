@@ -3,14 +3,14 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readVideoMetadata, runFfmpeg } from '../brain/media';
-import { fullCard, lowerThird } from './cards';
+import { fullCard, lowerThird, ostPanel } from './cards';
 import type { CardStyle } from './cards';
 import { keptLength, keptSpans, toFilmSpan } from './timeline';
 import type { Span } from './timeline';
 
 /**
  * The film, made with ffmpeg: the recording with its fumbles cut, the title
- * card and the key points laid over it, b-roll cut in where the plan says,
+ * card and the on-screen text laid over it, b-roll cut in where the plan says,
  * between the house intro and the disclaimer and end screen.
  *
  * Every frame of the template is fixed and drawn by CIP. Nothing an image or
@@ -27,7 +27,8 @@ export type RenderInput = {
   doctorTitle: string | null;
   title: string;
   cuts: Span[];
-  points: { text: string; from: number; to: number }[];
+  /** The on-screen text, block by block, in the recording's own time. */
+  blocks: { heading: string; bullets: string[]; from: number; to: number }[];
   broll: { from: number; to: number; footage: Buffer; extension: string }[];
   introSeconds: number;
   disclaimer: { text: string; seconds: number } | null;
@@ -96,13 +97,13 @@ export async function renderFilm(input: RenderInput): Promise<{ bytes: Buffer; s
         to: Math.min(TITLE_SECONDS, filmSeconds),
       },
     ];
-    for (const point of input.points) {
-      const at = toFilmSpan(point, kept);
+    for (const block of input.blocks) {
+      const at = toFilmSpan(block, kept);
       if (!at) continue;
-      // Never on top of the title card: a point said under it waits for it to
+      // Never on top of the title card: a block said under it waits for it to
       // clear, if there is still time to read it.
       const from = Math.max(at.from, TITLE_SECONDS);
-      if (at.to - from >= 2) thirds.push({ png: lowerThird(size, input.style, point.text), from, to: at.to });
+      if (at.to - from >= 2) thirds.push({ png: ostPanel(size, input.style, block.heading, block.bullets), from, to: at.to });
     }
     for (const [k, third] of thirds.entries()) {
       const path = join(dir, `third${k}.png`);

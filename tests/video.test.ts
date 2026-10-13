@@ -111,11 +111,10 @@ describe('a recording into a film', () => {
     fake.videoPlan = {
       title: 'Understanding essential tremor',
       cuts: [{ from: 1, to: 4, reason: 'Repeated "I", "um"' }],
-      points: [
-        { text: 'Tremor is shaking of the hands', from: 6, to: 10, concern: null, ruleRefs: [] },
-        { text: 'Tremor is always cured', from: 10, to: 11.5, concern: 'Promises a cure', ruleRefs: ['R1'] },
+      blocks: [
+        { heading: 'What essential tremor is', bullets: ['Shaking of the hands', 'Mostly in the hands'], from: 6, to: 10, visuals: 'hands shaking close-up', concern: null, ruleRefs: [] },
+        { heading: 'Outlook', bullets: ['Tremor is always cured'], from: 10, to: 11.5, visuals: '', concern: 'Promises a cure', ruleRefs: ['R1'] },
       ],
-      broll: [{ query: 'hands shaking close-up', from: 8, to: 10 }],
     };
     await adminSql`
       insert into compliance_rules (company_id, category, requirement, rule, source, format)
@@ -125,16 +124,24 @@ describe('a recording into a film', () => {
     const planned = await video.createEdit(nh, { fileId, doctorName: 'Dr. A. Kumar', doctorTitle: 'Neurology' });
     assert.equal(planned.status, 'planned', planned.error ?? '');
     assert.equal(planned.plan!.title, 'Understanding essential tremor');
-    const risky = planned.plan!.points.find((p) => p.concern)!;
+    const risky = planned.plan!.blocks.find((b) => b.concern)!;
     assert.match(risky.rules[0]!, /cures a disease/, 'the concern names the rule it may break');
-    assert.equal(planned.plan!.broll[0]!.fileId, null, 'no footage in the library: said, not invented');
+    assert.equal(planned.plan!.blocks[0]!.footage, null, 'no footage in the library: said, not invented');
+
+    // The house's OST sheet: one table, three columns, a bold heading first, a bullet a line.
+    const sheet = video.ostTable(planned.plan!);
+    assert.ok(
+      sheet.startsWith('| Timecode / Section | On-Screen Text (OST – Pointer Format) | Visuals / B-roll Suggestions |\n|---|---|---|\n'),
+      sheet,
+    );
+    assert.match(sheet, /\| 00:06–00:10 \| • \*\*What essential tremor is\*\*<br>• Shaking of the hands<br>• Mostly in the hands \| hands shaking close-up \|/);
 
     // Nothing is made before a person approves it.
     assert.equal(await video.renderApprovedEdits({ outOfTime: () => false }), 0);
 
     // The person removes the risky point and approves.
-    const edited = await video.updatePlan(nh, planned.id, { ...planned.plan!, points: planned.plan!.points.filter((p) => !p.concern) });
-    assert.equal(edited.plan!.points.length, 1);
+    const edited = await video.updatePlan(nh, planned.id, { ...planned.plan!, blocks: planned.plan!.blocks.filter((b) => !b.concern) });
+    assert.equal(edited.plan!.blocks.length, 1);
     await video.approveEdit(nh, planned.id);
     assert.equal(await video.renderApprovedEdits({ outOfTime: () => false }), 1);
 
@@ -159,7 +166,7 @@ describe('a recording into a film', () => {
 
   it('puts the hospital\'s own disclaimer in, in its own words', async () => {
     await video.saveTemplate(nh, { disclaimerText: 'For information only. Consult your doctor.', disclaimerSeconds: 3 });
-    fake.videoPlan = { title: 'Short talk', cuts: [], points: [], broll: [] };
+    fake.videoPlan = { title: 'Short talk', cuts: [], blocks: [] };
     const planned = await video.createEdit(nh, { fileId, doctorName: 'Dr. B' });
     await video.approveEdit(nh, planned.id);
     await video.renderApprovedEdits({ outOfTime: () => false });

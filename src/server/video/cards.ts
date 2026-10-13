@@ -158,3 +158,62 @@ export function lowerThird(
   }
   return canvas.toBuffer('image/png');
 }
+
+/**
+ * A block of on-screen text, laid out like a slide: a panel down the right of
+ * the frame with a bold heading and a bullet a line. Transparent elsewhere, so
+ * the doctor stays in view.
+ */
+export function ostPanel(
+  size: { width: number; height: number },
+  style: CardStyle,
+  heading: string,
+  bullets: readonly string[],
+): Buffer {
+  ensureFonts();
+  const { width, height } = size;
+  const canvas = createCanvas(width, height);
+  const ctx = canvas.getContext('2d');
+  const unit = Math.min(width, height);
+  const panelWidth = width * (width > height ? 0.4 : 0.86);
+  const pad = unit * 0.04;
+  const inner = panelWidth - pad * 2;
+  const headSize = Math.round(unit * 0.046);
+  const bodySize = Math.round(unit * 0.034);
+  const headLine = headSize * 1.25;
+  const bodyLine = bodySize * 1.35;
+
+  ctx.font = `bold ${headSize}px "${FONT}"`;
+  const headLines = wrap(ctx, heading, inner);
+  ctx.font = `${bodySize}px "${FONT}"`;
+  const bulletLines = bullets.map((b) => wrap(ctx, b, inner - bodySize * 1.1));
+  const bodyHeight = bulletLines.reduce((n, lines) => n + lines.length * bodyLine + bodySize * 0.35, 0);
+  const panelHeight = pad * 2 + headLines.length * headLine + (bullets.length ? unit * 0.02 + bodyHeight : 0);
+
+  const x = width > height ? width - panelWidth - width * 0.04 : (width - panelWidth) / 2;
+  const y = width > height ? (height - panelHeight) / 2 : height - panelHeight - height * 0.08;
+
+  ctx.globalAlpha = 0.9;
+  ctx.fillStyle = style.background;
+  ctx.fillRect(x, y, panelWidth, panelHeight);
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = style.accent;
+  ctx.fillRect(x, y, unit * 0.008, panelHeight);
+
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  let ty = y + pad;
+  ctx.font = `bold ${headSize}px "${FONT}"`;
+  ctx.fillStyle = style.ink;
+  for (const line of headLines) { ctx.fillText(line, x + pad, ty); ty += headLine; }
+  ty += unit * 0.02;
+  ctx.font = `${bodySize}px "${FONT}"`;
+  for (const lines of bulletLines) {
+    ctx.fillStyle = style.accent;
+    ctx.fillText('•', x + pad, ty);
+    ctx.fillStyle = style.ink;
+    for (const line of lines) { ctx.fillText(line, x + pad + bodySize * 1.1, ty); ty += bodyLine; }
+    ty += bodySize * 0.35;
+  }
+  return canvas.toBuffer('image/png');
+}

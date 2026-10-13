@@ -572,7 +572,7 @@ const FRAME_TEXT_SCHEMA = {
 const VIDEO_PLAN_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['title', 'cuts', 'points', 'broll'],
+  required: ['title', 'cuts', 'blocks'],
   properties: {
     title: { type: 'string' },
     cuts: {
@@ -584,28 +584,21 @@ const VIDEO_PLAN_SCHEMA = {
         properties: { from: { type: 'number' }, to: { type: 'number' }, reason: { type: 'string' } },
       },
     },
-    points: {
+    blocks: {
       type: 'array',
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['text', 'from', 'to', 'concern', 'ruleRefs'],
+        required: ['heading', 'bullets', 'from', 'to', 'visuals', 'concern', 'ruleRefs'],
         properties: {
-          text: { type: 'string' },
+          heading: { type: 'string' },
+          bullets: { type: 'array', items: { type: 'string' } },
           from: { type: 'number' },
           to: { type: 'number' },
+          visuals: { type: 'string' },
           concern: { type: ['string', 'null'] },
           ruleRefs: { type: 'array', items: { type: 'string' } },
         },
-      },
-    },
-    broll: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['query', 'from', 'to'],
-        properties: { query: { type: 'string' }, from: { type: 'number' }, to: { type: 'number' } },
       },
     },
   },
@@ -1432,33 +1425,47 @@ export class OpenAIBrainProvider implements BrainProvider {
     const transcript = input.words.map((w) => `${w.from.toFixed(2)} ${w.w}`).join('\n');
     const rules = input.rules.map((r) => `${r.ref} ${r.rule}`).join('\n');
 
+    // The house standard for on-screen text in a doctor-led video: a faithful,
+    // timed condensation of what the doctor said, laid out like slides.
     const { parsed, usage } = await this.call<Omit<VideoPlan, 'usage'>>(
       [
         {
           type: 'text',
           text:
-            'Below is a recording of a doctor speaking to camera, word by word, each line the time in ' +
-            'seconds the word starts and the word. Plan its edit into a short, clean film.\n\n' +
-            'cuts: the fumbles to remove - false starts, repeated words, a sentence begun again, long ' +
-            '"um"s, and anything said twice where the second take is the one to keep. Each from the start ' +
-            'of the first unwanted word to the start of the next wanted one. Never cut to change what the ' +
-            'doctor means, and never cut mid-sentence otherwise.\n\n' +
-            'title: the topic in at most eight plain words, as a viewer would search for it. Do not include ' +
-            "the doctor's name; it is added separately.\n\n" +
-            'points: three to six on-screen key points, each at most eight words, each shown from when the ' +
-            'doctor begins saying it to when they finish (at least three seconds). Use the doctor\'s own ' +
-            'claim, never a stronger one: "may help" stays "may help", never "cures". Check every point ' +
-            'against the rules below; where a point could break one, give the concern in a few words and the ' +
-            'rule refs, otherwise concern is null and ruleRefs empty.\n\n' +
-            'broll: up to four moments where a cutaway would help the viewer - a body part, a procedure, a ' +
-            'hospital setting - each with a short search query for footage, and from/to of three to six ' +
-            'seconds. Never over a moment the doctor is demonstrating something to camera.\n\n' +
+            'You are a medical video planner and clinical content editor. Below is a doctor-led educational ' +
+            'talk, word by word, each line the second the word starts and the word. Plan its edit.\n\n' +
+            'FIDELITY COMES FIRST. Use only what the speaker says. Never add a fact, statistic, claim, ' +
+            'treatment or recommendation they did not state. Keep their qualifiers - "usually", "may", "in ' +
+            'selected cases" - and reproduce every number, range or timeframe exactly. Never exaggerate ' +
+            'safety, efficacy, recovery or outcomes, never generalise a claim to every patient or procedure, ' +
+            'and never turn the speaker\'s claim into a verified fact. Correct an obvious speech-recognition ' +
+            'error only when the intended medical term is clear; when a term is genuinely unclear, leave it ' +
+            'out rather than guess.\n\n' +
+            'blocks: the on-screen text, as timed blocks that read like concise presentation slides. Group ' +
+            'consecutive statements on one topic; start a new block when the topic changes or the text would ' +
+            'be too much to read. Blocks follow the talk in order and do not overlap. Each block:\n' +
+            '- heading: specific and clinically explicit, never vague ("Overview", "Importance", "Landscape").\n' +
+            '- bullets: two to five short pointer phrases, not sentences, so the heading and bullets together ' +
+            'are at most six lines. Condense; do not quote the transcript.\n' +
+            '- from/to: when the doctor begins and finishes saying what the block covers.\n' +
+            '- visuals: a neutral, feasible visual that clarifies the point - a diagram, an ECG trace, a ' +
+            'diagnostic monitor, a clinical team. No branding or marketing, and nothing that implies a claim ' +
+            'the speaker did not make.\n' +
+            '- concern and ruleRefs: where a block could still break one of the rules below, the concern in a ' +
+            'few words and the rule refs; otherwise null and empty.\n' +
+            'Write in British English (paediatric, anaesthesia, centre). Expand an acronym at its first use - ' +
+            'Electrocardiogram (ECG) - and use the acronym after; do not introduce an acronym the speaker did ' +
+            'not use. Neutral, factual, never promotional.\n\n' +
+            'title: the topic in at most eight plain words. Not the doctor\'s name; it is added separately.\n\n' +
+            'cuts: the fumbles to remove - false starts, repeated words, a sentence begun again, long "um"s, ' +
+            'anything said twice where the second take is kept. Each from the start of the first unwanted word ' +
+            'to the start of the next wanted one. Never cut to change what the speaker means.\n\n' +
             `Rules:\n${rules || '(none)'}\n\nTranscript (${end.toFixed(1)} seconds):\n${transcript}`,
         },
       ],
       VIDEO_PLAN_SCHEMA,
       'video_plan',
-      6_000,
+      10_000,
     );
 
     // Times only within the recording, each span the right way round.
@@ -1472,18 +1479,21 @@ export class OpenAIBrainProvider implements BrainProvider {
       title: typeof parsed.title === 'string' ? parsed.title.trim().slice(0, 120) : '',
       cuts: (Array.isArray(parsed.cuts) ? parsed.cuts : []).map(span).filter((c): c is NonNullable<typeof c> => c !== null)
         .map((c) => ({ from: c.from, to: c.to, reason: String(c.reason ?? '').slice(0, 120) })),
-      points: (Array.isArray(parsed.points) ? parsed.points : []).map(span).filter((p): p is NonNullable<typeof p> => p !== null && Boolean(p.text?.trim()))
-        .slice(0, 8)
-        .map((p) => ({
-          text: p.text.trim().slice(0, 80),
-          from: p.from,
-          to: p.to,
-          concern: typeof p.concern === 'string' && p.concern.trim() ? p.concern.trim().slice(0, 200) : null,
-          ruleRefs: (Array.isArray(p.ruleRefs) ? p.ruleRefs : []).filter((r) => refs.has(r)),
+      blocks: (Array.isArray(parsed.blocks) ? parsed.blocks : []).map(span)
+        .filter((b): b is NonNullable<typeof b> => b !== null && Boolean(b.heading?.trim()))
+        .slice(0, 24)
+        .map((b) => ({
+          heading: b.heading.trim().replace(/^[•*\s]+|\*+/g, '').slice(0, 80),
+          bullets: (Array.isArray(b.bullets) ? b.bullets : [])
+            .map((x) => String(x).trim().replace(/^[•*\-\s]+/, '').slice(0, 90))
+            .filter(Boolean)
+            .slice(0, 5),
+          from: b.from,
+          to: b.to,
+          visuals: String(b.visuals ?? '').trim().slice(0, 200),
+          concern: typeof b.concern === 'string' && b.concern.trim() ? b.concern.trim().slice(0, 200) : null,
+          ruleRefs: (Array.isArray(b.ruleRefs) ? b.ruleRefs : []).filter((r) => refs.has(r)),
         })),
-      broll: (Array.isArray(parsed.broll) ? parsed.broll : []).map(span).filter((b): b is NonNullable<typeof b> => b !== null && Boolean(b.query?.trim()))
-        .slice(0, 6)
-        .map((b) => ({ query: b.query.trim().slice(0, 120), from: b.from, to: b.to })),
       usage,
     };
   }
