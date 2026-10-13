@@ -217,3 +217,282 @@ export function ostPanel(
   }
   return canvas.toBuffer('image/png');
 }
+
+// --- Narayana Health's video template ("Video Template NH 2026") -------------
+// Sizes are the template's own, given on a 1920 x 1080 frame (1080 x 1920
+// vertical) and scaled to whatever the film is. Helvetica Neue is the house
+// face; Lato stands in until the font files are supplied.
+
+export type HouseColours = { blue: string; red: string; white: string };
+
+/** A measure from the template, scaled to this frame. */
+const px = (size: { width: number; height: number }, n: number) =>
+  (n / (size.width > size.height ? 1920 : 1080)) * size.width;
+
+function roundedTopLeft(ctx: SKRSContext2D, x: number, y: number, w: number, h: number, r: number) {
+  ctx.beginPath();
+  ctx.moveTo(x, y + h);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.lineTo(x + w, y);
+  ctx.lineTo(x + w, y + h);
+  ctx.closePath();
+}
+
+/** The logo in a white card in one top corner, 300 of 1920 wide. */
+export async function logoBadge(
+  size: { width: number; height: number },
+  logo: Buffer,
+  corner: 'top-left' | 'top-right',
+): Promise<Buffer> {
+  const { width, height } = size;
+  const canvas = createCanvas(width, height);
+  const ctx = canvas.getContext('2d');
+  const img = await loadImage(logo);
+  const w = px(size, 300);
+  const h = (img.height / img.width) * w;
+  const pad = px(size, 18);
+  const margin = px(size, 40);
+  const x = corner === 'top-left' ? margin : width - margin - w - pad * 2;
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath();
+  ctx.roundRect(x, margin, w + pad * 2, h + pad * 2, px(size, 12));
+  ctx.fill();
+  ctx.drawImage(img, x + pad, margin + pad, w, h);
+  return canvas.toBuffer('image/png');
+}
+
+/**
+ * The doctor's name plate: a white box in an NH-blue frame with a rounded top
+ * corner - the name in red bold, the designation in blue - over a blue band
+ * carrying "Hospital | City" in white. Bottom-left of a horizontal frame, to
+ * the right and low on a vertical one.
+ */
+export function namePlate(
+  size: { width: number; height: number },
+  colours: HouseColours,
+  name: string,
+  designation: string | null,
+  hospitalLine: string | null,
+): Buffer {
+  ensureFonts();
+  const { width, height } = size;
+  const canvas = createCanvas(width, height);
+  const ctx = canvas.getContext('2d');
+  const vertical = height > width;
+  const nameSize = px(size, vertical ? 52 : 46);
+  const subSize = px(size, vertical ? 30 : 24);
+  const lineSize = px(size, 34);
+  const pad = px(size, 22);
+  const border = px(size, 16);
+
+  ctx.font = `bold ${nameSize}px "${FONT}"`;
+  const nameWidth = ctx.measureText(name).width;
+  ctx.font = `${subSize}px "${FONT}"`;
+  const subLines = designation ? wrap(ctx, designation, px(size, vertical ? 760 : 900)) : [];
+  const subWidth = Math.max(0, ...subLines.map((l) => ctx.measureText(l).width));
+  ctx.font = `${lineSize}px "${FONT}"`;
+  const lineWidth = hospitalLine ? ctx.measureText(hospitalLine).width : 0;
+
+  const innerW = Math.max(nameWidth, subWidth, lineWidth) + pad * 2;
+  const innerH = pad * 0.8 + nameSize * 1.15 + subLines.length * subSize * 1.3 + pad * 0.6;
+  const bandH = hospitalLine ? lineSize * 1.9 : border;
+  const plateW = innerW + border * 2;
+  const plateH = border + innerH + bandH;
+  const x = vertical ? width - plateW : px(size, 110);
+  const y = vertical ? height * 0.62 : height - plateH;
+
+  ctx.fillStyle = colours.blue;
+  roundedTopLeft(ctx, x, y, plateW, plateH, px(size, 34));
+  ctx.fill();
+  ctx.fillStyle = colours.white;
+  ctx.fillRect(x + border, y + border, innerW, innerH);
+
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  let ty = y + border + pad * 0.8;
+  ctx.font = `bold ${nameSize}px "${FONT}"`;
+  ctx.fillStyle = colours.red;
+  ctx.fillText(name, x + border + pad, ty);
+  ty += nameSize * 1.15;
+  ctx.font = `${subSize}px "${FONT}"`;
+  ctx.fillStyle = colours.blue;
+  for (const l of subLines) { ctx.fillText(l, x + border + pad, ty); ty += subSize * 1.3; }
+  if (hospitalLine) {
+    ctx.font = `${lineSize}px "${FONT}"`;
+    ctx.fillStyle = colours.white;
+    ctx.fillText(hospitalLine, x + border + pad * 0.6, y + border + innerH + (bandH - lineSize) / 2);
+  }
+  return canvas.toBuffer('image/png');
+}
+
+/** The disclaimer: white text centred low on a band fading to black at the foot of the frame. */
+export function disclaimerBand(size: { width: number; height: number }, text: string): Buffer {
+  ensureFonts();
+  const { width, height } = size;
+  const canvas = createCanvas(width, height);
+  const ctx = canvas.getContext('2d');
+  const bandTop = height * (height > width ? 0.84 : 0.7);
+  const fade = ctx.createLinearGradient(0, bandTop, 0, height);
+  fade.addColorStop(0, 'rgba(0,0,0,0)');
+  fade.addColorStop(0.55, 'rgba(0,0,0,0.6)');
+  fade.addColorStop(1, 'rgba(0,0,0,0.95)');
+  ctx.fillStyle = fade;
+  ctx.fillRect(0, bandTop, width, height - bandTop);
+
+  const fontSize = px(size, 21);
+  const label = 'Disclaimer: ';
+  const body = text.replace(/^\s*Disclaimer:\s*/i, '');
+  ctx.font = `${fontSize}px "${FONT}"`;
+  const lines = wrap(ctx, `${label}${body}`, width * 0.88);
+  const lh = fontSize * 1.3;
+  let y = height - px(size, 30) - lines.length * lh;
+  ctx.textBaseline = 'top';
+  ctx.fillStyle = '#ffffff';
+  lines.forEach((line, i) => {
+    if (i === 0 && line.startsWith(label.trim())) {
+      // "Disclaimer:" in bold, the rest of the line regular, centred together.
+      ctx.font = `bold ${fontSize}px "${FONT}"`;
+      const labelW = ctx.measureText(label).width;
+      ctx.font = `${fontSize}px "${FONT}"`;
+      const rest = line.slice(label.length);
+      const start = (width - labelW - ctx.measureText(rest).width) / 2;
+      ctx.textAlign = 'left';
+      ctx.font = `bold ${fontSize}px "${FONT}"`;
+      ctx.fillText(label, start, y);
+      ctx.font = `${fontSize}px "${FONT}"`;
+      ctx.fillText(rest, start + labelW, y);
+    } else {
+      ctx.textAlign = 'center';
+      ctx.font = `${fontSize}px "${FONT}"`;
+      ctx.fillText(line, width / 2, y);
+    }
+    y += lh;
+  });
+  return canvas.toBuffer('image/png');
+}
+
+/**
+ * On-screen text in the house panel. Horizontal: the right half of the frame
+ * in NH blue, a red bar beside a white bold heading, the points below in white.
+ * Vertical: a blue strip across the lower middle with the red bar and heading.
+ */
+export function housePanel(
+  size: { width: number; height: number },
+  colours: HouseColours,
+  heading: string,
+  bullets: readonly string[],
+): Buffer {
+  ensureFonts();
+  const { width, height } = size;
+  const canvas = createCanvas(width, height);
+  const ctx = canvas.getContext('2d');
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+
+  if (height > width) {
+    const headSize = px(size, 62);
+    const bodySize = px(size, 34);
+    const x = px(size, 60);
+    const w = width - x;
+    ctx.font = `bold ${headSize}px "${FONT}"`;
+    const headLines = wrap(ctx, heading, w - px(size, 160));
+    ctx.font = `${bodySize}px "${FONT}"`;
+    const bodyLines = bullets.flatMap((b) => wrap(ctx, b, w - px(size, 160)));
+    const h = px(size, 50) * 2 + headLines.length * headSize * 1.15 + (bodyLines.length ? px(size, 20) + bodyLines.length * bodySize * 1.45 : 0);
+    const y = height * 0.66 - h / 2;
+    ctx.fillStyle = colours.blue;
+    ctx.fillRect(x, y, w, h);
+    ctx.fillStyle = colours.red;
+    ctx.fillRect(x, y + px(size, 30), px(size, 30), h - px(size, 60));
+    let ty = y + px(size, 50);
+    ctx.fillStyle = colours.white;
+    ctx.font = `bold ${headSize}px "${FONT}"`;
+    for (const l of headLines) { ctx.fillText(l, x + px(size, 110), ty); ty += headSize * 1.15; }
+    ty += px(size, 20);
+    ctx.font = `${bodySize}px "${FONT}"`;
+    for (const l of bodyLines) { ctx.fillText(l, x + px(size, 110), ty); ty += bodySize * 1.45; }
+    return canvas.toBuffer('image/png');
+  }
+
+  const left = width / 2;
+  ctx.fillStyle = colours.blue;
+  ctx.fillRect(left, 0, width - left, height);
+  const headSize = px(size, 62);
+  const bodySize = px(size, 30);
+  const textX = left + px(size, 110);
+  const textW = width - textX - px(size, 90);
+  ctx.font = `bold ${headSize}px "${FONT}"`;
+  const headLines = wrap(ctx, heading, textW);
+  ctx.font = `${bodySize}px "${FONT}"`;
+  const bodyLines = bullets.map((b) => wrap(ctx, b, textW));
+  const headH = headLines.length * headSize * 1.12;
+  const bodyH = bodyLines.reduce((n, ls) => n + ls.length * bodySize * 1.3 + bodySize * 0.95, 0);
+  let ty = Math.max(px(size, 140), (height - headH - px(size, 70) - bodyH) / 2);
+  ctx.fillStyle = colours.red;
+  ctx.fillRect(left, ty - px(size, 6), px(size, 46), headH + px(size, 6));
+  ctx.fillStyle = colours.white;
+  ctx.font = `bold ${headSize}px "${FONT}"`;
+  for (const l of headLines) { ctx.fillText(l, textX, ty); ty += headSize * 1.12; }
+  ty += px(size, 70);
+  ctx.font = `${bodySize}px "${FONT}"`;
+  for (const ls of bodyLines) {
+    for (const l of ls) { ctx.fillText(l, textX, ty); ty += bodySize * 1.3; }
+    ty += bodySize * 0.95;
+  }
+  return canvas.toBuffer('image/png');
+}
+
+/** The end frame, drawn when the hospital's own end screen is not supplied: the logo and the tagline, on white. */
+export async function houseEndCard(
+  size: { width: number; height: number },
+  colours: HouseColours,
+  logo: Buffer | null,
+  tagline: string | null,
+  companyName: string,
+): Promise<Buffer> {
+  ensureFonts();
+  const { width, height } = size;
+  const canvas = createCanvas(width, height);
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, width, height);
+  const vertical = height > width;
+  const tagSize = px(size, vertical ? 64 : 58);
+  ctx.textBaseline = 'middle';
+  if (logo) {
+    const img = await loadImage(logo);
+    const w = px(size, vertical ? 700 : 760);
+    const h = (img.height / img.width) * w;
+    if (!vertical && tagline) {
+      ctx.font = `italic bold ${tagSize}px "${FONT}"`;
+      const tagW = ctx.measureText(tagline).width;
+      const gap = px(size, 60);
+      const x = (width - (w + gap * 2 + tagW)) / 2;
+      ctx.drawImage(img, x, (height - h) / 2, w, h);
+      ctx.fillStyle = colours.red;
+      ctx.fillRect(x + w + gap - px(size, 2), height / 2 - h * 0.45, px(size, 4), h * 0.9);
+      ctx.fillStyle = colours.blue;
+      ctx.textAlign = 'left';
+      ctx.fillText(tagline, x + w + gap * 2, height / 2);
+    } else {
+      ctx.drawImage(img, (width - w) / 2, height * 0.42 - h / 2, w, h);
+      if (tagline) {
+        ctx.font = `italic bold ${tagSize}px "${FONT}"`;
+        ctx.fillStyle = colours.blue;
+        ctx.textAlign = 'center';
+        ctx.fillText(tagline, width / 2, height * 0.42 + h / 2 + tagSize * 1.2);
+      }
+    }
+  } else {
+    ctx.font = `bold ${tagSize * 1.4}px "${FONT}"`;
+    ctx.fillStyle = colours.blue;
+    ctx.textAlign = 'center';
+    ctx.fillText(companyName, width / 2, height * 0.45);
+    if (tagline) {
+      ctx.font = `italic bold ${tagSize}px "${FONT}"`;
+      ctx.fillText(tagline, width / 2, height * 0.45 + tagSize * 1.6);
+    }
+  }
+  return canvas.toBuffer('image/png');
+}

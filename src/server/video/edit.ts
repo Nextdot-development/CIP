@@ -9,6 +9,8 @@ import { brain } from '../brain/providers';
 import { searchAssets } from '../drive/assetSearch';
 import { readFile } from '../drive/service';
 import { driveStorage, videoEditKeyFor } from '../drive/storage';
+import { parseGivenPlan } from './givenPlan';
+import type { GivenBlock } from './givenPlan';
 import { renderFilm } from './render';
 import { transcribeWords } from './words';
 import type { Word } from './words';
@@ -17,7 +19,8 @@ import type { Word } from './words';
  * A doctor's recording, edited into the house template.
  *
  * planning  the words are heard and the edit is planned
- * planned   a person reads the plan - cuts, title, points, b-roll - and may change it
+ * planned   a person reads the plan - cuts, title, points, b-roll - and may change it;
+ *           any block still waiting for b-roll is asked about here
  * approved  it is waiting to be made
  * rendering it is being made
  * ready     the film can be downloaded
@@ -50,8 +53,12 @@ export type EditBlock = {
   to: number;
   /** The visual the plan suggests. */
   visuals: string;
-  /** Footage for it from the company's own library, when there is any. */
+  /** The footage chosen for it. */
   footage: { fileId: string; fileName: string } | null;
+  /** Library footage that may fit, offered when the question is asked. */
+  suggestion?: { fileId: string; fileName: string } | null;
+  /** A person chose to show the doctor here instead of b-roll. */
+  brollSkipped?: boolean;
   concern: string | null;
   /** The rules the block may break, in words. */
   rules: string[];
@@ -62,6 +69,9 @@ export type EditPlan = {
   cuts: { from: number; to: number; reason: string }[];
   blocks: EditBlock[];
 };
+
+/** A block that wants b-roll and has neither footage nor a person's "skip". */
+export const brollAsked = (b: EditBlock) => Boolean(b.visuals.trim()) && !b.footage && !b.brollSkipped;
 
 /** The longest stretch of a block b-roll covers; the doctor is seen again after it. */
 const BROLL_SECONDS = 6;
@@ -90,6 +100,9 @@ export type VideoEditDTO = {
   sourceName: string;
   doctorName: string;
   doctorTitle: string | null;
+  hospitalLine: string | null;
+  /** True when a person supplied the on-screen text. */
+  givenPlan: boolean;
   status: 'planning' | 'planned' | 'approved' | 'rendering' | 'ready' | 'failed';
   plan: EditPlan | null;
   durationSeconds: number | null;
@@ -107,6 +120,12 @@ export type VideoTemplateDTO = {
   endScreenText: string | null;
   disclaimerText: string | null;
   disclaimerSeconds: number;
+  logoCorner: 'top-left' | 'top-right';
+  /** The hospital's own end screens; drawn when not set. */
+  endVideoFileId: string | null;
+  endVideoVerticalFileId: string | null;
+  /** The line on a drawn end screen, "Take Care". */
+  tagline: string | null;
 };
 
 // --- the template ------------------------------------------------------------
@@ -114,18 +133,23 @@ export type VideoTemplateDTO = {
 const DEFAULT_TEMPLATE: VideoTemplateDTO = {
   logoFileId: null, background: '#0b2a4a', accent: '#e8a33d', ink: '#ffffff',
   introSeconds: 2.5, outroSeconds: 3, endScreenText: null, disclaimerText: null, disclaimerSeconds: 4,
+  logoCorner: 'top-right', endVideoFileId: null, endVideoVerticalFileId: null, tagline: null,
 };
 
 export async function getTemplate(scope: CompanyScope): Promise<VideoTemplateDTO> {
   const [row] = await withCompanyScope(scope, (tx) => tx<{
     logo_file_id: string | null; background: string; accent: string; ink: string; intro_seconds: string;
     outro_seconds: string; end_screen_text: string | null; disclaimer_text: string | null; disclaimer_seconds: string;
+    logo_corner: 'top-left' | 'top-right'; end_video_file_id: string | null; end_video_vertical_file_id: string | null;
+    tagline: string | null;
   }[]>`select * from video_templates where company_id = ${scope.companyId}`);
   if (!row) return { ...DEFAULT_TEMPLATE };
   return {
     logoFileId: row.logo_file_id, background: row.background, accent: row.accent, ink: row.ink,
     introSeconds: Number(row.intro_seconds), outroSeconds: Number(row.outro_seconds), endScreenText: row.end_screen_text,
     disclaimerText: row.disclaimer_text, disclaimerSeconds: Number(row.disclaimer_seconds),
+    logoCorner: row.logo_corner, endVideoFileId: row.end_video_file_id,
+    endVideoVerticalFileId: row.end_video_vertical_file_id, tagline: row.tagline,
   };
 }
 
@@ -138,19 +162,27 @@ export async function saveTemplate(scope: CompanyScope, input: Partial<VideoTemp
   }
   const seconds = (n: number, max: number) => Math.min(max, Math.max(0, Number(n) || 0));
   if (t.logoFileId && !UUID.test(t.logoFileId)) throw new VideoEditRejected('That logo is not in this workspace.');
+  if (t.logoCorner !== 'top-left' && t.logoCorner !== 'top-right') throw new VideoEditRejected('The logo sits top-left or top-right.');
+  for (const id of [t.endVideoFileId, t.endVideoVerticalFileId]) {
+    if (id && !UUID.test(id)) throw new VideoEditRejected('That end screen is not in this workspace.');
+  }
   await withCompanyScope(scope, (tx) => tx`
     insert into video_templates
       (company_id, logo_file_id, background, accent, ink, intro_seconds, outro_seconds,
-       end_screen_text, disclaimer_text, disclaimer_seconds, updated_at)
+       end_screen_text, disclaimer_text, disclaimer_seconds, logo_corner, end_video_file_id,
+       end_video_vertical_file_id, tagline, updated_at)
     values (${scope.companyId}, ${t.logoFileId}, ${t.background}, ${t.accent}, ${t.ink},
             ${seconds(t.introSeconds, 10)}, ${seconds(t.outroSeconds, 10)},
             ${t.endScreenText?.trim().slice(0, 200) || null}, ${t.disclaimerText?.trim().slice(0, 600) || null},
-            ${seconds(t.disclaimerSeconds, 15)}, now())
+            ${seconds(t.disclaimerSeconds, 15)}, ${t.logoCorner}, ${t.endVideoFileId || null},
+            ${t.endVideoVerticalFileId || null}, ${t.tagline?.trim().slice(0, 60) || null}, now())
     on conflict (company_id) do update set
       logo_file_id = excluded.logo_file_id, background = excluded.background, accent = excluded.accent,
       ink = excluded.ink, intro_seconds = excluded.intro_seconds, outro_seconds = excluded.outro_seconds,
       end_screen_text = excluded.end_screen_text, disclaimer_text = excluded.disclaimer_text,
-      disclaimer_seconds = excluded.disclaimer_seconds, updated_at = now()
+      disclaimer_seconds = excluded.disclaimer_seconds, logo_corner = excluded.logo_corner,
+      end_video_file_id = excluded.end_video_file_id, end_video_vertical_file_id = excluded.end_video_vertical_file_id,
+      tagline = excluded.tagline, updated_at = now()
   `);
   return getTemplate(scope);
 }
@@ -159,18 +191,19 @@ export async function saveTemplate(scope: CompanyScope, input: Partial<VideoTemp
 
 type Row = {
   id: string; source_file_id: string; source_name: string; doctor_name: string; doctor_title: string | null;
-  status: VideoEditDTO['status']; plan: EditPlan | null; duration_seconds: string | null;
+  hospital_line: string | null; given: boolean; status: VideoEditDTO['status']; plan: EditPlan | null; duration_seconds: string | null;
   error_message: string | null; created_at: Date;
 };
 
 const toDTO = (r: Row): VideoEditDTO => ({
   id: r.id, sourceFileId: r.source_file_id, sourceName: r.source_name, doctorName: r.doctor_name,
-  doctorTitle: r.doctor_title, status: r.status, plan: r.plan,
+  doctorTitle: r.doctor_title, hospitalLine: r.hospital_line, givenPlan: r.given, status: r.status, plan: r.plan,
   durationSeconds: r.duration_seconds === null ? null : Number(r.duration_seconds),
   error: r.error_message, createdAt: r.created_at.toISOString(),
 });
 
-const SELECT = `select e.id, e.source_file_id, f.name as source_name, e.doctor_name, e.doctor_title, e.status,
+const SELECT = `select e.id, e.source_file_id, f.name as source_name, e.doctor_name, e.doctor_title,
+                       e.hospital_line, e.given_plan is not null as given, e.status,
                        e.plan, e.duration_seconds, e.error_message, e.created_at
                   from video_edits e join drive_files f on f.id = e.source_file_id and f.company_id = e.company_id`;
 
@@ -189,25 +222,81 @@ export async function getEdit(scope: CompanyScope, id: string): Promise<VideoEdi
   return row ? toDTO(row) : null;
 }
 
+/** The workspace's videos among these ids, by name; anything else is refused. */
+async function videosIn(scope: CompanyScope, ids: string[]): Promise<{ fileId: string; fileName: string }[]> {
+  const wanted = [...new Set(ids)];
+  if (wanted.length === 0) return [];
+  if (wanted.some((id) => !UUID.test(id))) throw new VideoEditRejected('That footage is not in this workspace.');
+  const rows = await withCompanyScope(scope, (tx) => tx<{ id: string; name: string }[]>`
+    select id, name from drive_files
+     where company_id = ${scope.companyId} and id = any(${wanted}) and archived_at is null
+       and bytes_retained and mime_type like 'video/%'
+  `);
+  if (rows.length !== wanted.length) throw new VideoEditRejected('Choose video footage from this workspace.');
+  const byId = new Map(rows.map((r) => [r.id, r.name]));
+  return wanted.map((id) => ({ fileId: id, fileName: byId.get(id)! }));
+}
+
+/**
+ * The supplied text, block for block and word for word. The planner only
+ * places it: a time given is kept, one it did not find is spread across the
+ * recording, and its visual stands in only where none was written.
+ */
+function keepGiven(
+  given: GivenBlock[],
+  planned: { heading: string; bullets: string[]; from: number; to: number; visuals: string; concern: string | null; ruleRefs: string[] }[],
+  seconds: number,
+) {
+  const share = seconds / given.length;
+  return given.map((g, i) => {
+    const p = planned[i];
+    const placed = p && p.to > p.from ? p : null;
+    const from = Math.max(0, Math.min(seconds, g.from ?? placed?.from ?? i * share));
+    const to = Math.max(from, Math.min(seconds, g.to ?? placed?.to ?? (i + 1) * share));
+    return {
+      heading: g.heading, bullets: g.bullets, from, to,
+      visuals: g.visuals || p?.visuals || '',
+      concern: p?.concern ?? null,
+      ruleRefs: p?.ruleRefs ?? [],
+    };
+  });
+}
+
 /**
  * Hears a recording and plans its edit. Takes as long as the recording takes
  * to transcribe - well under a minute for a few minutes of speech.
+ *
+ * givenPlan  the on-screen text a person already wrote (the OST sheet, or a
+ *            block a paragraph): it goes on screen exactly as written
+ * brollIds   footage the person has for it; each block takes the piece that
+ *            fits it best. With none, the library is searched for a
+ *            suggestion and the person is asked, block by block.
  */
 export async function createEdit(
   scope: CompanyScope,
-  input: { fileId: string; doctorName: string; doctorTitle?: string | null },
+  input: {
+    fileId: string; doctorName: string; doctorTitle?: string | null; hospitalLine?: string | null;
+    givenPlan?: string | null; brollIds?: string[];
+  },
 ): Promise<VideoEditDTO> {
   const doctorName = input.doctorName?.trim();
   if (!doctorName) throw new VideoEditRejected("Type the doctor's name as it should appear on screen.");
   if (!UUID.test(input.fileId)) throw new VideoEditRejected('That recording is not in this workspace.');
+  const givenText = input.givenPlan?.trim().slice(0, 20_000) || null;
+  const given = givenText ? parseGivenPlan(givenText) : [];
+  if (givenText && given.length === 0) {
+    throw new VideoEditRejected('The plan could not be read. Paste the OST table, or write a block a paragraph: a heading line, then a point a line.');
+  }
 
   const source = await readFile(scope, input.fileId);
   if (!source.file.mimeType.startsWith('video/')) throw new VideoEditRejected('Choose a video recording.');
+  const provided = await videosIn(scope, (input.brollIds ?? []).filter((id) => id !== input.fileId));
 
   const [created] = await withCompanyScope(scope, (tx) => tx<{ id: string }[]>`
-    insert into video_edits (company_id, source_file_id, doctor_name, doctor_title, created_by)
+    insert into video_edits (company_id, source_file_id, doctor_name, doctor_title, hospital_line, given_plan, created_by)
     values (${scope.companyId}, ${input.fileId}, ${doctorName.slice(0, 120)},
-            ${input.doctorTitle?.trim().slice(0, 120) || null}, ${scope.userId})
+            ${input.doctorTitle?.trim().slice(0, 120) || null}, ${input.hospitalLine?.trim().slice(0, 120) || null},
+            ${givenText}, ${scope.userId})
     returning id
   `);
   const id = created!.id;
@@ -242,23 +331,19 @@ export async function createEdit(
     const refs = rules.map((r, i) => ({ ref: `R${i + 1}`, rule: r.rule }));
     const planned = await brain().planVideoEdit({
       doctorName, category: profile.category, words: heard.words, rules: refs,
+      ...(given.length > 0 ? { given } : {}),
     });
+    const placed = given.length > 0 ? keepGiven(given, planned.blocks, heard.meta.durationSeconds) : planned.blocks;
 
-    // Footage for each block's visual, from the company's own library.
     const byRef = new Map(refs.map((r) => [r.ref, r.rule]));
-    const blocks = await Promise.all(planned.blocks.map(async (b): Promise<EditBlock> => {
-      const hit = b.visuals
-        ? (await searchAssets(scope, b.visuals, 12).catch(() => []))
-            .find((h) => h.mimeType.startsWith('video/') && h.fileId !== input.fileId)
-        : undefined;
-      return {
-        heading: b.heading, bullets: b.bullets, from: b.from, to: b.to, visuals: b.visuals,
-        footage: hit ? { fileId: hit.fileId, fileName: hit.fileName } : null,
-        concern: b.concern,
-        rules: b.ruleRefs.map((r) => byRef.get(r)).filter((r): r is string => Boolean(r)),
-      };
+    const blocks = placed.map((b): EditBlock => ({
+      heading: b.heading, bullets: b.bullets, from: b.from, to: b.to, visuals: b.visuals,
+      footage: null, suggestion: null, brollSkipped: false,
+      concern: b.concern,
+      rules: b.ruleRefs.map((r) => byRef.get(r)).filter((r): r is string => Boolean(r)),
     }));
-    const plan: EditPlan = { title: planned.title, cuts: planned.cuts, blocks };
+    await chooseFootage(scope, blocks, provided, input.fileId);
+    const plan: EditPlan = { title: planned.title || given[0]?.heading || doctorName, cuts: planned.cuts, blocks };
 
     await withCompanyScope(scope, (tx) => tx`
       update video_edits
@@ -270,6 +355,46 @@ export async function createEdit(
     await fail(error instanceof Error ? error.message.slice(0, 300) : 'The recording could not be planned.');
   }
   return (await getEdit(scope, id))!;
+}
+
+/**
+ * Footage for the blocks. Footage a person gave goes where its words fit best,
+ * each piece once, and any left over fills the blocks still wanting some in
+ * order. Without any, a block's library match is only offered: the person is
+ * asked before anything is put over the doctor.
+ */
+async function chooseFootage(
+  scope: CompanyScope,
+  blocks: EditBlock[],
+  provided: { fileId: string; fileName: string }[],
+  sourceId: string,
+): Promise<void> {
+  if (provided.length > 0) {
+    const left = new Map(provided.map((p) => [p.fileId, p]));
+    for (const b of blocks) {
+      if (!b.visuals.trim() || left.size === 0) continue;
+      const hits = await searchAssets(scope, `${b.visuals} ${b.heading}`, 48).catch(() => []);
+      const hit = hits.find((h) => left.has(h.fileId));
+      if (hit) {
+        b.footage = left.get(hit.fileId)!;
+        left.delete(hit.fileId);
+      }
+    }
+    for (const b of blocks) {
+      if (left.size === 0) break;
+      if (b.footage || !b.visuals.trim()) continue;
+      const [first] = left.values();
+      b.footage = first!;
+      left.delete(first!.fileId);
+    }
+    return;
+  }
+  for (const b of blocks) {
+    if (!b.visuals.trim()) continue;
+    const hit = (await searchAssets(scope, b.visuals, 12).catch(() => []))
+      .find((h) => h.mimeType.startsWith('video/') && h.fileId !== sourceId);
+    b.suggestion = hit ? { fileId: hit.fileId, fileName: hit.fileName } : null;
+  }
 }
 
 /** A person's changes to the plan. Times stay inside the recording. */
@@ -298,11 +423,16 @@ export async function updatePlan(scope: CompanyScope, id: string, plan: EditPlan
         to: b.to,
         visuals: String(b.visuals ?? '').trim().slice(0, 200),
         footage: b.footage && UUID.test(b.footage.fileId) ? { fileId: b.footage.fileId, fileName: String(b.footage.fileName ?? '') } : null,
+        suggestion: b.suggestion && UUID.test(b.suggestion.fileId) ? { fileId: b.suggestion.fileId, fileName: String(b.suggestion.fileName ?? '') } : null,
+        brollSkipped: Boolean(b.brollSkipped) && !b.footage,
         concern: b.concern ?? null,
         rules: Array.isArray(b.rules) ? b.rules : [],
       })),
   };
   if (!clean.title) throw new VideoEditRejected('The film needs a title.');
+  const footage = clean.blocks.flatMap((b) => (b.footage ? [b.footage.fileId] : []));
+  const known = new Map((await videosIn(scope, footage)).map((f) => [f.fileId, f.fileName]));
+  for (const b of clean.blocks) if (b.footage) b.footage.fileName = known.get(b.footage.fileId)!;
   await withCompanyScope(scope, (tx) => tx`
     update video_edits set plan = ${tx.json(clean)}, status = 'planned', updated_at = now()
      where id = ${id} and company_id = ${scope.companyId}
@@ -314,6 +444,12 @@ export async function updatePlan(scope: CompanyScope, id: string, plan: EditPlan
 export async function approveEdit(scope: CompanyScope, id: string): Promise<VideoEditDTO> {
   const edit = await getEdit(scope, id);
   if (!edit?.plan) throw new VideoEditRejected('That edit has no plan to approve.');
+  const asked = edit.plan.blocks.filter(brollAsked).length;
+  if (asked > 0) {
+    throw new VideoEditRejected(
+      `${asked === 1 ? 'One block is' : `${asked} blocks are`} waiting for b-roll: choose footage, upload some, or show the doctor instead.`,
+    );
+  }
   if (edit.status !== 'planned' && edit.status !== 'ready' && edit.status !== 'failed') {
     throw new VideoEditRejected('This edit is already being made.');
   }
@@ -329,9 +465,10 @@ export async function approveEdit(scope: CompanyScope, id: string): Promise<Vide
 /** Makes one approved film. */
 export async function renderEdit(scope: CompanyScope, id: string): Promise<void> {
   const [row] = await withCompanyScope(scope, (tx) => tx<{
-    source_file_id: string; doctor_name: string; doctor_title: string | null; plan: EditPlan; company: string;
+    source_file_id: string; doctor_name: string; doctor_title: string | null; hospital_line: string | null;
+    plan: EditPlan; company: string;
   }[]>`
-    select e.source_file_id, e.doctor_name, e.doctor_title, e.plan, c.name as company
+    select e.source_file_id, e.doctor_name, e.doctor_title, e.hospital_line, e.plan, c.name as company
       from video_edits e join companies c on c.id = e.company_id
      where e.id = ${id} and e.company_id = ${scope.companyId}
   `);
@@ -340,6 +477,11 @@ export async function renderEdit(scope: CompanyScope, id: string): Promise<void>
   const template = await getTemplate(scope);
   const source = await readFile(scope, row.source_file_id);
   const logo = template.logoFileId ? await readFile(scope, template.logoFileId).then((f) => f.body).catch(() => null) : null;
+  const endVideo = (fileId: string | null) => fileId
+    ? readFile(scope, fileId)
+        .then((f) => ({ bytes: f.body, extension: f.filename.split('.').pop()?.toLowerCase() || 'mp4' }))
+        .catch(() => null)
+    : Promise.resolve(null);
   // B-roll opens a block and gives way to the doctor again.
   const broll = [];
   for (const b of row.plan.blocks) {
@@ -353,19 +495,25 @@ export async function renderEdit(scope: CompanyScope, id: string): Promise<void>
   const film = await renderFilm({
     source: source.body,
     sourceExtension: source.filename.split('.').pop()?.toLowerCase() || 'mp4',
-    style: { background: template.background, accent: template.accent, ink: template.ink },
+    // The template's brand colour carries the panels; its accent, the bar.
+    colours: { blue: template.background, red: template.accent, white: template.ink },
     logo,
+    logoCorner: template.logoCorner,
     companyName: row.company,
     doctorName: row.doctor_name,
     doctorTitle: row.doctor_title,
-    title: row.plan.title,
+    hospitalLine: row.hospital_line,
     cuts: row.plan.cuts,
     blocks: row.plan.blocks.map((b) => ({ heading: b.heading, bullets: b.bullets, from: b.from, to: b.to })),
     broll,
-    introSeconds: template.introSeconds,
     // Only the hospital's own wording: CIP never writes a disclaimer.
     disclaimer: template.disclaimerText ? { text: template.disclaimerText, seconds: template.disclaimerSeconds } : null,
-    endScreen: { text: template.endScreenText, seconds: template.outroSeconds },
+    endScreen: {
+      horizontal: await endVideo(template.endVideoFileId),
+      vertical: await endVideo(template.endVideoVerticalFileId),
+      tagline: template.tagline ?? template.endScreenText,
+      seconds: template.outroSeconds,
+    },
   });
 
   const key = videoEditKeyFor(scope.companyId, id);

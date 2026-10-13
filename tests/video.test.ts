@@ -10,6 +10,7 @@ import postgres from 'postgres';
 import { startTestDatabase } from './harness';
 import type { TestDb } from './harness';
 import { keptLength, keptSpans, toFilmSpan, toFilmTime } from '../src/server/video/timeline';
+import { parseGivenPlan, readSpan } from '../src/server/video/givenPlan';
 
 /**
  * The Video Studio: a doctor's recording into a film in the house template.
@@ -96,6 +97,31 @@ describe('time before and after the cuts', () => {
   });
 });
 
+describe('a plan a person wrote', () => {
+  it('reads the OST sheet word for word', () => {
+    const blocks = parseGivenPlan([
+      '| Timecode / Section | On-Screen Text (OST – Pointer Format) | Visuals / B-roll Suggestions |',
+      '|---|---|---|',
+      '| 00:00–00:20 | • **Congenital heart disease in children**<br>• Present at birth<br>• Often treatable | Child with parent, ward |',
+      '| Closing | • **Early checks matter**<br>• Ask your paediatrician | — |',
+    ].join('\n'));
+    assert.deepEqual(blocks, [
+      { heading: 'Congenital heart disease in children', bullets: ['Present at birth', 'Often treatable'], visuals: 'Child with parent, ward', from: 0, to: 20 },
+      { heading: 'Early checks matter', bullets: ['Ask your paediatrician'], visuals: '', from: null, to: null },
+    ]);
+  });
+
+  it('reads plain text, a block a paragraph', () => {
+    const blocks = parseGivenPlan('[01:05–01:30] Warning signs\n• Breathlessness\n• Blue lips\nVisuals: infant feeding\n\nWhen to see a doctor\n- Poor weight gain');
+    assert.deepEqual(blocks, [
+      { heading: 'Warning signs', bullets: ['Breathlessness', 'Blue lips'], visuals: 'infant feeding', from: 65, to: 90 },
+      { heading: 'When to see a doctor', bullets: ['Poor weight gain'], visuals: '', from: null, to: null },
+    ]);
+    assert.equal(readSpan('Intro'), null);
+    assert.deepEqual(readSpan('0:10 - 0:25'), { from: 10, to: 25 });
+  });
+});
+
 describe('a recording into a film', () => {
   let fileId: string;
 
@@ -139,9 +165,15 @@ describe('a recording into a film', () => {
     // Nothing is made before a person approves it.
     assert.equal(await video.renderApprovedEdits({ outOfTime: () => false }), 0);
 
-    // The person removes the risky point and approves.
+    // The person removes the risky point. The block left wants b-roll and has
+    // none, so it is asked about before anything is made.
     const edited = await video.updatePlan(nh, planned.id, { ...planned.plan!, blocks: planned.plan!.blocks.filter((b) => !b.concern) });
     assert.equal(edited.plan!.blocks.length, 1);
+    await assert.rejects(() => video.approveEdit(nh, planned.id), /waiting for b-roll/);
+    const answered = await video.updatePlan(nh, planned.id, {
+      ...edited.plan!, blocks: edited.plan!.blocks.map((b) => ({ ...b, brollSkipped: true })),
+    });
+    assert.equal(answered.plan!.blocks[0]!.brollSkipped, true);
     await video.approveEdit(nh, planned.id);
     assert.equal(await video.renderApprovedEdits({ outOfTime: () => false }), 1);
 
@@ -151,12 +183,12 @@ describe('a recording into a film', () => {
     assert.ok(film.bytes.length > 10_000);
     assert.equal(film.name, 'Understanding essential tremor.mp4');
 
-    // 2.5 s intro + 9 s of recording (3 cut) + 3 s end screen: no disclaimer was supplied, so none is invented.
+    // It opens on the doctor: 9 s of recording (3 cut) + a 3 s drawn end screen.
     const out = join(workdir, 'film.mp4');
     writeFileSync(out, film.bytes);
     const { readVideoMetadata } = await import('../src/server/brain/media');
     const meta = await readVideoMetadata(out);
-    assert.ok(Math.abs(meta.durationSeconds - 14.5) < 0.4, `film was ${meta.durationSeconds}s`);
+    assert.ok(Math.abs(meta.durationSeconds - 12) < 0.4, `film was ${meta.durationSeconds}s`);
 
     // Another company sees none of it.
     assert.equal(await video.getEdit(mm, planned.id), null);
@@ -174,8 +206,62 @@ describe('a recording into a film', () => {
     const out = join(workdir, 'film2.mp4');
     writeFileSync(out, film.bytes);
     const { readVideoMetadata } = await import('../src/server/brain/media');
-    // 2.5 intro + 12 recording + 3 disclaimer + 3 end.
-    assert.ok(Math.abs((await readVideoMetadata(out)).durationSeconds - 20.5) < 0.4);
+    // The disclaimer is a band over the recording, so it adds no time: 12 + 3.
+    assert.ok(Math.abs((await readVideoMetadata(out)).durationSeconds - 15) < 0.4);
+  });
+
+  it("puts a supplied plan on screen as written, with the footage given and the hospital's end screen", async () => {
+    const clip = async (name: string, seconds: number, audio: boolean) => {
+      const path = join(workdir, name);
+      await run(ffmpeg!, ['-f', 'lavfi', '-i', `color=c=green:size=640x360:rate=25:duration=${seconds}`,
+        ...(audio ? ['-f', 'lavfi', '-i', `sine=frequency=500:duration=${seconds}`, '-c:a', 'aac'] : []),
+        '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-shortest', '-y', path], { timeout: 60_000 });
+      return drive.uploadFile(nh, { folderId: null, filename: name, mimeType: 'video/mp4', body: readFileSync(path) });
+    };
+    const broll = await clip('ward.mp4', 4, true);
+    const end = await clip('end-screen.mp4', 2, false);
+    await video.saveTemplate(nh, { endVideoFileId: end.id, logoCorner: 'top-left', tagline: 'Take Care' });
+    const t = await video.getTemplate(nh);
+    assert.equal(t.endVideoFileId, end.id);
+    assert.equal(t.logoCorner, 'top-left');
+
+    fake.videoPlan = null;
+    const given = [
+      '| Timecode / Section | On-Screen Text | Visuals |',
+      '|---|---|---|',
+      '| 00:05–00:09 | • **What is a tremor?**<br>• An involuntary shake | Hospital ward |',
+      '| Closing | • **When to see a doctor**<br>• If it gets worse | — |',
+    ].join('\n');
+    const planned = await video.createEdit(nh, {
+      fileId, doctorName: 'Dr. D', hospitalLine: 'Narayana Health City | Bengaluru', givenPlan: given, brollIds: [broll.id],
+    });
+    assert.equal(planned.status, 'planned', planned.error ?? '');
+    assert.equal(planned.givenPlan, true);
+    assert.equal(planned.hospitalLine, 'Narayana Health City | Bengaluru');
+    const [first, second] = planned.plan!.blocks;
+    assert.equal(first!.heading, 'What is a tremor?');
+    assert.deepEqual(first!.bullets, ['An involuntary shake']);
+    assert.deepEqual([first!.from, first!.to], [5, 9], 'a time that was given is kept');
+    assert.equal(first!.footage?.fileId, broll.id, 'the footage given goes to the block that wants it');
+    assert.equal(second!.heading, 'When to see a doctor');
+    assert.equal(second!.footage, null);
+
+    await video.approveEdit(nh, planned.id);
+    assert.equal(await video.renderApprovedEdits({ outOfTime: () => false }), 1);
+    const done = (await video.getEdit(nh, planned.id))!;
+    assert.equal(done.status, 'ready', done.error ?? '');
+    const out = join(workdir, 'film3.mp4');
+    writeFileSync(out, (await video.readFilm(nh, planned.id))!.bytes);
+    const { readVideoMetadata } = await import('../src/server/brain/media');
+    const meta = await readVideoMetadata(out);
+    // 12 s of recording + the hospital's own 2 s end screen, silence added under it.
+    assert.ok(Math.abs(meta.durationSeconds - 14) < 0.4, `film was ${meta.durationSeconds}s`);
+    assert.ok(meta.hasAudio);
+  });
+
+  it('refuses a plan it cannot read, and footage from another workspace', async () => {
+    await assert.rejects(() => video.createEdit(nh, { fileId, doctorName: 'Dr. E', givenPlan: '| a |\n| b |' }), /could not be read/);
+    await assert.rejects(() => video.createEdit(nh, { fileId, doctorName: 'Dr. E', brollIds: ['00000000-0000-0000-0000-000000000001'] }), /footage/);
   });
 
   it('refuses what is not a recording, and a film with no doctor named', async () => {

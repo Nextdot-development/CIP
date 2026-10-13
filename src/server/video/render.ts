@@ -3,43 +3,58 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readVideoMetadata, runFfmpeg } from '../brain/media';
-import { fullCard, lowerThird, ostPanel } from './cards';
-import type { CardStyle } from './cards';
+import { disclaimerBand, houseEndCard, housePanel, logoBadge, namePlate } from './cards';
+import type { HouseColours } from './cards';
 import { keptLength, keptSpans, toFilmSpan } from './timeline';
 import type { Span } from './timeline';
 
 /**
- * The film, made with ffmpeg: the recording with its fumbles cut, the title
- * card and the on-screen text laid over it, b-roll cut in where the plan says,
- * between the house intro and the disclaimer and end screen.
+ * The film, made with ffmpeg to the hospital's own template ("Video Template
+ * NH 2026"):
  *
- * Every frame of the template is fixed and drawn by CIP. Nothing an image or
- * video model made goes into it.
+ *   - it opens on the doctor: no logo or title card first;
+ *   - the name plate introduces the doctor, and the disclaimer follows it at
+ *     the foot of the frame;
+ *   - each block of on-screen text splits the frame: the doctor on the left
+ *     half, the blue panel on the right (a strip across a vertical film);
+ *   - the logo sits in its corner throughout a horizontal film, and only on
+ *     the end frame of a vertical one;
+ *   - it closes on the hospital's own end screen.
+ *
+ * Every frame of the template is fixed and drawn by CIP or supplied by the
+ * hospital. Nothing an image or video model made goes into it.
  */
 
 export type RenderInput = {
   source: Buffer;
   sourceExtension: string;
-  style: CardStyle;
+  colours: HouseColours;
   logo: Buffer | null;
+  logoCorner: 'top-left' | 'top-right';
   companyName: string;
   doctorName: string;
   doctorTitle: string | null;
-  title: string;
+  hospitalLine: string | null;
   cuts: Span[];
   /** The on-screen text, block by block, in the recording's own time. */
   blocks: { heading: string; bullets: string[]; from: number; to: number }[];
   broll: { from: number; to: number; footage: Buffer; extension: string }[];
-  introSeconds: number;
   disclaimer: { text: string; seconds: number } | null;
-  endScreen: { text: string | null; seconds: number };
+  /** The hospital's own end screens, one per shape; one not given is drawn. */
+  endScreen: {
+    horizontal: { bytes: Buffer; extension: string } | null;
+    vertical: { bytes: Buffer; extension: string } | null;
+    tagline: string | null;
+    seconds: number;
+  };
 };
 
 const FPS = 30;
-/** How long the title card stays up at the start of the film. */
-const TITLE_SECONDS = 5;
+/** The name plate is up from half a second in until here; the disclaimer follows it. */
+const INTRO_SECONDS = 6;
 
 const even = (n: number) => Math.max(2, Math.round(n / 2) * 2);
+const t3 = (n: number) => n.toFixed(3);
 
 export async function renderFilm(input: RenderInput): Promise<{ bytes: Buffer; seconds: number }> {
   const dir = await mkdtemp(join(tmpdir(), 'cip-film-'));
@@ -48,32 +63,39 @@ export async function renderFilm(input: RenderInput): Promise<{ bytes: Buffer; s
     await writeFile(sourcePath, input.source);
     const meta = await readVideoMetadata(sourcePath);
     // The film keeps the recording's shape, capped at 1080 on its short side.
-    const scale = Math.min(1, 1080 / Math.min(meta.width ?? 1280, meta.height ?? 720));
-    const size = { width: even((meta.width ?? 1280) * scale), height: even((meta.height ?? 720) * scale) };
+    const scale = Math.min(1, 1080 / Math.min(meta.width ?? 1920, meta.height ?? 1080));
+    const size = { width: even((meta.width ?? 1920) * scale), height: even((meta.height ?? 1080) * scale) };
+    const vertical = size.height > size.width;
 
-    // 1. The recording, cut, with its lower thirds and b-roll.
     const kept = keptSpans(meta.durationSeconds, input.cuts);
     const filmSeconds = keptLength(kept);
     const inputs: string[] = ['-i', sourcePath];
     let nextInput = 1;
     const graph: string[] = [];
+    const still = async (name: string, png: Buffer) => {
+      const path = join(dir, `${name}.png`);
+      await writeFile(path, png);
+      inputs.push('-loop', '1', '-t', t3(filmSeconds), '-i', path);
+      return nextInput++;
+    };
 
+    // 1. The recording, with its fumbles cut.
     kept.forEach((span, i) => {
       graph.push(
-        `[0:v]trim=start=${span.from.toFixed(3)}:end=${span.to.toFixed(3)},setpts=PTS-STARTPTS,` +
+        `[0:v]trim=start=${t3(span.from)}:end=${t3(span.to)},setpts=PTS-STARTPTS,` +
           `scale=${size.width}:${size.height}:force_original_aspect_ratio=decrease,` +
-          `pad=${size.width}:${size.height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=${FPS}[v${i}]`,
+          `pad=${size.width}:${size.height}:(ow-iw)/2:(oh-ih)/2:color=white,setsar=1,fps=${FPS}[v${i}]`,
       );
       graph.push(
         meta.hasAudio
-          ? `[0:a]atrim=start=${span.from.toFixed(3)}:end=${span.to.toFixed(3)},asetpts=PTS-STARTPTS,aresample=48000[a${i}]`
-          : `anullsrc=r=48000:cl=stereo,atrim=duration=${(span.to - span.from).toFixed(3)}[a${i}]`,
+          ? `[0:a]atrim=start=${t3(span.from)}:end=${t3(span.to)},asetpts=PTS-STARTPTS,aresample=48000[a${i}]`
+          : `anullsrc=r=48000:cl=stereo,atrim=duration=${t3(span.to - span.from)}[a${i}]`,
       );
     });
     graph.push(`${kept.map((_, i) => `[v${i}][a${i}]`).join('')}concat=n=${kept.length}:v=1:a=1[base][audio]`);
     let current = 'base';
 
-    // B-roll over the picture; the doctor's voice carries on underneath.
+    // 2. B-roll over the picture; the doctor's voice carries on underneath.
     for (const [j, b] of input.broll.entries()) {
       const at = toFilmSpan(b, kept);
       if (!at) continue;
@@ -83,35 +105,61 @@ export async function renderFilm(input: RenderInput): Promise<{ bytes: Buffer; s
       const n = nextInput++;
       graph.push(
         `[${n}:v]scale=${size.width}:${size.height}:force_original_aspect_ratio=increase,crop=${size.width}:${size.height},` +
-          `setsar=1,fps=${FPS},trim=duration=${(at.to - at.from).toFixed(3)},setpts=PTS-STARTPTS+${at.from.toFixed(3)}/TB[b${j}]`,
+          `setsar=1,fps=${FPS},trim=duration=${t3(at.to - at.from)},setpts=PTS-STARTPTS+${t3(at.from)}/TB[b${j}]`,
       );
-      graph.push(`[${current}][b${j}]overlay=enable='between(t,${at.from.toFixed(3)},${at.to.toFixed(3)})':eof_action=pass[o${n}]`);
+      graph.push(`[${current}][b${j}]overlay=enable='between(t,${t3(at.from)},${t3(at.to)})':eof_action=pass[o${n}]`);
       current = `o${n}`;
     }
 
-    // The title card, then each key point, while it is being said.
-    const thirds: { png: Buffer; from: number; to: number }[] = [
-      {
-        png: lowerThird(size, input.style, input.title, [input.doctorName, input.doctorTitle].filter(Boolean).join(' · ')),
-        from: 0,
-        to: Math.min(TITLE_SECONDS, filmSeconds),
-      },
-    ];
-    for (const block of input.blocks) {
-      const at = toFilmSpan(block, kept);
-      if (!at) continue;
-      // Never on top of the title card: a block said under it waits for it to
-      // clear, if there is still time to read it.
-      const from = Math.max(at.from, TITLE_SECONDS);
-      if (at.to - from >= 2) thirds.push({ png: ostPanel(size, input.style, block.heading, block.bullets), from, to: at.to });
+    // 3. On-screen text. Never under the introduction: a block said during it
+    //    waits for it to clear, if there is still time to read it.
+    const blocks = input.blocks
+      .map((b) => ({ ...b, at: toFilmSpan(b, kept) }))
+      .filter((b): b is typeof b & { at: Span } => b.at !== null)
+      .map((b) => ({ ...b, from: Math.max(b.at.from, INTRO_SECONDS), to: b.at.to }))
+      .filter((b) => b.to - b.from >= 2);
+
+    if (blocks.length > 0 && !vertical) {
+      // The split screen: the middle of the frame moved to the left half, the
+      // right half under the panel. Built once, shown only while a block is up.
+      graph.push(`[${current}]split=2[full][half]`);
+      graph.push(
+        `[half]crop=${size.width / 2}:${size.height}:${size.width / 4}:0,` +
+          `pad=${size.width}:${size.height}:0:0:color=white[split0]`,
+      );
+      let split = 'split0';
+      for (const [k, b] of blocks.entries()) {
+        const n = await still(`panel${k}`, housePanel(size, input.colours, b.heading, b.bullets));
+        graph.push(`[${split}][${n}:v]overlay=0:0:enable='between(t,${t3(b.from)},${t3(b.to)})':shortest=1[split${k + 1}]`);
+        split = `split${k + 1}`;
+      }
+      const when = blocks.map((b) => `between(t,${t3(b.from)},${t3(b.to)})`).join('+');
+      graph.push(`[full][${split}]overlay=0:0:enable='${when}'[o_split]`);
+      current = 'o_split';
+    } else {
+      for (const [k, b] of blocks.entries()) {
+        const n = await still(`panel${k}`, housePanel(size, input.colours, b.heading, b.bullets));
+        graph.push(`[${current}][${n}:v]overlay=0:0:enable='between(t,${t3(b.from)},${t3(b.to)})':shortest=1[o${n}]`);
+        current = `o${n}`;
+      }
     }
-    for (const [k, third] of thirds.entries()) {
-      const path = join(dir, `third${k}.png`);
-      await writeFile(path, third.png);
-      inputs.push('-loop', '1', '-t', filmSeconds.toFixed(3), '-i', path);
-      const n = nextInput++;
-      graph.push(`[${current}][${n}:v]overlay=0:0:enable='between(t,${third.from.toFixed(3)},${third.to.toFixed(3)})':shortest=1[o${n}]`);
-      current = `o${n}`;
+
+    // 4. The name plate, then the disclaimer straight after it.
+    const plate = await still('plate', namePlate(size, input.colours, input.doctorName, input.doctorTitle, input.hospitalLine));
+    graph.push(`[${current}][${plate}:v]overlay=0:0:enable='between(t,0.5,${t3(Math.min(INTRO_SECONDS, filmSeconds))})':shortest=1[o_plate]`);
+    current = 'o_plate';
+    if (input.disclaimer) {
+      const from = Math.min(INTRO_SECONDS, Math.max(0, filmSeconds - input.disclaimer.seconds));
+      const band = await still('disclaimer', disclaimerBand(size, input.disclaimer.text));
+      graph.push(`[${current}][${band}:v]overlay=0:0:enable='between(t,${t3(from)},${t3(from + input.disclaimer.seconds)})':shortest=1[o_disc]`);
+      current = 'o_disc';
+    }
+
+    // 5. The logo in its corner, throughout - on a horizontal film only.
+    if (input.logo && !vertical) {
+      const badge = await still('logo', await logoBadge(size, input.logo, input.logoCorner));
+      graph.push(`[${current}][${badge}:v]overlay=0:0:shortest=1[o_logo]`);
+      current = 'o_logo';
     }
     graph.push(`[${current}]format=yuv420p[film]`);
 
@@ -119,44 +167,49 @@ export async function renderFilm(input: RenderInput): Promise<{ bytes: Buffer; s
     await runFfmpeg(
       [...inputs, '-filter_complex', graph.join(';'), '-map', '[film]', '-map', '[audio]',
         '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '21', '-c:a', 'aac', '-b:a', '160k', '-ar', '48000', '-ac', '2',
-        '-movflags', '+faststart', '-y', mainPath],
-      Math.max(240_000, filmSeconds * 4_000),
+        '-t', t3(filmSeconds), '-movflags', '+faststart', '-y', mainPath],
+      Math.max(240_000, filmSeconds * 5_000),
     );
 
-    // 2. The fixed frames: intro, disclaimer, end screen.
-    const still = async (name: string, png: Buffer, seconds: number) => {
-      const image = join(dir, `${name}.png`);
-      const clip = join(dir, `${name}.mp4`);
-      await writeFile(image, png);
+    // 6. The end screen: the hospital's own, or drawn.
+    let endPath: string;
+    let endSeconds = input.endScreen.seconds;
+    const endVideo = vertical ? input.endScreen.vertical : input.endScreen.horizontal;
+    if (endVideo) {
+      endPath = join(dir, `end.${endVideo.extension}`);
+      await writeFile(endPath, endVideo.bytes);
+      endSeconds = (await readVideoMetadata(endPath)).durationSeconds || endSeconds;
+    } else {
+      const image = join(dir, 'end.png');
+      endPath = join(dir, 'end-card.mp4');
+      await writeFile(image, await houseEndCard(size, input.colours, input.logo, input.endScreen.tagline, input.companyName));
       await runFfmpeg(
-        ['-loop', '1', '-t', seconds.toFixed(2), '-i', image, '-f', 'lavfi', '-t', seconds.toFixed(2), '-i', 'anullsrc=r=48000:cl=stereo',
+        ['-loop', '1', '-t', endSeconds.toFixed(2), '-i', image, '-f', 'lavfi', '-t', endSeconds.toFixed(2), '-i', 'anullsrc=r=48000:cl=stereo',
           '-vf', `scale=${size.width}:${size.height},setsar=1,fps=${FPS},format=yuv420p`,
-          '-c:v', 'libx264', '-preset', 'veryfast', '-c:a', 'aac', '-ar', '48000', '-ac', '2', '-shortest', '-y', clip],
+          '-c:v', 'libx264', '-preset', 'veryfast', '-c:a', 'aac', '-ar', '48000', '-ac', '2', '-shortest', '-y', endPath],
         120_000,
       );
-      return clip;
-    };
-    const parts: string[] = [];
-    parts.push(await still('intro', await fullCard(size, input.style, { logo: input.logo, heading: input.logo ? null : input.companyName }), input.introSeconds));
-    parts.push(mainPath);
-    if (input.disclaimer) {
-      parts.push(await still('disclaimer', await fullCard(size, input.style, { body: input.disclaimer.text }), input.disclaimer.seconds));
     }
-    parts.push(await still('end', await fullCard(size, input.style, { logo: input.logo, heading: input.logo ? null : input.companyName, body: input.endScreen.text }), input.endScreen.seconds));
 
-    // 3. One film.
+    // 7. One film. An end screen with no sound is given silence to join on.
+    const endMeta = await readVideoMetadata(endPath);
     const outPath = join(dir, 'film.mp4');
+    const endAudio = endMeta.hasAudio
+      ? `[1:a]aresample=48000,aformat=channel_layouts=stereo[a1]`
+      : `anullsrc=r=48000:cl=stereo,atrim=duration=${t3(endMeta.durationSeconds || endSeconds)}[a1]`;
     const joinGraph =
-      parts.map((_, i) => `[${i}:v]scale=${size.width}:${size.height},setsar=1,fps=${FPS},format=yuv420p[v${i}];[${i}:a]aresample=48000,aformat=channel_layouts=stereo[a${i}]`).join(';') +
-      `;${parts.map((_, i) => `[v${i}][a${i}]`).join('')}concat=n=${parts.length}:v=1:a=1[v][a]`;
+      `[0:v]scale=${size.width}:${size.height},setsar=1,fps=${FPS},format=yuv420p[v0];` +
+      `[0:a]aresample=48000,aformat=channel_layouts=stereo[a0];` +
+      `[1:v]scale=${size.width}:${size.height}:force_original_aspect_ratio=decrease,pad=${size.width}:${size.height}:(ow-iw)/2:(oh-ih)/2:color=white,` +
+      `setsar=1,fps=${FPS},format=yuv420p[v1];${endAudio};` +
+      `[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]`;
     await runFfmpeg(
-      [...parts.flatMap((p) => ['-i', p]), '-filter_complex', joinGraph, '-map', '[v]', '-map', '[a]',
+      ['-i', mainPath, '-i', endPath, '-filter_complex', joinGraph, '-map', '[v]', '-map', '[a]',
         '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '21', '-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart', '-y', outPath],
-      Math.max(240_000, filmSeconds * 4_000),
+      Math.max(240_000, filmSeconds * 5_000),
     );
 
-    const seconds = input.introSeconds + filmSeconds + (input.disclaimer?.seconds ?? 0) + input.endScreen.seconds;
-    return { bytes: await readFile(outPath), seconds };
+    return { bytes: await readFile(outPath), seconds: filmSeconds + (endMeta.durationSeconds || endSeconds) };
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => {});
   }

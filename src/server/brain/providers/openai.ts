@@ -1460,6 +1460,19 @@ export class OpenAIBrainProvider implements BrainProvider {
             'cuts: the fumbles to remove - false starts, repeated words, a sentence begun again, long "um"s, ' +
             'anything said twice where the second take is kept. Each from the start of the first unwanted word ' +
             'to the start of the next wanted one. Never cut to change what the speaker means.\n\n' +
+            (input.given && input.given.length > 0
+              ? 'THE ON-SCREEN TEXT IS ALREADY WRITTEN by the team, below as G1, G2 and on. Return exactly one block ' +
+                'for each, in the same order, with its heading and bullets copied word for word - never reword, add or ' +
+                'drop anything. Your job for each: from/to (keep a time that is given; otherwise when the doctor says ' +
+                'it), visuals (keep what is given; otherwise suggest one), and a concern where it may break a rule.\n' +
+                input.given
+                  .map((g, i) =>
+                    `G${i + 1}${g.from !== null && g.to !== null ? ` [${g.from.toFixed(1)}-${g.to.toFixed(1)}s]` : ''}: ` +
+                    `${g.heading} | ${g.bullets.join(' | ')}${g.visuals ? ` || visuals: ${g.visuals}` : ''}`,
+                  )
+                  .join('\n') +
+                '\n\n'
+              : '') +
             `Rules:\n${rules || '(none)'}\n\nTranscript (${end.toFixed(1)} seconds):\n${transcript}`,
         },
       ],

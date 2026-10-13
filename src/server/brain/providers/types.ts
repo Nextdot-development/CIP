@@ -802,6 +802,12 @@ export type VideoPlanInput = {
   words: { w: string; from: number; to: number }[];
   /** The company's rules, so a key point that breaks one is caught here. */
   rules: { ref: string; rule: string }[];
+  /**
+   * On-screen text a person has already written. Used word for word: the
+   * planner only places each block in time, suggests visuals where none are
+   * given, and flags a block that may break a rule.
+   */
+  given?: { heading: string; bullets: string[]; visuals: string; from: number | null; to: number | null }[];
 };
 
 /** What to cut, what to say on screen, and where b-roll goes. Times are in the source recording. */

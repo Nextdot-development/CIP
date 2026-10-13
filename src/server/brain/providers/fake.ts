@@ -607,7 +607,14 @@ export class FakeBrainProvider implements BrainProvider {
     this.check();
     const end = input.words.at(-1)?.to ?? 0;
     return {
-      ...(this.videoPlan ?? {
+      ...(this.videoPlan ?? (input.given?.length ? {
+        title: input.given[0]!.heading,
+        cuts: [],
+        blocks: input.given.map((g, i) => ({
+          heading: g.heading, bullets: g.bullets, visuals: g.visuals, concern: null, ruleRefs: [],
+          from: g.from ?? i * 3, to: g.to ?? i * 3 + 3,
+        })),
+      } : null) ?? {
         title: input.words.slice(0, 4).map((w) => w.w).join(' '),
         cuts: [],
         blocks: end > 3

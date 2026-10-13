@@ -8,6 +8,9 @@ import type { EditPlan, VideoEditDTO, VideoTemplateDTO } from '@/server/video/ed
 /** 83.4 as "1:23". */
 const clock = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 
+/** A block that wants b-roll and has no answer yet (as the server counts it). */
+const brollAsked = (b: EditPlan['blocks'][number]) => Boolean(b.visuals.trim()) && !b.footage && !b.brollSkipped;
+
 const STATUS: Record<VideoEditDTO['status'], string> = {
   planning: 'Planning…',
   planned: 'Plan ready to review',
@@ -39,7 +42,8 @@ export function VideoStudioSection() {
   const [recordings, setRecordings] = useState<{ id: string; name: string }[]>([]);
   // Which film is open; what it says is always read from the list.
   const [openId, setOpenId] = useState<string | null>(null);
-  const [form, setForm] = useState({ fileId: '', doctorName: '', doctorTitle: '' });
+  const EMPTY = { fileId: '', doctorName: '', doctorTitle: '', hospitalLine: '', givenPlan: '', brollIds: [] as string[] };
+  const [form, setForm] = useState(EMPTY);
   const [planning, setPlanning] = useState(false);
 
   const load = useCallback(async () => {
@@ -69,7 +73,7 @@ export function VideoStudioSection() {
       });
       if (failed(body)) { note(body.message); return; }
       setOpenId(body.edit.id);
-      setForm({ fileId: '', doctorName: '', doctorTitle: '' });
+      setForm(EMPTY);
       await load();
     } finally {
       setPlanning(false);
@@ -82,8 +86,9 @@ export function VideoStudioSection() {
         <p className="eyebrow">Video Studio</p>
         <h1>Doctor recordings into finished films</h1>
         <p className="lede">
-          Choose a recording. CIP cuts the fumbles, writes the title and the on-screen text block by block, finds b-roll in your library
-          and checks every block against your rules. You read the plan and approve it before the film is made.
+          Choose a recording. CIP cuts the fumbles, writes the on-screen text block by block (or uses yours, word for word), places
+          your b-roll and checks every block against your rules. Any block still needing b-roll is asked about. You read the plan and
+          approve it before the film is made.
         </p>
       </header>
 
@@ -98,14 +103,37 @@ export function VideoStudioSection() {
           </select>
           <input className="field-input" placeholder="Doctor's name, e.g. Dr. A. Kumar" value={form.doctorName}
             onChange={(e) => setForm({ ...form, doctorName: e.target.value })} />
-          <input className="field-input" placeholder="Speciality, e.g. Neurology (optional)" value={form.doctorTitle}
+          <input className="field-input" placeholder="Designation, e.g. Senior Consultant – Cardiology (optional)" value={form.doctorTitle}
             onChange={(e) => setForm({ ...form, doctorTitle: e.target.value })} />
+          <input className="field-input" placeholder="Hospital | City, e.g. Narayana Health City | Bengaluru (optional)" value={form.hospitalLine}
+            onChange={(e) => setForm({ ...form, hospitalLine: e.target.value })} />
+          <label className="tiny muted video-wide">
+            Your plan (optional) — paste the OST table, or write a block a paragraph: [00:12–00:40] a heading line, then a point a line,
+            then &quot;Visuals: …&quot;. It goes on screen exactly as written; CIP only fits it to the recording. Leave empty and CIP writes it.
+            <textarea className="field-input" rows={4} value={form.givenPlan}
+              onChange={(e) => setForm({ ...form, givenPlan: e.target.value })} />
+          </label>
+          {recordings.length > 1 && (
+            <div className="tiny muted video-wide">
+              B-roll you already have (optional) — each block takes the clip that fits it. Anything not covered is asked about later.
+              <div className="video-picks">
+                {recordings.filter((r) => r.id !== form.fileId).map((r) => (
+                  <label key={r.id} className="tiny">
+                    <input type="checkbox" checked={form.brollIds.includes(r.id)} onChange={(e) => setForm({
+                      ...form,
+                      brollIds: e.target.checked ? [...form.brollIds, r.id] : form.brollIds.filter((x) => x !== r.id),
+                    })} /> {r.name}
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
           <button type="button" className="btn btn-primary btn-sm" disabled={planning || !form.fileId || !form.doctorName.trim()}
             onClick={() => void plan()}>
             {planning ? 'Listening and planning… about a minute' : 'Plan the edit'}
           </button>
         </div>
-        <p className="tiny muted">Recordings come from your Drive folder. Add a new one there and it appears here.</p>
+        <p className="tiny muted">Recordings and b-roll come from your Drive folder. Add a new one there and it appears here.</p>
       </section>
 
       {edits.length > 0 && (
@@ -125,15 +153,18 @@ export function VideoStudioSection() {
         </section>
       )}
 
-      {open && <PlanEditor key={`${open.id}-${open.status}`} edit={open} onChanged={() => void load()} />}
+      {open && <PlanEditor key={`${open.id}-${open.status}`} edit={open} footage={recordings} onChanged={() => void load()} />}
     </div>
   );
 }
 
-function PlanEditor({ edit, onChanged }: { edit: VideoEditDTO; onChanged: (e: VideoEditDTO) => void }) {
+function PlanEditor({ edit, footage, onChanged }: {
+  edit: VideoEditDTO; footage: { id: string; name: string }[]; onChanged: (e: VideoEditDTO) => void;
+}) {
   const { note } = useToast();
   const [plan, setPlan] = useState<EditPlan | null>(edit.plan);
   const [saving, setSaving] = useState(false);
+  const [uploading, setUploading] = useState<number | null>(null);
   const locked = edit.status === 'approved' || edit.status === 'rendering' || edit.status === 'planning';
 
   if (edit.status === 'failed' && !edit.plan) {
@@ -163,6 +194,22 @@ function PlanEditor({ edit, onChanged }: { edit: VideoEditDTO; onChanged: (e: Vi
     setPlan({ ...plan, blocks: plan.blocks.map((b, j) => (j === i ? { ...b, ...change } : b)) });
 
   const concerns = plan.blocks.filter((b) => b.concern).length;
+  const asked = plan.blocks.filter(brollAsked).length;
+  const library = footage.filter((f) => f.id !== edit.sourceFileId);
+
+  const uploadBroll = async (i: number, file: File) => {
+    setUploading(i);
+    try {
+      const form = new FormData();
+      form.append('file', file);
+      const res = await fetch('/api/drive/files', { method: 'POST', body: form }).catch(() => null);
+      const body = (await res?.json().catch(() => null)) as { id?: string; name?: string; message?: string } | null;
+      if (!res?.ok || !body?.id) { note(body?.message ?? 'The clip could not be uploaded.'); return; }
+      setBlock(i, { footage: { fileId: body.id, fileName: body.name ?? file.name }, brollSkipped: false });
+    } finally {
+      setUploading(null);
+    }
+  };
 
   return (
     <section className="card pad" style={{ marginTop: 16 }}>
@@ -183,7 +230,10 @@ function PlanEditor({ edit, onChanged }: { edit: VideoEditDTO; onChanged: (e: Vi
 
       <label className="tiny muted">Title</label>
       <input className="field-input" value={plan.title} disabled={locked} onChange={(e) => setPlan({ ...plan, title: e.target.value })} />
-      <p className="tiny muted">Shown at the start with {edit.doctorName}{edit.doctorTitle ? ` · ${edit.doctorTitle}` : ''}.</p>
+      <p className="tiny muted">
+        Name plate: {edit.doctorName}{edit.doctorTitle ? ` · ${edit.doctorTitle}` : ''}{edit.hospitalLine ? ` · ${edit.hospitalLine}` : ''}.
+        {edit.givenPlan ? ' On-screen text is your own plan, word for word.' : ''}
+      </p>
 
       <div className="row" style={{ justifyContent: 'space-between', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
         <p className="small strong video-head">On-screen text ({plan.blocks.length} blocks)</p>
@@ -192,6 +242,11 @@ function PlanEditor({ edit, onChanged }: { edit: VideoEditDTO; onChanged: (e: Vi
       {concerns > 0 && (
         <p className="tiny" style={{ color: 'var(--warn-700)' }}>
           <Icon name="alert" size={12} /> {concerns} block{concerns === 1 ? '' : 's'} may break a rule. Reword or remove before approving.
+        </p>
+      )}
+      {asked > 0 && !locked && (
+        <p className="tiny" style={{ color: 'var(--warn-700)' }}>
+          <Icon name="alert" size={12} /> {asked} block{asked === 1 ? ' needs' : 's need'} b-roll. Answer each question below to approve.
         </p>
       )}
       {plan.blocks.map((b, i) => (
@@ -208,9 +263,36 @@ function PlanEditor({ edit, onChanged }: { edit: VideoEditDTO; onChanged: (e: Vi
           <textarea className="field-input" rows={Math.max(2, b.bullets.length)} disabled={locked}
             value={b.bullets.join('\n')} placeholder="One pointer a line"
             onChange={(e) => setBlock(i, { bullets: e.target.value.split('\n') })} />
-          <p className="tiny muted">
-            Visuals: {b.visuals || '—'} · {b.footage ? `footage: ${b.footage.fileName}` : 'no matching footage in your library'}
-          </p>
+          {brollAsked(b) && !locked ? (
+            <div className="video-broll">
+              <span className="tiny strong">B-roll needed: {b.visuals}</span>
+              <div className="row">
+                <select className="field-input" value="" onChange={(e) => {
+                  const f = library.find((x) => x.id === e.target.value);
+                  if (f) setBlock(i, { footage: { fileId: f.id, fileName: f.name }, brollSkipped: false });
+                }}>
+                  <option value="">{b.suggestion ? `Suggested: ${b.suggestion.fileName}` : 'Choose from your library…'}</option>
+                  {b.suggestion && <option value={b.suggestion.fileId}>Use {b.suggestion.fileName}</option>}
+                  {library.filter((f) => f.id !== b.suggestion?.fileId).map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+                </select>
+                <label className="btn btn-sm">
+                  {uploading === i ? 'Uploading…' : 'Upload a clip'}
+                  <input type="file" accept="video/*" hidden disabled={uploading !== null}
+                    onChange={(e) => { const f = e.target.files?.[0]; if (f) void uploadBroll(i, f); }} />
+                </label>
+                <button type="button" className="linkbtn tiny" onClick={() => setBlock(i, { brollSkipped: true })}>
+                  No b-roll — keep the doctor
+                </button>
+              </div>
+            </div>
+          ) : (
+            <p className="tiny muted">
+              Visuals: {b.visuals || '—'} · {b.footage ? `b-roll: ${b.footage.fileName}` : b.brollSkipped ? 'no b-roll, the doctor stays on screen' : 'no b-roll'}
+              {!locked && (b.footage || b.brollSkipped) && (
+                <> · <button type="button" className="linkbtn tiny" onClick={() => setBlock(i, { footage: null, brollSkipped: false })}>Change</button></>
+              )}
+            </p>
+          )}
           {b.concern && <p className="tiny video-concern">{b.concern}{b.rules.length ? ` — ${b.rules.join('; ')}` : ''}</p>}
         </div>
       ))}
@@ -231,7 +313,7 @@ function PlanEditor({ edit, onChanged }: { edit: VideoEditDTO; onChanged: (e: Vi
       {!locked && (
         <div className="row" style={{ justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
           <button type="button" className="btn btn-sm" disabled={saving} onClick={() => void save(false)}>Save changes</button>
-          <button type="button" className="btn btn-primary btn-sm" disabled={saving || !plan.title.trim()} onClick={() => void save(true)}>
+          <button type="button" className="btn btn-primary btn-sm" disabled={saving || !plan.title.trim() || asked > 0} onClick={() => void save(true)}>
             {edit.status === 'ready' ? 'Make it again' : 'Approve & make film'}
           </button>
         </div>
@@ -244,9 +326,11 @@ function PlanEditor({ edit, onChanged }: { edit: VideoEditDTO; onChanged: (e: Vi
 function TemplateCard() {
   const { note } = useToast();
   const [t, setT] = useState<VideoTemplateDTO | null>(null);
+  const [videos, setVideos] = useState<{ id: string; name: string }[]>([]);
   const [saving, setSaving] = useState(false);
   useEffect(() => {
     void send<{ template: VideoTemplateDTO }>('/api/video/template').then((b) => { if (!failed(b)) setT(b.template); });
+    void send<{ recordings: { id: string; name: string }[] }>('/api/video/recordings').then((b) => { if (!failed(b)) setVideos(b.recordings); });
   }, []);
   if (!t) return null;
 
@@ -279,22 +363,37 @@ function TemplateCard() {
         <label className="tiny muted">Logo {t.logoFileId ? '(set)' : ''}
           <input type="file" accept="image/png,image/jpeg" onChange={(e) => { const f = e.target.files?.[0]; if (f) void uploadLogo(f); }} />
         </label>
+        <label className="tiny muted">Logo corner (horizontal films)
+          <select className="field-input" value={t.logoCorner}
+            onChange={(e) => setT({ ...t, logoCorner: e.target.value as VideoTemplateDTO['logoCorner'] })}>
+            <option value="top-right">Top right</option>
+            <option value="top-left">Top left</option>
+          </select>
+        </label>
         {(['background', 'accent', 'ink'] as const).map((k) => (
-          <label key={k} className="tiny muted">{k === 'ink' ? 'Text colour' : k === 'accent' ? 'Accent colour' : 'Background'}
+          <label key={k} className="tiny muted">{k === 'ink' ? 'Text colour' : k === 'accent' ? 'Accent (panel bar, name)' : 'Brand colour (panels)'}
             <input type="color" value={t[k]} onChange={(e) => setT({ ...t, [k]: e.target.value })} />
           </label>
         ))}
-        <label className="tiny muted">Intro seconds
-          <input className="field-input" type="number" step="0.5" value={t.introSeconds} onChange={(e) => setT({ ...t, introSeconds: Number(e.target.value) })} />
+        <label className="tiny muted">Disclaimer seconds
+          <input className="field-input" type="number" step="0.5" value={t.disclaimerSeconds} onChange={(e) => setT({ ...t, disclaimerSeconds: Number(e.target.value) })} />
         </label>
-        <label className="tiny muted">End screen seconds
-          <input className="field-input" type="number" step="0.5" value={t.outroSeconds} onChange={(e) => setT({ ...t, outroSeconds: Number(e.target.value) })} />
-        </label>
-        <label className="tiny muted video-wide">Disclaimer, exactly as approved (shown before the end screen)
+        <label className="tiny muted video-wide">Disclaimer, exactly as approved (a band after the doctor&apos;s introduction)
           <textarea className="field-input" rows={2} value={t.disclaimerText ?? ''} onChange={(e) => setT({ ...t, disclaimerText: e.target.value })} />
         </label>
-        <label className="tiny muted video-wide">End screen line, e.g. website or helpline
-          <input className="field-input" value={t.endScreenText ?? ''} onChange={(e) => setT({ ...t, endScreenText: e.target.value })} />
+        {([['endVideoFileId', 'End screen video, horizontal'], ['endVideoVerticalFileId', 'End screen video, vertical']] as const).map(([k, label]) => (
+          <label key={k} className="tiny muted">{label}
+            <select className="field-input" value={t[k] ?? ''} onChange={(e) => setT({ ...t, [k]: e.target.value || null })}>
+              <option value="">Draw one (logo and tagline)</option>
+              {videos.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
+            </select>
+          </label>
+        ))}
+        <label className="tiny muted">Tagline on a drawn end screen
+          <input className="field-input" placeholder="Take Care" value={t.tagline ?? ''} onChange={(e) => setT({ ...t, tagline: e.target.value })} />
+        </label>
+        <label className="tiny muted">Drawn end screen seconds
+          <input className="field-input" type="number" step="0.5" value={t.outroSeconds} onChange={(e) => setT({ ...t, outroSeconds: Number(e.target.value) })} />
         </label>
       </div>
       <div className="row" style={{ justifyContent: 'flex-end', marginTop: 8 }}>

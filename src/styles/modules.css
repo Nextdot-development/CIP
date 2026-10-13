@@ -392,8 +392,11 @@ a.gtag:hover { color: var(--ink-900); border-color: var(--ink-400); }
 .health ul { margin: 6px 0; padding-left: 18px; display: grid; gap: 4px; }
 
 /* Video Studio: the plan of an edit, a line an item. */
-.video-form { display: grid; gap: 8px; grid-template-columns: 2fr 1.4fr 1.2fr auto; align-items: center; margin: 10px 0 6px; }
-@media (max-width: 860px) { .video-form { grid-template-columns: 1fr; } }
+.video-form { display: grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); align-items: center; margin: 10px 0 6px; }
+.video-form .video-wide { display: grid; gap: 4px; }
+.video-broll { display: grid; gap: 6px; padding: 8px 10px; border-radius: var(--r-sm); background: var(--warn-50, #fff7ed); border: 1px solid var(--warn-200, #fed7aa); }
+.video-broll .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.video-picks { display: flex; flex-wrap: wrap; gap: 6px 14px; max-height: 140px; overflow: auto; }
 .video-list { list-style: none; padding: 0; margin: 8px 0 0; display: grid; gap: 4px; }
 .video-row { width: 100%; display: grid; grid-template-columns: 1fr auto auto; gap: 12px; align-items: baseline; text-align: left;
   background: none; border: 1px solid transparent; border-radius: var(--r-sm); padding: 8px 10px; cursor: pointer; color: inherit; }
