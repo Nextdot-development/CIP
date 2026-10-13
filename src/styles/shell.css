@@ -147,6 +147,27 @@
 /* The footer sits at the bottom of the sidebar, under the modules. */
 .side-foot { margin-top: auto; padding-top: 14px; }
 
+/* Notifications, help, and who is signed in - with the way out beside them.
+   Lost in an earlier change, which left them as bare browser buttons and the
+   sign-out out of sight. */
+.side-link {
+  display: flex; align-items: center; gap: 12px; padding: 9px 12px;
+  border-radius: var(--r-sm); border: 0; background: transparent;
+  color: var(--nav-fg); font-size: 13.5px; font-weight: 500; width: 100%; text-align: left;
+}
+.side-link:hover { background: var(--nav-hover); }
+.side-link .count {
+  margin-left: auto; background: var(--stop-500); color: #fff;
+  font-size: 11px; font-weight: 700; min-width: 20px; height: 20px;
+  border-radius: var(--r-pill); display: grid; place-items: center; padding: 0 6px;
+}
+.side-user {
+  display: flex; align-items: center; gap: 10px; padding: 10px 12px 2px;
+  border-top: 1px solid var(--nav-line); margin-top: 8px;
+}
+.side-user .who { font-size: 13.5px; font-weight: 600; color: var(--nav-fg-strong); }
+.side-user .role { font-size: 11.5px; color: var(--nav-fg); opacity: .8; }
+
 /* Company badge — a label, not a control */
 .company-badge {
   display: flex; align-items: center; gap: 10px;
