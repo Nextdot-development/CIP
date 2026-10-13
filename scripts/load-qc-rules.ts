@@ -2,11 +2,12 @@ import postgres from 'postgres';
 import { RADICO_QC_RULES } from '../src/server/brain/radicoRules';
 import type { QcRuleSeed } from '../src/server/brain/radicoRules';
 import { HEALTHCARE_QC_RULES } from '../src/server/brain/healthcareRules';
+import { NARAYANA_QC_RULES } from '../src/server/brain/narayanaRules';
 
 /** Which document each company's rules come from. */
 const RULE_SETS: Record<string, QcRuleSeed[]> = {
   'radico-khaitan': RADICO_QC_RULES,
-  'narayana-health': HEALTHCARE_QC_RULES,
+  'narayana-health': [...HEALTHCARE_QC_RULES, ...NARAYANA_QC_RULES],
 };
 
 /**
