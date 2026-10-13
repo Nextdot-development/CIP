@@ -130,7 +130,9 @@ export const NARAYANA_QC_RULES: QcRuleSeed[] = [
     domain: 'End frame',
     ruleType: 'mandatory',
     severity: 'major',
-    rule: 'The video ends on the NH end frame: the Narayana Health logo (with SRCC for SRCC videos), "Take Care", and "Our Accreditations" with the accreditation marks, on white.',
+    rule:
+      'The video ends on the NH end frame, on white: "Narayana Health | Take Care" - and for an SRCC or accredited-hospital video, ' +
+      'the Narayana Health | SRCC lock-up, "Take Care", and "Our Accreditations" with the accreditation marks.',
     rationale: null,
     allowed: ['The supplied end-screen videos'],
     prohibited: ['A different end frame'],
@@ -138,6 +140,23 @@ export const NARAYANA_QC_RULES: QcRuleSeed[] = [
     requirement: 'required',
     category: 'other',
     format: 'video',
+  }),
+  N('THUMB-001', {
+    from: `${GUIDE}, slides 11-12 (background for doctor YouTube thumbnail)`,
+    domain: 'YouTube thumbnail',
+    ruleType: 'preferred',
+    severity: 'minor',
+    rule:
+      "A doctor's YouTube thumbnail: the doctor on the left half over a soft, blurred hospital background, the Narayana Health logo " +
+      'top-left in a white card; on the right half an NH-blue panel with the speciality at the top right, the topic as a large white ' +
+      'bold title beside a red bar, then the name plate (name in red bold, designation in blue) and "Hospital | City" in white.',
+    rationale: null,
+    allowed: [],
+    prohibited: [],
+    humanReview: false,
+    requirement: 'required',
+    category: 'placement',
+    format: 'image',
   }),
   N('BRAND-001', {
     from: `${GUIDE}; colours measured from the supplied assets`,
