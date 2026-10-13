@@ -85,10 +85,21 @@ export async function knowledgeOverview(scope: CompanyScope): Promise<KnowledgeO
         count(*) filter (where f.source_type = 'cip_drive')::int        as uploaded,
         count(*) filter (where f.source_type = 'google_drive')::int     as google
       from drive_files f
+      -- A market report is read for its figures, not looked at as a brand
+      -- asset: its market reading is what "read" means for it. Counted the
+      -- other way, every filing sat at "still being read" for ever.
       left join lateral (
-        select status from asset_understanding
-         where file_id = f.id and company_id = f.company_id
-         order by updated_at desc limit 1
+        select case when f.knowledge_role = 'market' then
+                 (select case s.status when 'ready' then 'ready' when 'no_text' then 'ready'
+                                       when 'failed' then 'failed' else 'pending' end
+                    from market_sources s
+                   where s.file_id = f.id and s.company_id = f.company_id
+                   limit 1)
+               else
+                 (select status from asset_understanding
+                   where file_id = f.id and company_id = f.company_id
+                   order by updated_at desc limit 1)
+               end as status
       ) u on true
       where f.company_id = ${scope.companyId} and f.archived_at is null
     `;
@@ -106,10 +117,21 @@ export async function knowledgeOverview(scope: CompanyScope): Promise<KnowledgeO
         count(*)::int as count,
         count(*) filter (where u.status = 'ready')::int as understood
       from drive_files f
+      -- A market report is read for its figures, not looked at as a brand
+      -- asset: its market reading is what "read" means for it. Counted the
+      -- other way, every filing sat at "still being read" for ever.
       left join lateral (
-        select status from asset_understanding
-         where file_id = f.id and company_id = f.company_id
-         order by updated_at desc limit 1
+        select case when f.knowledge_role = 'market' then
+                 (select case s.status when 'ready' then 'ready' when 'no_text' then 'ready'
+                                       when 'failed' then 'failed' else 'pending' end
+                    from market_sources s
+                   where s.file_id = f.id and s.company_id = f.company_id
+                   limit 1)
+               else
+                 (select status from asset_understanding
+                   where file_id = f.id and company_id = f.company_id
+                   order by updated_at desc limit 1)
+               end as status
       ) u on true
       where f.company_id = ${scope.companyId} and f.archived_at is null
       group by 1

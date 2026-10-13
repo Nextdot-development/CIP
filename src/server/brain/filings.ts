@@ -2,7 +2,7 @@ import 'server-only';
 import { withCompanyScope } from '../db';
 import type { CompanyScope } from '../db';
 import { adminSql } from '../db-admin';
-import { uploadFile } from '../drive/service';
+import { DriveConflict, uploadFile } from '../drive/service';
 import { driveStorage } from '../drive/storage';
 import { registerSource } from './market';
 import { brain } from './providers';
@@ -224,12 +224,22 @@ export async function checkFeed(
         continue;
       }
       folderId ??= await filingsFolder(scope);
-      const file = await uploadFile(scope, {
+      // Two filings of one kind on one day share a name ("Outcome of Board
+      // Meeting - 2026-07-30"), and the second was refused - failing the
+      // whole feed, every pass. The exchange's own number tells them apart.
+      const upload = (filename: string) => uploadFile(scope, {
         folderId,
-        filename: fileName({ displayName: feed.display_name }, a),
+        filename,
         mimeType: 'application/pdf',
         body: bytes,
         sourceType: 'exchange_filing',
+      });
+      const name = fileName({ displayName: feed.display_name }, a);
+      const file = await upload(name).catch((error: unknown) => {
+        if (error instanceof DriveConflict) {
+          return upload(name.replace(/\.pdf$/, ` (${a.seq_id}).pdf`));
+        }
+        throw error;
       });
       // Read for the market, straight away - not when a folder sweep finds it.
       await registerSource(scope, file.id);

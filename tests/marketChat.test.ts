@@ -429,6 +429,32 @@ describe('MARKET INTELLIGENCE: only what a report actually says', () => {
       assert.equal(health.scheduled, false);
     });
 
+    it('keeps two filings of one kind on one day, rather than failing the feed on the second', async () => {
+      const filings = await import('../src/server/brain/filings');
+      const twice = [
+        { ...LISTING[0]!, seq_id: '71', attchmntFile: 'https://nsearchives.nseindia.com/corporate/RADICO_a.pdf' },
+        { ...LISTING[0]!, seq_id: '72', attchmntFile: 'https://nsearchives.nseindia.com/corporate/RADICO_b.pdf' },
+      ];
+      // Different bytes for each, as two real filings are.
+      filings.__setFilingsFetch((async (input: string | URL | Request) => {
+        const url = String(input);
+        if (url.includes('/api/corporate-announcements')) return Response.json(twice);
+        return new Response(Buffer.from(`%PDF-1.4\n% ${url}\n%%EOF\n`), { status: 200, headers: { 'content-type': 'application/pdf' } });
+      }) as typeof fetch);
+      try {
+        await filings.addFeed(mm, { symbol: 'RADICO', name: 'Radico Khaitan' });
+        const [feed] = await filings.listFeeds(mm);
+        const after = (await filings.checkFeedNow(mm, feed!.id))!;
+        assert.equal(after[0]!.lastError, null, 'the second filing failed the feed');
+        const names = await adminSql<{ name: string }[]>`
+          select name from drive_files where company_id = ${mm.companyId} and source_type = 'exchange_filing' order by name`;
+        assert.equal(names.length, 2);
+        assert.ok(names.some((n) => n.name.endsWith('(72).pdf')), "the second is told apart by the exchange's own number");
+      } finally {
+        filings.__setFilingsFetch(null);
+      }
+    });
+
     it('lets go of a filing once it is read, and opens it on the exchange after', async () => {
       const filings = await import('../src/server/brain/filings');
       const { driveStorage } = await import('../src/server/drive/storage');
