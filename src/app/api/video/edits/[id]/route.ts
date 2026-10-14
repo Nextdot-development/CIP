@@ -1,5 +1,5 @@
 import { noStore, withBrainScope } from '@/server/brain/http';
-import { approveEdit, getEdit, updatePlan } from '@/server/video/edit';
+import { approveEdit, deleteEdit, getEdit, updatePlan } from '@/server/video/edit';
 import type { EditPlan } from '@/server/video/edit';
 import { pumpInBackground } from '@/server/jobs/pump';
 
@@ -24,6 +24,14 @@ export async function PATCH(request: Request, { params }: Params) {
     const body = (await request.json().catch(() => ({}))) as { plan?: EditPlan };
     if (!body.plan) return Response.json({ error: 'rejected', message: 'Send the plan.' }, { status: 422, headers: noStore });
     return Response.json({ edit: await updatePlan(scope, (await params).id, body.plan) }, { headers: noStore });
+  });
+}
+
+/** DELETE - remove the film and its plan. */
+export async function DELETE(_request: Request, { params }: Params) {
+  return withBrainScope(async (scope) => {
+    await deleteEdit(scope, (await params).id);
+    return Response.json({ ok: true }, { headers: noStore });
   });
 }
 

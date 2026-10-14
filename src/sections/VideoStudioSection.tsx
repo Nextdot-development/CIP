@@ -11,6 +11,16 @@ const clock = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60))
 /** A block that wants b-roll and has no answer yet (as the server counts it). */
 const brollAsked = (b: EditPlan['blocks'][number]) => Boolean(b.visuals.trim()) && !b.footage && !b.brollSkipped;
 
+/** Where a film stands, in words - saying so when it is waiting on the person. */
+function statusOf(e: VideoEditDTO): { text: string; tone: string } {
+  if (e.status === 'planned' && e.plan) {
+    const asked = e.plan.blocks.filter(brollAsked).length;
+    if (asked > 0) return { text: `Needs b-roll (${asked}) — open to answer`, tone: 's-asking' };
+    if (e.plan.blocks.some((b) => b.concern)) return { text: 'Check a block, then approve', tone: 's-asking' };
+  }
+  return { text: STATUS[e.status], tone: `s-${e.status}` };
+}
+
 const STATUS: Record<VideoEditDTO['status'], string> = {
   planning: 'Planning…',
   planned: 'Plan ready to review',
@@ -69,6 +79,10 @@ export function VideoStudioSection() {
     return () => clearInterval(timer);
   }, [busy, load]);
   const open = edits.find((e) => e.id === openId) ?? null;
+  // The film a person opens is brought into view: it sits below the list.
+  useEffect(() => {
+    if (openId) document.getElementById('video-open')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [openId]);
 
   /** A video now in the workspace joins the lists, and is chosen. */
   const take = (added: { id: string; name: string }[], kind: 'recording' | 'broll') => {
@@ -215,7 +229,7 @@ export function VideoStudioSection() {
                 <button type="button" className={`video-row ${open?.id === e.id ? 'is-open' : ''}`} onClick={() => setOpenId(e.id)}>
                   <span className="small strong">{e.plan?.title || e.sourceName}</span>
                   <span className="tiny muted">{e.doctorName}</span>
-                  <span className={`tiny video-status s-${e.status}`}>{STATUS[e.status]}</span>
+                  <span className={`tiny video-status ${statusOf(e).tone}`}>{statusOf(e).text}</span>
                 </button>
               </li>
             ))}
@@ -241,6 +255,14 @@ function PlanEditor({ edit, footage, onChanged }: {
     return <section className="card pad" style={{ marginTop: 16 }}><p className="small"><Icon name="alert" size={14} /> {edit.error}</p></section>;
   }
   if (!plan) return null;
+
+  const remove = async () => {
+    if (!window.confirm('Delete this film and its plan? This cannot be undone.')) return;
+    const body = await send<{ ok: true }>(`/api/video/edits/${edit.id}`, { method: 'DELETE' });
+    if (failed(body)) { note(body.message); return; }
+    note('Deleted');
+    onChanged(edit);
+  };
 
   const save = async (approve: boolean) => {
     setSaving(true);
@@ -282,10 +304,15 @@ function PlanEditor({ edit, footage, onChanged }: {
   };
 
   return (
-    <section className="card pad" style={{ marginTop: 16 }}>
+    <section id="video-open" className="card pad" style={{ marginTop: 16 }}>
       <div className="row" style={{ justifyContent: 'space-between', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-        <p className="strong">{edit.sourceName}</p>
-        <span className={`tiny video-status s-${edit.status}`}>{STATUS[edit.status]}</span>
+        <p className="strong">{edit.plan?.title || edit.sourceName} <span className="tiny muted">· from {edit.sourceName}</span></p>
+        <span className="row" style={{ gap: 12, alignItems: 'baseline' }}>
+          <span className={`tiny video-status ${statusOf(edit).tone}`}>{statusOf(edit).text}</span>
+          {edit.status !== 'rendering' && (
+            <button type="button" className="linkbtn tiny" onClick={() => void remove()}>Delete</button>
+          )}
+        </span>
       </div>
       {edit.error && <p className="small" style={{ color: 'var(--stop-700)' }}>{edit.error}</p>}
 

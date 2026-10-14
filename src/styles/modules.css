@@ -403,6 +403,7 @@ a.gtag:hover { color: var(--ink-900); border-color: var(--ink-400); }
 .video-row:hover, .video-row.is-open { border-color: var(--ink-100); background: var(--ink-050); }
 .video-status.s-ready { color: var(--ok-700, #15803d); }
 .video-status.s-failed { color: var(--stop-700); }
+.video-status.s-asking { color: var(--warn-700); font-weight: 600; }
 .video-status.s-rendering, .video-status.s-approved, .video-status.s-planning { color: var(--warn-700); }
 .video-head { margin-top: 16px; }
 .video-item { display: grid; grid-template-columns: 90px 1fr auto; gap: 8px; align-items: center; margin-top: 6px; }

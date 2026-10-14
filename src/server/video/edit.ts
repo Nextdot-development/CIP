@@ -637,6 +637,18 @@ export async function renderEdit(scope: CompanyScope, id: string): Promise<void>
   `);
 }
 
+/** Removes a film and its plan. One being made is left alone until it is done. */
+export async function deleteEdit(scope: CompanyScope, id: string): Promise<void> {
+  if (!UUID.test(id)) throw new VideoEditRejected('That edit is not in this workspace.');
+  const [row] = await withCompanyScope(scope, (tx) => tx<{ status: VideoEditDTO['status']; output_path: string | null }[]>`
+    select status, output_path from video_edits where id = ${id} and company_id = ${scope.companyId}
+  `);
+  if (!row) throw new VideoEditRejected('That edit is not in this workspace.');
+  if (row.status === 'rendering') throw new VideoEditRejected('This film is being made. Delete it once it is done.');
+  await withCompanyScope(scope, (tx) => tx`delete from video_edits where id = ${id} and company_id = ${scope.companyId}`);
+  if (row.output_path) await driveStorage().remove(row.output_path).catch(() => {});
+}
+
 /** The finished film. */
 export async function readFilm(scope: CompanyScope, id: string): Promise<{ bytes: Buffer; name: string } | null> {
   if (!UUID.test(id)) return null;
