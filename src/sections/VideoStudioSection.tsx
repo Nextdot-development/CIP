@@ -527,12 +527,12 @@ function TemplateCard() {
   }, []);
   if (!t) return null;
 
-  const uploadLogo = async (file: File) => {
+  const uploadLogo = async (file: File, key: 'logoFileId' | 'introLogoFileId') => {
     const form = new FormData();
     form.append('file', file);
     const res = await fetch('/api/drive/files', { method: 'POST', body: form }).catch(() => null);
     if (!res?.ok) { note('The logo could not be uploaded. Use a PNG under 4 MB.'); return; }
-    setT({ ...t, logoFileId: ((await res.json()) as { id: string }).id });
+    setT({ ...t, [key]: ((await res.json()) as { id: string }).id });
   };
   const save = async () => {
     setSaving(true);
@@ -553,8 +553,14 @@ function TemplateCard() {
         House template {t.disclaimerText ? '' : '· add your disclaimer'}
       </summary>
       <div className="video-template">
-        <label className="tiny muted">Logo {t.logoFileId ? '(set)' : ''}
-          <input type="file" accept="image/png,image/jpeg" onChange={(e) => { const f = e.target.files?.[0]; if (f) void uploadLogo(f); }} />
+        <label className="tiny muted">Corner logo {t.logoFileId ? '(set)' : ''}
+          <input type="file" accept="image/png,image/jpeg" onChange={(e) => { const f = e.target.files?.[0]; if (f) void uploadLogo(f, 'logoFileId'); }} />
+        </label>
+        <label className="tiny muted">Opening card logo {t.introLogoFileId ? '(set)' : '(the corner logo)'}
+          <input type="file" accept="image/png,image/jpeg" onChange={(e) => { const f = e.target.files?.[0]; if (f) void uploadLogo(f, 'introLogoFileId'); }} />
+        </label>
+        <label className="tiny muted">Opening card seconds (0 for none)
+          <input className="field-input" type="number" step="0.5" value={t.introSeconds} onChange={(e) => setT({ ...t, introSeconds: Number(e.target.value) })} />
         </label>
         <label className="tiny muted">Logo corner (horizontal films)
           <select className="field-input" value={t.logoCorner}
@@ -568,10 +574,10 @@ function TemplateCard() {
             <input type="color" value={t[k]} onChange={(e) => setT({ ...t, [k]: e.target.value })} />
           </label>
         ))}
-        <label className="tiny muted">Disclaimer seconds
+        <label className="tiny muted">Disclaimer card seconds
           <input className="field-input" type="number" step="0.5" value={t.disclaimerSeconds} onChange={(e) => setT({ ...t, disclaimerSeconds: Number(e.target.value) })} />
         </label>
-        <label className="tiny muted video-wide">Disclaimer, exactly as approved (a band after the doctor&apos;s introduction)
+        <label className="tiny muted video-wide">Disclaimer, exactly as approved (a white card after the opening logo)
           <textarea className="field-input" rows={2} value={t.disclaimerText ?? ''} onChange={(e) => setT({ ...t, disclaimerText: e.target.value })} />
         </label>
         {([['endVideoFileId', 'End screen video, horizontal'], ['endVideoVerticalFileId', 'End screen video, vertical']] as const).map(([k, label]) => (

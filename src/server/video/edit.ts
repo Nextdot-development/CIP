@@ -132,6 +132,8 @@ export type VideoTemplateDTO = {
   endVideoVerticalFileId: string | null;
   /** The line on a drawn end screen, "Take Care". */
   tagline: string | null;
+  /** The logo on the opening card; the corner logo when not set. */
+  introLogoFileId: string | null;
 };
 
 // --- the template ------------------------------------------------------------
@@ -139,7 +141,7 @@ export type VideoTemplateDTO = {
 const DEFAULT_TEMPLATE: VideoTemplateDTO = {
   logoFileId: null, background: '#0b2a4a', accent: '#e8a33d', ink: '#ffffff',
   introSeconds: 2.5, outroSeconds: 3, endScreenText: null, disclaimerText: null, disclaimerSeconds: 4,
-  logoCorner: 'top-right', endVideoFileId: null, endVideoVerticalFileId: null, tagline: null,
+  logoCorner: 'top-right', endVideoFileId: null, endVideoVerticalFileId: null, tagline: null, introLogoFileId: null,
 };
 
 export async function getTemplate(scope: CompanyScope): Promise<VideoTemplateDTO> {
@@ -147,7 +149,7 @@ export async function getTemplate(scope: CompanyScope): Promise<VideoTemplateDTO
     logo_file_id: string | null; background: string; accent: string; ink: string; intro_seconds: string;
     outro_seconds: string; end_screen_text: string | null; disclaimer_text: string | null; disclaimer_seconds: string;
     logo_corner: 'top-left' | 'top-right'; end_video_file_id: string | null; end_video_vertical_file_id: string | null;
-    tagline: string | null;
+    tagline: string | null; intro_logo_file_id: string | null;
   }[]>`select * from video_templates where company_id = ${scope.companyId}`);
   if (!row) return { ...DEFAULT_TEMPLATE };
   return {
@@ -156,6 +158,7 @@ export async function getTemplate(scope: CompanyScope): Promise<VideoTemplateDTO
     disclaimerText: row.disclaimer_text, disclaimerSeconds: Number(row.disclaimer_seconds),
     logoCorner: row.logo_corner, endVideoFileId: row.end_video_file_id,
     endVideoVerticalFileId: row.end_video_vertical_file_id, tagline: row.tagline,
+    introLogoFileId: row.intro_logo_file_id,
   };
 }
 
@@ -169,26 +172,26 @@ export async function saveTemplate(scope: CompanyScope, input: Partial<VideoTemp
   const seconds = (n: number, max: number) => Math.min(max, Math.max(0, Number(n) || 0));
   if (t.logoFileId && !UUID.test(t.logoFileId)) throw new VideoEditRejected('That logo is not in this workspace.');
   if (t.logoCorner !== 'top-left' && t.logoCorner !== 'top-right') throw new VideoEditRejected('The logo sits top-left or top-right.');
-  for (const id of [t.endVideoFileId, t.endVideoVerticalFileId]) {
-    if (id && !UUID.test(id)) throw new VideoEditRejected('That end screen is not in this workspace.');
+  for (const id of [t.endVideoFileId, t.endVideoVerticalFileId, t.introLogoFileId]) {
+    if (id && !UUID.test(id)) throw new VideoEditRejected('That file is not in this workspace.');
   }
   await withCompanyScope(scope, (tx) => tx`
     insert into video_templates
       (company_id, logo_file_id, background, accent, ink, intro_seconds, outro_seconds,
        end_screen_text, disclaimer_text, disclaimer_seconds, logo_corner, end_video_file_id,
-       end_video_vertical_file_id, tagline, updated_at)
+       end_video_vertical_file_id, tagline, intro_logo_file_id, updated_at)
     values (${scope.companyId}, ${t.logoFileId}, ${t.background}, ${t.accent}, ${t.ink},
             ${seconds(t.introSeconds, 10)}, ${seconds(t.outroSeconds, 10)},
             ${t.endScreenText?.trim().slice(0, 200) || null}, ${t.disclaimerText?.trim().slice(0, 600) || null},
             ${seconds(t.disclaimerSeconds, 15)}, ${t.logoCorner}, ${t.endVideoFileId || null},
-            ${t.endVideoVerticalFileId || null}, ${t.tagline?.trim().slice(0, 60) || null}, now())
+            ${t.endVideoVerticalFileId || null}, ${t.tagline?.trim().slice(0, 60) || null}, ${t.introLogoFileId || null}, now())
     on conflict (company_id) do update set
       logo_file_id = excluded.logo_file_id, background = excluded.background, accent = excluded.accent,
       ink = excluded.ink, intro_seconds = excluded.intro_seconds, outro_seconds = excluded.outro_seconds,
       end_screen_text = excluded.end_screen_text, disclaimer_text = excluded.disclaimer_text,
       disclaimer_seconds = excluded.disclaimer_seconds, logo_corner = excluded.logo_corner,
       end_video_file_id = excluded.end_video_file_id, end_video_vertical_file_id = excluded.end_video_vertical_file_id,
-      tagline = excluded.tagline, updated_at = now()
+      tagline = excluded.tagline, intro_logo_file_id = excluded.intro_logo_file_id, updated_at = now()
   `);
   return getTemplate(scope);
 }
@@ -577,13 +580,32 @@ export async function approveEdit(scope: CompanyScope, id: string): Promise<Vide
 
 // --- making the film -----------------------------------------------------------
 
+/**
+ * When the doctor says each point of a block, so it can appear then: the
+ * first word of the point's own (longer) words heard inside the block, after
+ * the point before it. Null where none is heard - the point is then placed
+ * evenly.
+ */
+export function whenSaid(words: readonly Word[], block: { from: number; to: number; bullets: string[] }): (number | null)[] {
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const heard = words.filter((w) => w.from >= block.from - 1 && w.from <= block.to).map((w) => ({ at: w.from, w: norm(w.w) }));
+  let after = block.from - 1;
+  return block.bullets.map((bullet) => {
+    const keys = bullet.split(/\s+/).map(norm).filter((k) => k.length >= 4);
+    const hit = heard.find((h) => h.at > after && h.w.length >= 3 && keys.some((k) => k.startsWith(h.w.slice(0, 5)) || h.w.startsWith(k.slice(0, 5))));
+    if (!hit) return null;
+    after = hit.at;
+    return hit.at;
+  });
+}
+
 /** Makes one approved film. */
 export async function renderEdit(scope: CompanyScope, id: string): Promise<void> {
   const [row] = await withCompanyScope(scope, (tx) => tx<{
     source_file_id: string; doctor_name: string; doctor_title: string | null; hospital_line: string | null;
-    plan: EditPlan; company: string;
+    plan: EditPlan; company: string; transcript: Word[] | null;
   }[]>`
-    select e.source_file_id, e.doctor_name, e.doctor_title, e.hospital_line, e.plan, c.name as company
+    select e.source_file_id, e.doctor_name, e.doctor_title, e.hospital_line, e.plan, e.transcript, c.name as company
       from video_edits e join companies c on c.id = e.company_id
      where e.id = ${id} and e.company_id = ${scope.companyId}
   `);
@@ -592,6 +614,9 @@ export async function renderEdit(scope: CompanyScope, id: string): Promise<void>
   const template = await getTemplate(scope);
   const source = await readFile(scope, row.source_file_id);
   const logo = template.logoFileId ? await readFile(scope, template.logoFileId).then((f) => f.body).catch(() => null) : null;
+  const introLogo = template.introLogoFileId
+    ? await readFile(scope, template.introLogoFileId).then((f) => f.body).catch(() => logo)
+    : logo;
   const endVideo = (fileId: string | null) => fileId
     ? readFile(scope, fileId)
         .then((f) => ({ bytes: f.body, extension: f.filename.split('.').pop()?.toLowerCase() || 'mp4' }))
@@ -619,8 +644,11 @@ export async function renderEdit(scope: CompanyScope, id: string): Promise<void>
     doctorTitle: row.doctor_title,
     hospitalLine: row.hospital_line,
     cuts: row.plan.cuts,
-    blocks: row.plan.blocks.filter((b) => b.heading.trim()).map((b) => ({ heading: b.heading, bullets: b.bullets, from: b.from, to: b.to })),
+    blocks: row.plan.blocks.filter((b) => b.heading.trim()).map((b) => ({
+      heading: b.heading, bullets: b.bullets, from: b.from, to: b.to, reveal: whenSaid(row.transcript ?? [], b),
+    })),
     broll,
+    intro: template.introSeconds > 0 ? { logo: introLogo, seconds: template.introSeconds } : null,
     // Only the hospital's own wording: CIP never writes a disclaimer.
     disclaimer: template.disclaimerText ? { text: template.disclaimerText, seconds: template.disclaimerSeconds } : null,
     endScreen: {

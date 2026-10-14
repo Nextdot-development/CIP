@@ -183,12 +183,12 @@ describe('a recording into a film', () => {
     assert.ok(film.bytes.length > 10_000);
     assert.equal(film.name, 'Understanding essential tremor.mp4');
 
-    // It opens on the doctor: 9 s of recording (3 cut) + a 3 s drawn end screen.
+    // The 2.5 s opening card + 9 s of recording (3 cut) + a 3 s drawn end screen.
     const out = join(workdir, 'film.mp4');
     writeFileSync(out, film.bytes);
     const { readVideoMetadata } = await import('../src/server/brain/media');
     const meta = await readVideoMetadata(out);
-    assert.ok(Math.abs(meta.durationSeconds - 12) < 0.4, `film was ${meta.durationSeconds}s`);
+    assert.ok(Math.abs(meta.durationSeconds - 14.5) < 0.4, `film was ${meta.durationSeconds}s`);
 
     // Another company sees none of it.
     assert.equal(await video.getEdit(mm, planned.id), null);
@@ -206,8 +206,9 @@ describe('a recording into a film', () => {
     const out = join(workdir, 'film2.mp4');
     writeFileSync(out, film.bytes);
     const { readVideoMetadata } = await import('../src/server/brain/media');
-    // The disclaimer is a band over the recording, so it adds no time: 12 + 3.
-    assert.ok(Math.abs((await readVideoMetadata(out)).durationSeconds - 15) < 0.4);
+    // Opening card 2.5 + the disclaimer card 3 + 12 of recording + 3 end.
+    const seconds = (await readVideoMetadata(out)).durationSeconds;
+    assert.ok(Math.abs(seconds - 20.5) < 0.4, `film was ${seconds}s`);
   });
 
   it("puts a supplied plan on screen as written, with the footage given and the hospital's end screen", async () => {
@@ -255,8 +256,8 @@ describe('a recording into a film', () => {
     writeFileSync(out, (await video.readFilm(nh, planned.id))!.bytes);
     const { readVideoMetadata } = await import('../src/server/brain/media');
     const meta = await readVideoMetadata(out);
-    // 12 s of recording + the hospital's own 2 s end screen, silence added under it.
-    assert.ok(Math.abs(meta.durationSeconds - 14) < 0.4, `film was ${meta.durationSeconds}s`);
+    // Opening 2.5 + disclaimer 3 + 12 s of recording + the hospital's own 2 s end screen, silence added under it.
+    assert.ok(Math.abs(meta.durationSeconds - 19.5) < 0.4, `film was ${meta.durationSeconds}s`);
     assert.ok(meta.hasAudio);
   });
 
@@ -325,6 +326,12 @@ describe('a recording into a film', () => {
     assert.equal(planned.status, 'approved', planned.error ?? '');
     assert.equal(planned.plan!.blocks[0]!.brollSkipped, true);
     assert.equal(await video.renderApprovedEdits({ outOfTime: () => false }), 1);
+  });
+
+  it('shows each point when the doctor says it', () => {
+    const words = 'babies may have poor feeding and they fail to gain weight over time'.split(' ').map((w, i) => ({ w, from: i, to: i + 0.8 }));
+    const at = video.whenSaid(words, { from: 0, to: 12, bullets: ['Poor feeding', 'Failure to gain weight', 'Bluish lips'] });
+    assert.deepEqual(at, [3, 7, null], 'heard where said; a point not heard is left to be spread');
   });
 
   it("refuses the hospital's end screen as the recording", async () => {

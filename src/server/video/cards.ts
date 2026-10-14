@@ -15,12 +15,12 @@ import type { SKRSContext2D } from '@napi-rs/canvas';
 const FONT = 'CIP Video Sans';
 let registered = false;
 
-/** Lato ships with CIP (OFL); a hospital's own typeface can replace it later. */
+/** Arimo ships with CIP (OFL): Helvetica's proportions, for a house set in Helvetica. */
 function ensureFonts(): void {
   if (registered) return;
   const dir = join(process.cwd(), 'src', 'server', 'video', 'fonts');
-  GlobalFonts.registerFromPath(join(dir, 'Lato-Regular.ttf'), FONT);
-  GlobalFonts.registerFromPath(join(dir, 'Lato-Bold.ttf'), FONT);
+  GlobalFonts.registerFromPath(join(dir, 'Arimo-Regular.ttf'), FONT);
+  GlobalFonts.registerFromPath(join(dir, 'Arimo-Bold.ttf'), FONT);
   registered = true;
 }
 
@@ -30,7 +30,8 @@ export type CardStyle = { background: string; accent: string; ink: string };
 function wrap(ctx: SKRSContext2D, text: string, width: number): string[] {
   const lines: string[] = [];
   let line = '';
-  for (const word of text.split(/\s+/).filter(Boolean)) {
+  // Ordinary spaces only: a no-break space holds words together.
+  for (const word of text.split(/[ \t\r\n]+/).filter(Boolean)) {
     const next = line ? `${line} ${word}` : word;
     if (ctx.measureText(next).width > width && line) {
       lines.push(line);
@@ -218,16 +219,19 @@ export function ostPanel(
   return canvas.toBuffer('image/png');
 }
 
-// --- Narayana Health's video template ("Video Template NH 2026") -------------
-// Sizes are the template's own, given on a 1920 x 1080 frame (1080 x 1920
-// vertical) and scaled to whatever the film is. Helvetica Neue is the house
-// face; Lato stands in until the font files are supplied.
+// --- Narayana Health's video template -----------------------------------------
+// Measured from the hospital's own published films (a 1920 x 1080 long video
+// and a 1080 x 1920 Short) and scaled to whatever the film is. Arimo, with
+// Helvetica's proportions, stands in for the house face.
 
 export type HouseColours = { blue: string; red: string; white: string };
 
 /** A measure from the template, scaled to this frame. */
 const px = (size: { width: number; height: number }, n: number) =>
   (n / (size.width > size.height ? 1920 : 1080)) * size.width;
+
+/** Where the panel starts on a horizontal frame; the doctor has the rest. */
+export const PANEL_LEFT = 935 / 1920;
 
 function roundedTopLeft(ctx: SKRSContext2D, x: number, y: number, w: number, h: number, r: number) {
   ctx.beginPath();
@@ -239,7 +243,56 @@ function roundedTopLeft(ctx: SKRSContext2D, x: number, y: number, w: number, h: 
   ctx.closePath();
 }
 
-/** The logo in a white card in one top corner, 300 of 1920 wide. */
+/** The opening card: the logo alone, centred on white. */
+export async function introCard(size: { width: number; height: number }, logo: Buffer | null, companyName: string): Promise<Buffer> {
+  ensureFonts();
+  const { width, height } = size;
+  const canvas = createCanvas(width, height);
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, width, height);
+  if (logo) {
+    const img = await loadImage(logo);
+    const w = height > width ? width * 0.62 : px(size, 561);
+    const h = (img.height / img.width) * w;
+    ctx.drawImage(img, (width - w) / 2, height * (height > width ? 0.5 : 0.453) - h / 2, w, h);
+  } else {
+    ctx.font = `bold ${px(size, 72)}px "${FONT}"`;
+    ctx.fillStyle = '#0b4f9c';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(companyName, width / 2, height / 2);
+  }
+  return canvas.toBuffer('image/png');
+}
+
+/** The disclaimer card: "Disclaimer" in bold over the hospital's wording, centred in black on white. */
+export function disclaimerCard(size: { width: number; height: number }, text: string): Buffer {
+  ensureFonts();
+  const { width, height } = size;
+  const vertical = height > width;
+  const canvas = createCanvas(width, height);
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, width, height);
+  const fontSize = px(size, vertical ? 34 : 32);
+  const lh = fontSize * 1.8;
+  const body = text.replace(/^\s*Disclaimer\s*:?\s*/i, '');
+  ctx.font = `${fontSize}px "${FONT}"`;
+  const lines = wrap(ctx, body, vertical ? width * 0.8 : px(size, 1420));
+  let y = height / 2 - ((lines.length + 1) * lh) / 2;
+  ctx.fillStyle = '#000000';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  ctx.font = `bold ${fontSize}px "${FONT}"`;
+  ctx.fillText('Disclaimer', width / 2, y);
+  y += lh * 0.95;
+  ctx.font = `${fontSize}px "${FONT}"`;
+  for (const line of lines) { ctx.fillText(line, width / 2, y); y += lh; }
+  return canvas.toBuffer('image/png');
+}
+
+/** The logo in a white card hanging from the top edge, rounded below. */
 export async function logoBadge(
   size: { width: number; height: number },
   logo: Buffer,
@@ -249,24 +302,26 @@ export async function logoBadge(
   const canvas = createCanvas(width, height);
   const ctx = canvas.getContext('2d');
   const img = await loadImage(logo);
-  const w = px(size, 300);
-  const h = (img.height / img.width) * w;
-  const pad = px(size, 18);
-  const margin = px(size, 40);
-  const x = corner === 'top-left' ? margin : width - margin - w - pad * 2;
+  const h = px(size, 96);
+  const w = (img.width / img.height) * h;
+  const padX = px(size, 20);
+  const cardW = w + padX * 2;
+  const cardH = px(size, 125);
+  const margin = px(size, 65);
+  const x = corner === 'top-left' ? margin : width - margin - cardW;
   ctx.fillStyle = '#ffffff';
   ctx.beginPath();
-  ctx.roundRect(x, margin, w + pad * 2, h + pad * 2, px(size, 12));
+  ctx.roundRect(x, -px(size, 20), cardW, cardH + px(size, 20), px(size, 16));
   ctx.fill();
-  ctx.drawImage(img, x + pad, margin + pad, w, h);
+  ctx.drawImage(img, x + padX, (cardH - h) / 2, w, h);
   return canvas.toBuffer('image/png');
 }
 
 /**
- * The doctor's name plate: a white box in an NH-blue frame with a rounded top
- * corner - the name in red bold, the designation in blue - over a blue band
- * carrying "Hospital | City" in white. Bottom-left of a horizontal frame, to
- * the right and low on a vertical one.
+ * The doctor's name plate: a white box in an NH-blue frame rounded at the top
+ * left - the name in red, the designation in blue - over a blue band with the
+ * hospital line in white. On the bottom edge at the left of a horizontal
+ * frame; on the right edge, low, on a vertical one.
  */
 export function namePlate(
   size: { width: number; height: number },
@@ -280,108 +335,65 @@ export function namePlate(
   const canvas = createCanvas(width, height);
   const ctx = canvas.getContext('2d');
   const vertical = height > width;
-  const nameSize = px(size, vertical ? 52 : 46);
-  const subSize = px(size, vertical ? 30 : 24);
-  const lineSize = px(size, 34);
-  const pad = px(size, 22);
-  const border = px(size, 16);
+  const nameSize = px(size, vertical ? 64 : 52);
+  const subSize = px(size, vertical ? 37 : 34);
+  const lineSize = px(size, vertical ? 34 : 27);
+  const border = px(size, vertical ? 12 : 17);
+  const padX = px(size, vertical ? 52 : 30);
+  const plateW = vertical ? width * (1 - 118 / 608) : px(size, 710);
+  const innerW = plateW - border * 2;
+  const textW = innerW - padX * 1.5;
 
-  ctx.font = `bold ${nameSize}px "${FONT}"`;
-  const nameWidth = ctx.measureText(name).width;
-  ctx.font = `${subSize}px "${FONT}"`;
-  const subLines = designation ? wrap(ctx, designation, px(size, vertical ? 760 : 900)) : [];
-  const subWidth = Math.max(0, ...subLines.map((l) => ctx.measureText(l).width));
+  ctx.font = `bold ${subSize}px "${FONT}"`;
+  const subLines = designation ? wrap(ctx, designation, textW) : [];
   ctx.font = `${lineSize}px "${FONT}"`;
-  const lineWidth = hospitalLine ? ctx.measureText(hospitalLine).width : 0;
+  const bandLines = hospitalLine ? wrap(ctx, hospitalLine, textW) : [];
 
-  const innerW = Math.max(nameWidth, subWidth, lineWidth) + pad * 2;
-  const innerH = pad * 0.8 + nameSize * 1.15 + subLines.length * subSize * 1.3 + pad * 0.6;
-  const bandH = hospitalLine ? lineSize * 1.9 : border;
-  const plateW = innerW + border * 2;
+  const innerH = nameSize * 0.45 + nameSize * 1.05 + subLines.length * subSize * 0.98 + nameSize * 0.3;
+  const bandH = bandLines.length ? bandLines.length * lineSize * 1.2 + lineSize * 0.9 : border;
   const plateH = border + innerH + bandH;
-  const x = vertical ? width - plateW : px(size, 110);
-  const y = vertical ? height * 0.62 : height - plateH;
+  const x = vertical ? width - plateW : px(size, 75);
+  const y = vertical ? height * 0.625 : height - plateH;
 
   ctx.fillStyle = colours.blue;
-  roundedTopLeft(ctx, x, y, plateW, plateH, px(size, 34));
+  roundedTopLeft(ctx, x, y, plateW, plateH, px(size, vertical ? 25 : 40));
   ctx.fill();
   ctx.fillStyle = colours.white;
   ctx.fillRect(x + border, y + border, innerW, innerH);
 
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
-  let ty = y + border + pad * 0.8;
+  let ty = y + border + nameSize * 0.35;
   ctx.font = `bold ${nameSize}px "${FONT}"`;
   ctx.fillStyle = colours.red;
-  ctx.fillText(name, x + border + pad, ty);
-  ty += nameSize * 1.15;
-  ctx.font = `${subSize}px "${FONT}"`;
+  ctx.fillText(name, x + border + padX, ty);
+  ty += nameSize * 1.1;
+  ctx.font = `bold ${subSize}px "${FONT}"`;
   ctx.fillStyle = colours.blue;
-  for (const l of subLines) { ctx.fillText(l, x + border + pad, ty); ty += subSize * 1.3; }
-  if (hospitalLine) {
-    ctx.font = `${lineSize}px "${FONT}"`;
-    ctx.fillStyle = colours.white;
-    ctx.fillText(hospitalLine, x + border + pad * 0.6, y + border + innerH + (bandH - lineSize) / 2);
-  }
-  return canvas.toBuffer('image/png');
-}
-
-/** The disclaimer: white text centred low on a band fading to black at the foot of the frame. */
-export function disclaimerBand(size: { width: number; height: number }, text: string): Buffer {
-  ensureFonts();
-  const { width, height } = size;
-  const canvas = createCanvas(width, height);
-  const ctx = canvas.getContext('2d');
-  const bandTop = height * (height > width ? 0.84 : 0.7);
-  const fade = ctx.createLinearGradient(0, bandTop, 0, height);
-  fade.addColorStop(0, 'rgba(0,0,0,0)');
-  fade.addColorStop(0.55, 'rgba(0,0,0,0.6)');
-  fade.addColorStop(1, 'rgba(0,0,0,0.95)');
-  ctx.fillStyle = fade;
-  ctx.fillRect(0, bandTop, width, height - bandTop);
-
-  const fontSize = px(size, 21);
-  const label = 'Disclaimer: ';
-  const body = text.replace(/^\s*Disclaimer:\s*/i, '');
-  ctx.font = `${fontSize}px "${FONT}"`;
-  const lines = wrap(ctx, `${label}${body}`, width * 0.88);
-  const lh = fontSize * 1.3;
-  let y = height - px(size, 30) - lines.length * lh;
-  ctx.textBaseline = 'top';
-  ctx.fillStyle = '#ffffff';
-  lines.forEach((line, i) => {
-    if (i === 0 && line.startsWith(label.trim())) {
-      // "Disclaimer:" in bold, the rest of the line regular, centred together.
-      ctx.font = `bold ${fontSize}px "${FONT}"`;
-      const labelW = ctx.measureText(label).width;
-      ctx.font = `${fontSize}px "${FONT}"`;
-      const rest = line.slice(label.length);
-      const start = (width - labelW - ctx.measureText(rest).width) / 2;
-      ctx.textAlign = 'left';
-      ctx.font = `bold ${fontSize}px "${FONT}"`;
-      ctx.fillText(label, start, y);
-      ctx.font = `${fontSize}px "${FONT}"`;
-      ctx.fillText(rest, start + labelW, y);
-    } else {
-      ctx.textAlign = 'center';
-      ctx.font = `${fontSize}px "${FONT}"`;
-      ctx.fillText(line, width / 2, y);
-    }
-    y += lh;
-  });
+  for (const l of subLines) { ctx.fillText(l, x + border + padX, ty); ty += subSize * 0.98; }
+  ctx.font = `${lineSize}px "${FONT}"`;
+  ctx.fillStyle = colours.white;
+  let by = y + border + innerH + lineSize * 0.45;
+  for (const l of bandLines) { ctx.fillText(l, x + border + padX, by); by += lineSize * 1.2; }
   return canvas.toBuffer('image/png');
 }
 
 /**
- * On-screen text in the house panel. Horizontal: the right half of the frame
- * in NH blue, a red bar beside a white bold heading, the points below in white.
- * Vertical: a blue strip across the lower middle with the red bar and heading.
+ * On-screen text in the house panel, with the first `shown` points drawn - so
+ * the points can appear one at a time as the doctor makes them, the panel the
+ * same size throughout.
+ *
+ * Horizontal: NH blue from PANEL_LEFT to the right edge, full height; a red bar
+ * beside the white bold heading near the top; the points below, each "- ".
+ * Vertical: a blue box in the lower half from near the left edge to the right
+ * edge, a red bar down its left side.
  */
 export function housePanel(
   size: { width: number; height: number },
   colours: HouseColours,
   heading: string,
   bullets: readonly string[],
+  shown: number = bullets.length,
 ): Buffer {
   ensureFonts();
   const { width, height } = size;
@@ -389,57 +401,60 @@ export function housePanel(
   const ctx = canvas.getContext('2d');
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
+  const vertical = height > width;
 
-  if (height > width) {
-    const headSize = px(size, 62);
-    const bodySize = px(size, 34);
-    const x = px(size, 60);
-    const w = width - x;
-    ctx.font = `bold ${headSize}px "${FONT}"`;
-    const headLines = wrap(ctx, heading, w - px(size, 160));
-    ctx.font = `${bodySize}px "${FONT}"`;
-    const bodyLines = bullets.flatMap((b) => wrap(ctx, b, w - px(size, 160)));
-    const h = px(size, 50) * 2 + headLines.length * headSize * 1.15 + (bodyLines.length ? px(size, 20) + bodyLines.length * bodySize * 1.45 : 0);
-    const y = height * 0.66 - h / 2;
-    ctx.fillStyle = colours.blue;
-    ctx.fillRect(x, y, w, h);
-    ctx.fillStyle = colours.red;
-    ctx.fillRect(x, y + px(size, 30), px(size, 30), h - px(size, 60));
-    let ty = y + px(size, 50);
-    ctx.fillStyle = colours.white;
-    ctx.font = `bold ${headSize}px "${FONT}"`;
-    for (const l of headLines) { ctx.fillText(l, x + px(size, 110), ty); ty += headSize * 1.15; }
-    ty += px(size, 20);
-    ctx.font = `${bodySize}px "${FONT}"`;
-    for (const l of bodyLines) { ctx.fillText(l, x + px(size, 110), ty); ty += bodySize * 1.45; }
-    return canvas.toBuffer('image/png');
+  const headSize = px(size, vertical ? 58 : 66);
+  const bodySize = px(size, vertical ? 43 : 48);
+  const headLh = headSize * 1.2;
+  const bodyLh = bodySize * 1.3;
+  const bulletGap = bodySize * (vertical ? 0.65 : 0.75);
+  const boxX = vertical ? px(size, 44) : width * PANEL_LEFT;
+  const barW = px(size, vertical ? 83 : 47);
+  const headX = vertical ? px(size, 155) : boxX + barW + px(size, 11);
+  const dashX = vertical ? px(size, 169) : boxX + px(size, 80);
+  const textX = dashX + px(size, vertical ? 33 : 35);
+  const rightPad = px(size, vertical ? 40 : 80);
+
+  ctx.font = `bold ${headSize}px "${FONT}"`;
+  // "(1st - 7th August)" stays on one line.
+  const held = heading.replace(/\(([^()]{1,32})\)/g, (m) => m.replace(/ /g, '\u00a0'));
+  const headLines = wrap(ctx, held, width - headX - rightPad);
+  ctx.font = `${bodySize}px "${FONT}"`;
+  const bodyLines = bullets.map((b) => wrap(ctx, b, width - textX - rightPad));
+  const headH = headLines.length * headLh;
+  const gapAfterHead = bodySize * (vertical ? 1.0 : 2.4);
+  const bodyH = bodyLines.reduce((n, ls) => n + ls.length * bodyLh, 0) + Math.max(0, bodyLines.length - 1) * bulletGap;
+
+  let boxY = 0;
+  let boxH = height;
+  let headY: number;
+  if (vertical) {
+    const top = px(size, 76);
+    const bottom = px(size, 80);
+    boxH = top + headH + (bodyLines.length ? gapAfterHead + bodyH : 0) + bottom;
+    boxY = Math.min(height * 0.92 - boxH, Math.max(height * 0.47, height * 0.7 - boxH / 2));
+    headY = boxY + top;
+  } else {
+    headY = height * (195 / 1080);
   }
 
-  const left = width / 2;
   ctx.fillStyle = colours.blue;
-  ctx.fillRect(left, 0, width - left, height);
-  const headSize = px(size, 62);
-  const bodySize = px(size, 30);
-  const textX = left + px(size, 110);
-  const textW = width - textX - px(size, 90);
-  ctx.font = `bold ${headSize}px "${FONT}"`;
-  const headLines = wrap(ctx, heading, textW);
-  ctx.font = `${bodySize}px "${FONT}"`;
-  const bodyLines = bullets.map((b) => wrap(ctx, b, textW));
-  const headH = headLines.length * headSize * 1.12;
-  const bodyH = bodyLines.reduce((n, ls) => n + ls.length * bodySize * 1.3 + bodySize * 0.95, 0);
-  let ty = Math.max(px(size, 140), (height - headH - px(size, 70) - bodyH) / 2);
+  ctx.fillRect(boxX, boxY, width - boxX, boxH);
   ctx.fillStyle = colours.red;
-  ctx.fillRect(left, ty - px(size, 6), px(size, 46), headH + px(size, 6));
+  if (vertical) ctx.fillRect(boxX + px(size, 6), boxY + px(size, 66), barW, boxH - px(size, 66) - px(size, 36));
+  else ctx.fillRect(boxX, headY - headSize * 0.6, barW, headH + headSize * 1.0);
+
   ctx.fillStyle = colours.white;
   ctx.font = `bold ${headSize}px "${FONT}"`;
-  for (const l of headLines) { ctx.fillText(l, textX, ty); ty += headSize * 1.12; }
-  ty += px(size, 70);
+  let ty = headY;
+  for (const l of headLines) { ctx.fillText(l, headX, ty); ty += headLh; }
+  ty += gapAfterHead;
   ctx.font = `${bodySize}px "${FONT}"`;
-  for (const ls of bodyLines) {
-    for (const l of ls) { ctx.fillText(l, textX, ty); ty += bodySize * 1.3; }
-    ty += bodySize * 0.95;
-  }
+  bodyLines.slice(0, shown).forEach((ls) => {
+    ctx.fillText('-', dashX, ty);
+    for (const l of ls) { ctx.fillText(l, textX, ty); ty += bodyLh; }
+    ty += bulletGap;
+  });
   return canvas.toBuffer('image/png');
 }
 
