@@ -317,6 +317,16 @@ describe('a recording into a film', () => {
     fake.editBrief = null;
   });
 
+  it('with "no b-roll", asks for none and makes the film straight away', async () => {
+    fake.videoPlan = null;
+    const planned = await video.createEdit(nh, {
+      fileId, doctorName: 'Dr. N', givenPlan: 'Tremor basics\n• A shake of the hands\nVisuals: hands close-up', autoMake: true, noBroll: true,
+    });
+    assert.equal(planned.status, 'approved', planned.error ?? '');
+    assert.equal(planned.plan!.blocks[0]!.brollSkipped, true);
+    assert.equal(await video.renderApprovedEdits({ outOfTime: () => false }), 1);
+  });
+
   it("refuses the hospital's end screen as the recording", async () => {
     const t = await video.getTemplate(nh);
     assert.ok(t.endVideoFileId);

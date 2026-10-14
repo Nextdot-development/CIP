@@ -22,7 +22,7 @@ export async function GET() {
 export async function POST(request: Request) {
   return withBrainScope(async (scope) => {
     const body = (await request.json().catch(() => ({}))) as {
-      fileId?: unknown; doctorName?: unknown; doctorTitle?: unknown; hospitalLine?: unknown; givenPlan?: unknown; brollIds?: unknown; autoMake?: unknown;
+      fileId?: unknown; doctorName?: unknown; doctorTitle?: unknown; hospitalLine?: unknown; givenPlan?: unknown; brollIds?: unknown; autoMake?: unknown; noBroll?: unknown;
     };
     const text = (v: unknown) => (typeof v === 'string' ? v : null);
     const edit = await createEdit(scope, {
@@ -33,6 +33,7 @@ export async function POST(request: Request) {
       givenPlan: text(body.givenPlan),
       brollIds: Array.isArray(body.brollIds) ? body.brollIds.map(String).slice(0, 30) : [],
       autoMake: body.autoMake === true,
+      noBroll: body.noBroll === true,
     });
     // Made by the next pump pass; nudged now so nobody waits a quarter of an hour.
     if (edit.status === 'approved') pumpInBackground();

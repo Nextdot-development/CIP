@@ -329,12 +329,13 @@ const INTRO_SECONDS = 6;
  * autoMake   make the film without stopping for review: a block with no
  *            footage keeps the doctor on screen. A block that may break a
  *            rule still stops it - that is never made without a person.
+ * noBroll    no b-roll anywhere: nothing is asked, the doctor stays on screen.
  */
 export async function createEdit(
   scope: CompanyScope,
   input: {
     fileId: string; doctorName?: string | null; doctorTitle?: string | null; hospitalLine?: string | null;
-    givenPlan?: string | null; brollIds?: string[]; autoMake?: boolean;
+    givenPlan?: string | null; brollIds?: string[]; autoMake?: boolean; noBroll?: boolean;
   },
 ): Promise<VideoEditDTO> {
   if (!UUID.test(input.fileId)) throw new VideoEditRejected('That recording is not in this workspace.');
@@ -444,6 +445,7 @@ export async function createEdit(
       title: brief?.title || planned.title || given[0]?.heading || doctorName,
       cuts, blocks, description: brief?.description ?? null,
     };
+    if (input.noBroll) for (const b of blocks) if (!b.footage) b.brollSkipped = true;
     const concerns = blocks.filter((b) => b.concern).length;
     let status: VideoEditDTO['status'] = 'planned';
     let note: string | null = null;
