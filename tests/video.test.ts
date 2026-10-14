@@ -9,7 +9,7 @@ import ffmpeg from 'ffmpeg-static';
 import postgres from 'postgres';
 import { startTestDatabase } from './harness';
 import type { TestDb } from './harness';
-import { keptLength, keptSpans, pauseCuts, toFilmSpan, toFilmTime } from '../src/server/video/timeline';
+import { fillerCuts, keptLength, keptSpans, mergeCuts, pauseCuts, toFilmSpan, toFilmTime } from '../src/server/video/timeline';
 import { parseGivenPlan, readSpan } from '../src/server/video/givenPlan';
 
 /**
@@ -105,6 +105,20 @@ describe('time before and after the cuts', () => {
     assert.match(cuts[0]!.reason, /Pause \(1\.6 s\)/);
     // With no sound to go on, the gaps between the words stand in.
     assert.equal(pauseCuts(null, words).length, 1);
+  });
+
+  it('cuts "er"s and words said twice, without reaching into the words around them', () => {
+    const words = [
+      { w: 'Week', from: 8.08, to: 8.52 }, { w: 'er,', from: 8.92, to: 9.36 }, { w: 'our', from: 9.36, to: 9.46 },
+      { w: 'And', from: 12.2, to: 12.7 }, { w: 'er', from: 13.0, to: 13.0 }, { w: 'my', from: 13.0, to: 13.14 },
+      { w: 'the', from: 14.0, to: 14.2 }, { w: 'the', from: 14.3, to: 14.5 }, { w: 'mothers', from: 14.5, to: 15.0 },
+    ];
+    const cuts = fillerCuts(words);
+    assert.equal(cuts.length, 3);
+    assert.ok(cuts[0]!.from >= 8.57 && cuts[0]!.to <= 9.36, 'between "Week" and "our"');
+    assert.ok(cuts[1]!.from >= 12.7 && cuts[1]!.to <= 13.0, 'a filler with no length is cut between its neighbours');
+    assert.deepEqual([cuts[2]!.from, cuts[2]!.to, cuts[2]!.reason], [14.0, 14.3, 'Repeated "the"']);
+    assert.equal(mergeCuts([{ from: 1, to: 2, reason: 'a' }, { from: 1.5, to: 3, reason: 'b' }])[0]!.to, 3);
   });
 });
 
@@ -217,9 +231,9 @@ describe('a recording into a film', () => {
     const out = join(workdir, 'film2.mp4');
     writeFileSync(out, film.bytes);
     const { readVideoMetadata } = await import('../src/server/brain/media');
-    // Opening card 2.5 + the disclaimer card 3 + 12 of recording + 3 end.
+    // Opening card 2.5 + the disclaimer card 3 + 12 of recording, less the repeated "I" and the "um" (about 2 s), + 3 end.
     const seconds = (await readVideoMetadata(out)).durationSeconds;
-    assert.ok(Math.abs(seconds - 20.5) < 0.4, `film was ${seconds}s`);
+    assert.ok(Math.abs(seconds - 18.45) < 0.4, `film was ${seconds}s`);
   });
 
   it("puts a supplied plan on screen as written, with the footage given and the hospital's end screen", async () => {
@@ -267,8 +281,8 @@ describe('a recording into a film', () => {
     writeFileSync(out, (await video.readFilm(nh, planned.id))!.bytes);
     const { readVideoMetadata } = await import('../src/server/brain/media');
     const meta = await readVideoMetadata(out);
-    // Opening 2.5 + disclaimer 3 + 12 s of recording + the hospital's own 2 s end screen, silence added under it.
-    assert.ok(Math.abs(meta.durationSeconds - 19.5) < 0.4, `film was ${meta.durationSeconds}s`);
+    // Opening 2.5 + disclaimer 3 + 12 s of recording less the stumble (about 2 s) + the hospital's own 2 s end screen, silence added under it.
+    assert.ok(Math.abs(meta.durationSeconds - 17.45) < 0.4, `film was ${meta.durationSeconds}s`);
     assert.ok(meta.hasAudio);
   });
 
@@ -315,7 +329,8 @@ describe('a recording into a film', () => {
     const plan = planned.plan!;
     assert.equal(plan.title, 'Tremor Awareness Week');
     assert.equal(plan.description, 'Dr H. Rao on tremor.');
-    assert.deepEqual(plan.cuts.map((c) => [c.from, c.to]), [[0, 1], [11, 12]]);
+    // The brief's trims, with the repeated "I" joined to the first and the "um" cut between its neighbours.
+    assert.deepEqual(plan.cuts.map((c) => [c.from, c.to]), [[0, 2], [2.9, 3.97], [11, 12]]);
     assert.deepEqual(plan.blocks.map((b) => b.heading), ['', 'Tremor Awareness Week', 'Get Help From'],
       'a line the model offered that is not in the brief never reaches the screen');
     const slot = plan.blocks[0]!;

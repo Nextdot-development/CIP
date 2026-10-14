@@ -323,8 +323,8 @@ function PlanEditor({ edit, footage, onChanged }: {
 
       {edit.status === 'ready' && (
         <div style={{ margin: '12px 0' }}>
-          <video src={`/api/video/edits/${edit.id}/film?disposition=inline`} controls style={{ width: '100%', maxHeight: 420, borderRadius: 8 }} />
-          <a className="btn btn-sm" href={`/api/video/edits/${edit.id}/film`} style={{ marginTop: 8 }}>
+          <video src={`/api/video/edits/${edit.id}/film?disposition=inline&v=${encodeURIComponent(edit.updatedAt)}`} controls style={{ width: '100%', maxHeight: 420, borderRadius: 8 }} />
+          <a className="btn btn-sm" href={`/api/video/edits/${edit.id}/film?v=${encodeURIComponent(edit.updatedAt)}`} style={{ marginTop: 8 }}>
             <Icon name="download" size={14} /> Download
           </a>
         </div>

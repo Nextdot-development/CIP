@@ -20,7 +20,9 @@ const whisper: Transcriber = async (audio, filename) => {
   form.append('model', 'whisper-1');
   form.append('response_format', 'verbose_json');
   form.append('timestamp_granularities[]', 'word');
-  form.append('prompt', 'A doctor speaking to camera about a health condition, in English or Hinglish, written in the Latin script.');
+  // Written with its fillers, so Whisper writes the doctor's "er"s and repeats
+  // down too instead of tidying them away - they are what the edit cuts.
+  form.append('prompt', 'Umm, so the the doctor, uh, is speaking to camera, er, about a health condition. Hmm, I I mean, ah, in English or Hinglish, in the Latin script.');
   try {
     const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
       method: 'POST',

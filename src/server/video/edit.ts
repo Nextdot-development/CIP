@@ -13,7 +13,7 @@ import { parseGivenPlan } from './givenPlan';
 import type { GivenBlock } from './givenPlan';
 import type { EditBrief } from '../brain/providers/types';
 import { renderFilm } from './render';
-import { LONGEST_PAUSE, pauseCuts } from './timeline';
+import { LONGEST_PAUSE, fillerCuts, mergeCuts, pauseCuts } from './timeline';
 import { transcribeWords } from './words';
 import type { Word } from './words';
 
@@ -115,6 +115,8 @@ export type VideoEditDTO = {
   durationSeconds: number | null;
   error: string | null;
   createdAt: string;
+  /** Changes whenever the film is re-made, so a page asks for the new one. */
+  updatedAt: string;
 };
 
 export type VideoTemplateDTO = {
@@ -202,19 +204,19 @@ export async function saveTemplate(scope: CompanyScope, input: Partial<VideoTemp
 type Row = {
   id: string; source_file_id: string; source_name: string; doctor_name: string; doctor_title: string | null;
   hospital_line: string | null; given: boolean; status: VideoEditDTO['status']; plan: EditPlan | null; duration_seconds: string | null;
-  error_message: string | null; created_at: Date;
+  error_message: string | null; created_at: Date; updated_at: Date;
 };
 
 const toDTO = (r: Row): VideoEditDTO => ({
   id: r.id, sourceFileId: r.source_file_id, sourceName: r.source_name, doctorName: r.doctor_name,
   doctorTitle: r.doctor_title, hospitalLine: r.hospital_line, givenPlan: r.given, status: r.status, plan: r.plan,
   durationSeconds: r.duration_seconds === null ? null : Number(r.duration_seconds),
-  error: r.error_message, createdAt: r.created_at.toISOString(),
+  error: r.error_message, createdAt: r.created_at.toISOString(), updatedAt: r.updated_at.toISOString(),
 });
 
 const SELECT = `select e.id, e.source_file_id, f.name as source_name, e.doctor_name, e.doctor_title,
                        e.hospital_line, e.given_plan is not null as given, e.status,
-                       e.plan, e.duration_seconds, e.error_message, e.created_at
+                       e.plan, e.duration_seconds, e.error_message, e.created_at, e.updated_at
                   from video_edits e join drive_files f on f.id = e.source_file_id and f.company_id = e.company_id`;
 
 export async function listEdits(scope: CompanyScope): Promise<VideoEditDTO[]> {
@@ -446,9 +448,9 @@ export async function createEdit(
           ...(brief.end !== null && brief.end < seconds ? [{ from: brief.end, to: seconds, reason: 'After the end in your plan' }] : []),
         ]
       : planned.cuts;
-    // Either way, the doctor's pauses go - all but a breath - except inside what is already cut.
-    const inTrim = (c: { from: number; to: number }) => trims.some((t) => c.from >= t.from - 0.01 && c.to <= t.to + 0.01);
-    const cuts = [...trims, ...pauseCuts(heard.silences, heard.words).filter((c) => !inTrim(c))].sort((x, y) => x.from - y.from);
+    // Either way, the doctor's pauses go - all but a breath - and so do the
+    // "er"s and words said twice.
+    const cuts = mergeCuts([...trims, ...pauseCuts(heard.silences, heard.words), ...fillerCuts(heard.words)]);
     const plan: EditPlan = {
       title: brief?.title || planned.title || given[0]?.heading || doctorName,
       cuts, blocks, description: brief?.description ?? null,

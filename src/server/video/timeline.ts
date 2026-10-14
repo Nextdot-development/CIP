@@ -91,3 +91,55 @@ export function pauseCuts(
   }
   return cuts;
 }
+
+/** "um", "uh", "er", "erm", "ah", "aa", "hmm" - the sounds between words, not words. */
+const FILLER = /^(u+h+|u+m+|e+r+m*|a+h+|a{2,}h*|h+m+|m{2,})$/;
+const bare = (w: string) => w.toLowerCase().replace(/[^a-z']/g, '');
+
+/**
+ * Fillers and stumbles, as cuts: each filler sound, from where the word
+ * before it ends to where the next begins, and the first of a word said
+ * twice running ("the the"). Speech-recognition times for a filler are rough
+ * - often no length at all - so its cut is bounded by its neighbours, never
+ * reaching into them.
+ */
+export function fillerCuts(words: readonly { w: string; from: number; to: number }[]): (Span & { reason: string })[] {
+  const cuts: (Span & { reason: string })[] = [];
+  const isFiller = (i: number) => FILLER.test(bare(words[i]?.w ?? ''));
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i]!;
+    if (isFiller(i)) {
+      let p = i - 1;
+      while (p >= 0 && isFiller(p)) p--;
+      let n = i + 1;
+      while (n < words.length && isFiller(n)) n++;
+      const prevEnd = p >= 0 ? words[p]!.to : 0;
+      const nextStart = n < words.length ? words[n]!.from : w.to + 0.3;
+      const from = Math.max(prevEnd + 0.05, w.to > w.from ? w.from - 0.1 : prevEnd + 0.05);
+      const to = nextStart - 0.03;
+      if (to - from >= 0.08) cuts.push({ from, to, reason: `"${bare(w.w)}"` });
+      i = n - 1;
+      continue;
+    }
+    const next = words[i + 1];
+    if (next && bare(w.w) && bare(w.w) === bare(next.w) && next.from - w.to < 0.6) {
+      cuts.push({ from: w.from, to: next.from, reason: `Repeated "${bare(w.w)}"` });
+    }
+  }
+  return cuts;
+}
+
+/** Cuts that touch or overlap become one, their reasons together. */
+export function mergeCuts<T extends Span & { reason: string }>(cuts: readonly T[]): (Span & { reason: string })[] {
+  const merged: (Span & { reason: string })[] = [];
+  for (const c of [...cuts].sort((a, b) => a.from - b.from)) {
+    const last = merged.at(-1);
+    if (last && c.from <= last.to + 0.02) {
+      last.to = Math.max(last.to, c.to);
+      if (!last.reason.includes(c.reason)) last.reason = `${last.reason}, ${c.reason}`;
+    } else {
+      merged.push({ from: c.from, to: c.to, reason: c.reason });
+    }
+  }
+  return merged;
+}
