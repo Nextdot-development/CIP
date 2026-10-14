@@ -2,7 +2,7 @@ import 'server-only';
 import { withCompanyScope } from '../db';
 import type { CompanyScope } from '../db';
 import { adminSql } from '../db-admin';
-import { extractAudio, readVideoMetadata, withTempFile } from '../brain/media';
+import { extractAudio, findSilences, readVideoMetadata, withTempFile } from '../brain/media';
 import { rulesForBrief } from '../brain/checker';
 import { companyProfile } from '../brain/category';
 import { brain } from '../brain/providers';
@@ -13,6 +13,7 @@ import { parseGivenPlan } from './givenPlan';
 import type { GivenBlock } from './givenPlan';
 import type { EditBrief } from '../brain/providers/types';
 import { renderFilm } from './render';
+import { LONGEST_PAUSE, pauseCuts } from './timeline';
 import { transcribeWords } from './words';
 import type { Word } from './words';
 
@@ -380,9 +381,10 @@ export async function createEdit(
     const extension = source.filename.split('.').pop()?.toLowerCase() || 'mp4';
     const heard = await withTempFile(source.body, extension, async (path) => {
       const meta = await readVideoMetadata(path);
-      if (meta.durationSeconds > MAX_SECONDS) return { meta, words: null as Word[] | null, tooLong: true };
+      if (meta.durationSeconds > MAX_SECONDS) return { meta, words: null as Word[] | null, silences: null, tooLong: true };
       const audio = await extractAudio(path, meta);
-      return { meta, words: audio ? await transcribeWords(audio, 'recording') : null, tooLong: false };
+      const silences = meta.hasAudio ? await findSilences(path, LONGEST_PAUSE).catch(() => null) : null;
+      return { meta, words: audio ? await transcribeWords(audio, 'recording') : null, silences, tooLong: false };
     });
     if (heard.tooLong) {
       await fail(`Recordings up to ${MAX_SECONDS / 60} minutes can be edited here.`);
@@ -438,12 +440,15 @@ export async function createEdit(
     await chooseFootage(scope, blocks, provided, notBroll);
 
     // A brief's own trims replace the planner's; without a brief, the fumbles go.
-    const cuts = brief
+    const trims = brief
       ? [
           ...(brief.start !== null && brief.start > 0 ? [{ from: 0, to: Math.min(brief.start, seconds), reason: 'Before the start in your plan' }] : []),
           ...(brief.end !== null && brief.end < seconds ? [{ from: brief.end, to: seconds, reason: 'After the end in your plan' }] : []),
         ]
       : planned.cuts;
+    // Either way, the doctor's pauses go - all but a breath - except inside what is already cut.
+    const inTrim = (c: { from: number; to: number }) => trims.some((t) => c.from >= t.from - 0.01 && c.to <= t.to + 0.01);
+    const cuts = [...trims, ...pauseCuts(heard.silences, heard.words).filter((c) => !inTrim(c))].sort((x, y) => x.from - y.from);
     const plan: EditPlan = {
       title: brief?.title || planned.title || given[0]?.heading || doctorName,
       cuts, blocks, description: brief?.description ?? null,

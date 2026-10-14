@@ -59,6 +59,32 @@ export async function runFfmpeg(args: string[], timeoutMs: number): Promise<void
   await run(ffmpegPath(), args, { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 });
 }
 
+/**
+ * The silences in a recording's sound, at least `minSeconds` long. "Silent"
+ * is judged against the recording's own loudness - 5 dB under its average -
+ * so a quiet room and a loud one are read alike.
+ */
+export async function findSilences(path: string, minSeconds: number): Promise<{ from: number; to: number }[]> {
+  const opts = { timeout: 120_000, maxBuffer: 32 * 1024 * 1024 };
+  const level = await run(ffmpegPath(), ['-hide_banner', '-i', path, '-vn', '-af', 'volumedetect', '-f', 'null', '-'], opts);
+  const mean = Number(/mean_volume:\s*(-?[\d.]+) dB/.exec(level.stderr)?.[1]);
+  if (!Number.isFinite(mean)) return [];
+  const noise = Math.max(-60, Math.min(-20, mean - 5));
+  const found = await run(
+    ffmpegPath(),
+    ['-hide_banner', '-i', path, '-vn', '-af', `silencedetect=noise=${noise.toFixed(1)}dB:d=${minSeconds}`, '-f', 'null', '-'],
+    opts,
+  );
+  const silences: { from: number; to: number }[] = [];
+  let start: number | null = null;
+  for (const m of found.stderr.matchAll(/silence_(start|end): (-?[\d.]+)/g)) {
+    const t = Number(m[2]);
+    if (m[1] === 'start') start = Math.max(0, t);
+    else if (start !== null) { silences.push({ from: start, to: t }); start = null; }
+  }
+  return silences;
+}
+
 function ffprobePath(): string {
   return process.env.CIP_FFPROBE_PATH ?? 'ffprobe';
 }

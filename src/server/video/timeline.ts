@@ -62,3 +62,32 @@ export function toFilmSpan(span: Span, kept: readonly Span[]): Span | null {
   const to = toFilmTime(span.to, kept);
   return to - from >= 0.5 ? { from, to } : null;
 }
+
+/** A pause longer than this is cut down; the doctor keeps a short breath either side. */
+export const LONGEST_PAUSE = 0.45;
+const BREATH = 0.12;
+
+/**
+ * The doctor's pauses, as cuts: each silence in the sound longer than
+ * LONGEST_PAUSE, cut so a breath is kept after the last word and before the
+ * next. A silence a word starts inside is left alone - nothing said is cut.
+ * Without the sound's silences, the gaps between the words stand in.
+ */
+export function pauseCuts(
+  silences: readonly Span[] | null,
+  words: readonly { from: number; to: number }[],
+  longest = LONGEST_PAUSE,
+): (Span & { reason: string })[] {
+  const quiet = silences ?? words.slice(1).map((w, i) => ({ from: words[i]!.to, to: w.from }));
+  const cuts: (Span & { reason: string })[] = [];
+  for (const q of quiet) {
+    const length = q.to - q.from;
+    if (length <= longest) continue;
+    const from = q.from + BREATH;
+    const to = q.to - BREATH;
+    if (to - from < 0.15) continue;
+    if (words.some((w) => w.from > from && w.from < to)) continue;
+    cuts.push({ from, to, reason: `Pause (${length.toFixed(1)} s)` });
+  }
+  return cuts;
+}

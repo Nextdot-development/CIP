@@ -9,7 +9,7 @@ import ffmpeg from 'ffmpeg-static';
 import postgres from 'postgres';
 import { startTestDatabase } from './harness';
 import type { TestDb } from './harness';
-import { keptLength, keptSpans, toFilmSpan, toFilmTime } from '../src/server/video/timeline';
+import { keptLength, keptSpans, pauseCuts, toFilmSpan, toFilmTime } from '../src/server/video/timeline';
 import { parseGivenPlan, readSpan } from '../src/server/video/givenPlan';
 
 /**
@@ -94,6 +94,17 @@ describe('time before and after the cuts', () => {
     assert.equal(toFilmTime(8, kept), 5);
     assert.deepEqual(toFilmSpan({ from: 6, to: 9 }, kept), { from: 3, to: 6 });
     assert.equal(toFilmSpan({ from: 2.5, to: 4.5 }, kept), null, 'nothing of a span inside a cut survives');
+  });
+
+  it("cuts the doctor's pauses down to a breath, and never a word", () => {
+    const words = [{ from: 0, to: 0.5 }, { from: 0.7, to: 1.2 }, { from: 3.2, to: 3.6 }, { from: 4.0, to: 4.4 }];
+    // From the sound: a 1.6 s silence, a short one, and one a word starts inside (misheard as quiet).
+    const cuts = pauseCuts([{ from: 1.4, to: 3.0 }, { from: 3.6, to: 3.9 }, { from: 0.4, to: 1.0 }], words);
+    assert.equal(cuts.length, 1);
+    assert.ok(Math.abs(cuts[0]!.from - 1.52) < 1e-9 && Math.abs(cuts[0]!.to - 2.88) < 1e-9);
+    assert.match(cuts[0]!.reason, /Pause \(1\.6 s\)/);
+    // With no sound to go on, the gaps between the words stand in.
+    assert.equal(pauseCuts(null, words).length, 1);
   });
 });
 
