@@ -271,12 +271,15 @@ function keepGiven(
  * brollIds   footage the person has for it; each block takes the piece that
  *            fits it best. With none, the library is searched for a
  *            suggestion and the person is asked, block by block.
+ * autoMake   make the film without stopping for review: a block with no
+ *            footage keeps the doctor on screen. A block that may break a
+ *            rule still stops it - that is never made without a person.
  */
 export async function createEdit(
   scope: CompanyScope,
   input: {
     fileId: string; doctorName: string; doctorTitle?: string | null; hospitalLine?: string | null;
-    givenPlan?: string | null; brollIds?: string[];
+    givenPlan?: string | null; brollIds?: string[]; autoMake?: boolean;
   },
 ): Promise<VideoEditDTO> {
   const doctorName = input.doctorName?.trim();
@@ -344,10 +347,18 @@ export async function createEdit(
     }));
     await chooseFootage(scope, blocks, provided, input.fileId);
     const plan: EditPlan = { title: planned.title || given[0]?.heading || doctorName, cuts: planned.cuts, blocks };
+    const concerns = blocks.filter((b) => b.concern).length;
+    let status: VideoEditDTO['status'] = 'planned';
+    let note: string | null = null;
+    if (input.autoMake) {
+      for (const b of blocks) if (brollAsked(b)) b.brollSkipped = true;
+      if (concerns === 0) status = 'approved';
+      else note = `Not made yet: ${concerns === 1 ? 'one block' : `${concerns} blocks`} may break a rule. Read them, then approve.`;
+    }
 
     await withCompanyScope(scope, (tx) => tx`
       update video_edits
-         set status = 'planned', transcript = ${tx.json(heard.words)}, plan = ${tx.json(plan)},
+         set status = ${status}, error_message = ${note}, transcript = ${tx.json(heard.words)}, plan = ${tx.json(plan)},
              duration_seconds = ${heard.meta.durationSeconds}, updated_at = now()
        where id = ${id} and company_id = ${scope.companyId}
     `);

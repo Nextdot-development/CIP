@@ -42,9 +42,10 @@ export function VideoStudioSection() {
   const [recordings, setRecordings] = useState<{ id: string; name: string }[]>([]);
   // Which film is open; what it says is always read from the list.
   const [openId, setOpenId] = useState<string | null>(null);
-  const EMPTY = { fileId: '', doctorName: '', doctorTitle: '', hospitalLine: '', givenPlan: '', brollIds: [] as string[] };
+  const EMPTY = { fileId: '', doctorName: '', doctorTitle: '', hospitalLine: '', givenPlan: '', brollIds: [] as string[], autoMake: false };
   const [form, setForm] = useState(EMPTY);
   const [planning, setPlanning] = useState(false);
+  const [uploading, setUploading] = useState<'recording' | 'broll' | null>(null);
 
   const load = useCallback(async () => {
     const [e, r] = await Promise.all([
@@ -65,6 +66,29 @@ export function VideoStudioSection() {
   }, [busy, load]);
   const open = edits.find((e) => e.id === openId) ?? null;
 
+  /** Uploads to the workspace's files; the new videos join the lists here. */
+  const upload = async (files: File[], kind: 'recording' | 'broll') => {
+    setUploading(kind);
+    try {
+      const added: { id: string; name: string }[] = [];
+      for (const file of files) {
+        const data = new FormData();
+        data.append('file', file);
+        const res = await fetch('/api/drive/files', { method: 'POST', body: data }).catch(() => null);
+        const body = (await res?.json().catch(() => null)) as { id?: string; name?: string; message?: string } | null;
+        if (!res?.ok || !body?.id) { note(body?.message ?? `${file.name} could not be uploaded.`); continue; }
+        added.push({ id: body.id, name: body.name ?? file.name });
+      }
+      if (added.length === 0) return;
+      setRecordings((r) => [...added, ...r.filter((x) => !added.some((a) => a.id === x.id))]);
+      setForm((f) => kind === 'recording'
+        ? { ...f, fileId: added[0]!.id }
+        : { ...f, brollIds: [...f.brollIds, ...added.map((a) => a.id)] });
+    } finally {
+      setUploading(null);
+    }
+  };
+
   const plan = async () => {
     setPlanning(true);
     try {
@@ -72,6 +96,7 @@ export function VideoStudioSection() {
         method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(form),
       });
       if (failed(body)) { note(body.message); return; }
+      if (body.edit.status === 'approved') note('Planned and sent to be made. It appears below when ready.');
       setOpenId(body.edit.id);
       setForm(EMPTY);
       await load();
@@ -97,10 +122,17 @@ export function VideoStudioSection() {
       <section className="card pad" style={{ marginTop: 16 }}>
         <p className="strong">New film</p>
         <div className="video-form">
-          <select className="field-input" value={form.fileId} onChange={(e) => setForm({ ...form, fileId: e.target.value })}>
-            <option value="">Choose a recording…</option>
-            {recordings.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
-          </select>
+          <div className="row" style={{ gap: 6 }}>
+            <select className="field-input" style={{ flex: 1, minWidth: 0 }} value={form.fileId} onChange={(e) => setForm({ ...form, fileId: e.target.value })}>
+              <option value="">Choose a recording…</option>
+              {recordings.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+            </select>
+            <label className="btn btn-sm" title="Upload the doctor's recording">
+              {uploading === 'recording' ? 'Uploading…' : 'Upload'}
+              <input type="file" accept="video/*" hidden disabled={uploading !== null}
+                onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) void upload([f], 'recording'); }} />
+            </label>
+          </div>
           <input className="field-input" placeholder="Doctor's name, e.g. Dr. A. Kumar" value={form.doctorName}
             onChange={(e) => setForm({ ...form, doctorName: e.target.value })} />
           <input className="field-input" placeholder="Designation, e.g. Senior Consultant – Cardiology (optional)" value={form.doctorTitle}
@@ -113,9 +145,16 @@ export function VideoStudioSection() {
             <textarea className="field-input" rows={4} value={form.givenPlan}
               onChange={(e) => setForm({ ...form, givenPlan: e.target.value })} />
           </label>
-          {recordings.length > 1 && (
-            <div className="tiny muted video-wide">
+          <div className="tiny muted video-wide">
+            <span className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
               B-roll you already have (optional) — each block takes the clip that fits it. Anything not covered is asked about later.
+              <label className="btn btn-sm">
+                {uploading === 'broll' ? 'Uploading…' : 'Upload b-roll'}
+                <input type="file" accept="video/*" multiple hidden disabled={uploading !== null}
+                  onChange={(e) => { const f = [...(e.target.files ?? [])]; e.target.value = ''; if (f.length) void upload(f, 'broll'); }} />
+              </label>
+            </span>
+            {recordings.length > 1 && (
               <div className="video-picks">
                 {recordings.filter((r) => r.id !== form.fileId).map((r) => (
                   <label key={r.id} className="tiny">
@@ -126,14 +165,19 @@ export function VideoStudioSection() {
                   </label>
                 ))}
               </div>
-            </div>
-          )}
+            )}
+          </div>
+          <label className="small video-wide">
+            <input type="checkbox" checked={form.autoMake} onChange={(e) => setForm({ ...form, autoMake: e.target.checked })} />
+            {' '}Make the film straight away — skip the review. Blocks without b-roll keep the doctor on screen. If a block may break a
+            rule, it still stops for you.
+          </label>
           <button type="button" className="btn btn-primary btn-sm" disabled={planning || !form.fileId || !form.doctorName.trim()}
             onClick={() => void plan()}>
-            {planning ? 'Listening and planning… about a minute' : 'Plan the edit'}
+            {planning ? 'Listening and planning… about a minute' : form.autoMake ? 'Make the film' : 'Plan the edit'}
           </button>
         </div>
-        <p className="tiny muted">Recordings and b-roll come from your Drive folder. Add a new one there and it appears here.</p>
+        <p className="tiny muted">Upload here, or add videos to your Drive folder and they appear in these lists.</p>
       </section>
 
       {edits.length > 0 && (

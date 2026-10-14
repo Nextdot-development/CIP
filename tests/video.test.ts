@@ -259,6 +259,25 @@ describe('a recording into a film', () => {
     assert.ok(meta.hasAudio);
   });
 
+  it('makes the film straight away when asked, but never past a block that may break a rule', async () => {
+    fake.videoPlan = null;
+    const clean = await video.createEdit(nh, {
+      fileId, doctorName: 'Dr. F', givenPlan: 'Tremor basics\n• A shake of the hands\nVisuals: hands close-up', autoMake: true,
+    });
+    assert.equal(clean.status, 'approved', clean.error ?? '');
+    assert.equal(clean.plan!.blocks[0]!.brollSkipped, true, 'no footage: the doctor stays on screen');
+    assert.equal(await video.renderApprovedEdits({ outOfTime: () => false }), 1);
+    assert.equal((await video.getEdit(nh, clean.id))!.status, 'ready');
+
+    fake.videoPlan = {
+      title: 'Risky', cuts: [],
+      blocks: [{ heading: 'Cure', bullets: ['Always cured'], from: 6, to: 10, visuals: '', concern: 'Promises a cure', ruleRefs: [] }],
+    };
+    const risky = await video.createEdit(nh, { fileId, doctorName: 'Dr. G', autoMake: true });
+    assert.equal(risky.status, 'planned');
+    assert.match(risky.error ?? '', /may break a rule/);
+  });
+
   it('refuses a plan it cannot read, and footage from another workspace', async () => {
     await assert.rejects(() => video.createEdit(nh, { fileId, doctorName: 'Dr. E', givenPlan: '| a |\n| b |' }), /could not be read/);
     await assert.rejects(() => video.createEdit(nh, { fileId, doctorName: 'Dr. E', brollIds: ['00000000-0000-0000-0000-000000000001'] }), /footage/);
