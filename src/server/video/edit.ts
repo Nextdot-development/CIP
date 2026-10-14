@@ -11,6 +11,7 @@ import { readFile } from '../drive/service';
 import { driveStorage, videoEditKeyFor } from '../drive/storage';
 import { parseGivenPlan } from './givenPlan';
 import type { GivenBlock } from './givenPlan';
+import type { EditBrief } from '../brain/providers/types';
 import { renderFilm } from './render';
 import { transcribeWords } from './words';
 import type { Word } from './words';
@@ -44,7 +45,8 @@ export class VideoEditRejected extends Error {
 
 /**
  * One block of on-screen text: a specific heading and a few pointers, up while
- * the doctor says it, with what to show behind it.
+ * the doctor says it, with what to show behind it. A block with no heading is
+ * b-roll alone - a cutaway the brief asked for, with no text of its own.
  */
 export type EditBlock = {
   heading: string;
@@ -59,6 +61,8 @@ export type EditBlock = {
   suggestion?: { fileId: string; fileName: string } | null;
   /** A person chose to show the doctor here instead of b-roll. */
   brollSkipped?: boolean;
+  /** The person's own brief asked for b-roll here, so it is always asked about. */
+  brollWanted?: boolean;
   concern: string | null;
   /** The rules the block may break, in words. */
   rules: string[];
@@ -68,6 +72,8 @@ export type EditPlan = {
   title: string;
   cuts: { from: number; to: number; reason: string }[];
   blocks: EditBlock[];
+  /** Text to post with the film, from the person's brief. Never on screen. */
+  description?: string | null;
 };
 
 /** A block that wants b-roll and has neither footage nor a person's "skip". */
@@ -85,7 +91,7 @@ const clock = (s: number) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${S
 export function ostTable(plan: EditPlan): string {
   const cell = (s: string) => s.replace(/\|/g, '/').replace(/\s+/g, ' ').trim();
   const rows = plan.blocks.map((b) =>
-    `| ${clock(b.from)}–${clock(b.to)} | ${[`• **${cell(b.heading)}**`, ...b.bullets.map((x) => `• ${cell(x)}`)].join('<br>')} | ${cell(b.visuals) || '—'} |`,
+    `| ${clock(b.from)}–${clock(b.to)} | ${b.heading ? [`• **${cell(b.heading)}**`, ...b.bullets.map((x) => `• ${cell(x)}`)].join('<br>') : '—'} | ${cell(b.visuals) || '—'} |`,
   );
   return [
     '| Timecode / Section | On-Screen Text (OST – Pointer Format) | Visuals / B-roll Suggestions |',
@@ -262,6 +268,55 @@ function keepGiven(
   });
 }
 
+/** Lower case, one kind of dash and quote, single spaces: for "is this in the brief?". */
+const plain = (s: string) =>
+  s.toLowerCase().replace(/[\u2010-\u2015\u2212]/g, '-').replace(/[\u2018\u2019]/g, "'").replace(/[\u201c\u201d]/g, '"')
+    .replace(/\s+/g, ' ').trim();
+
+type Brief = Omit<EditBrief, 'usage'>;
+
+/**
+ * A person's brief, in parts. The house OST table is read as it is; anything
+ * else is split by the model, and every line it hands back is checked against
+ * the brief - a line that is not in it, word for word, is dropped. So nothing
+ * reaches the screen that the person did not write.
+ */
+async function readBrief(text: string): Promise<Brief> {
+  const empty: Brief = {
+    start: null, end: null, doctorName: null, doctorTitle: null, hospitalLine: null, title: null, description: null,
+    blocks: [], broll: [],
+  };
+  const table = text.split('\n').filter((l) => /^\s*\|.*\|\s*$/.test(l)).length >= 2;
+  if (table) return { ...empty, blocks: parseGivenPlan(text) };
+
+  const read = await brain().readEditBrief(text).catch(() => null);
+  if (!read) return { ...empty, blocks: parseGivenPlan(text) };
+  const source = plain(text);
+  const kept = (s: string | null) => (s && source.includes(plain(s)) ? s.trim() : null);
+  return {
+    start: read.start,
+    end: read.end !== null && (read.start === null || read.end > read.start) ? read.end : null,
+    doctorName: kept(read.doctorName)?.slice(0, 120) ?? null,
+    doctorTitle: kept(read.doctorTitle)?.slice(0, 120) ?? null,
+    hospitalLine: kept(read.hospitalLine)?.slice(0, 120) ?? null,
+    title: kept(read.title)?.slice(0, 120) ?? null,
+    description: kept(read.description)?.slice(0, 5_000) ?? null,
+    blocks: read.blocks
+      .map((b) => ({ ...b, heading: kept(b.heading) ?? '', bullets: b.bullets.map(kept).filter((x): x is string => x !== null) }))
+      .filter((b) => b.heading)
+      .map((b) => ({
+        heading: b.heading.slice(0, 80), bullets: b.bullets.slice(0, 5).map((x) => x.slice(0, 90)),
+        from: b.from, to: b.to !== null && b.from !== null && b.to > b.from ? b.to : null, visuals: b.visuals.slice(0, 200),
+      })),
+    broll: read.broll
+      .filter((b) => b.from !== null && b.to !== null && b.to > b.from)
+      .map((b) => ({ ...b, note: b.note.replace(/\bb-?roll\b/gi, ' ').replace(/[()]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200) })),
+  };
+}
+
+/** How long the name plate is up; on-screen text waits for it. */
+const INTRO_SECONDS = 6;
+
 /**
  * Hears a recording and plans its edit. Takes as long as the recording takes
  * to transcribe - well under a minute for a few minutes of speech.
@@ -278,18 +333,25 @@ function keepGiven(
 export async function createEdit(
   scope: CompanyScope,
   input: {
-    fileId: string; doctorName: string; doctorTitle?: string | null; hospitalLine?: string | null;
+    fileId: string; doctorName?: string | null; doctorTitle?: string | null; hospitalLine?: string | null;
     givenPlan?: string | null; brollIds?: string[]; autoMake?: boolean;
   },
 ): Promise<VideoEditDTO> {
-  const doctorName = input.doctorName?.trim();
-  if (!doctorName) throw new VideoEditRejected("Type the doctor's name as it should appear on screen.");
   if (!UUID.test(input.fileId)) throw new VideoEditRejected('That recording is not in this workspace.');
+  const template = await getTemplate(scope);
+  if (input.fileId === template.endVideoFileId || input.fileId === template.endVideoVerticalFileId) {
+    throw new VideoEditRejected("That is the hospital's end screen. Choose the doctor's recording.");
+  }
   const givenText = input.givenPlan?.trim().slice(0, 20_000) || null;
-  const given = givenText ? parseGivenPlan(givenText) : [];
-  if (givenText && given.length === 0) {
+  const brief = givenText ? await readBrief(givenText) : null;
+  if (brief && brief.blocks.length === 0 && brief.broll.length === 0 && !brief.title && brief.start === null && brief.end === null) {
     throw new VideoEditRejected('The plan could not be read. Paste the OST table, or write a block a paragraph: a heading line, then a point a line.');
   }
+  // The form wins; the brief fills what the form leaves empty.
+  const doctorName = input.doctorName?.trim() || brief?.doctorName || '';
+  if (!doctorName) throw new VideoEditRejected("Type the doctor's name as it should appear on screen.");
+  const doctorTitle = input.doctorTitle?.trim() || brief?.doctorTitle || null;
+  const hospitalLine = input.hospitalLine?.trim() || brief?.hospitalLine || null;
 
   const source = await readFile(scope, input.fileId);
   if (!source.file.mimeType.startsWith('video/')) throw new VideoEditRejected('Choose a video recording.');
@@ -298,7 +360,7 @@ export async function createEdit(
   const [created] = await withCompanyScope(scope, (tx) => tx<{ id: string }[]>`
     insert into video_edits (company_id, source_file_id, doctor_name, doctor_title, hospital_line, given_plan, created_by)
     values (${scope.companyId}, ${input.fileId}, ${doctorName.slice(0, 120)},
-            ${input.doctorTitle?.trim().slice(0, 120) || null}, ${input.hospitalLine?.trim().slice(0, 120) || null},
+            ${doctorTitle?.slice(0, 120) || null}, ${hospitalLine?.slice(0, 120) || null},
             ${givenText}, ${scope.userId})
     returning id
   `);
@@ -332,28 +394,66 @@ export async function createEdit(
       companyProfile(scope),
     ]);
     const refs = rules.map((r, i) => ({ ref: `R${i + 1}`, rule: r.rule }));
+    const seconds = heard.meta.durationSeconds;
+    const filmFrom = Math.min(brief?.start ?? 0, seconds);
+    // The title goes up once the name plate has cleared, unless the brief places it.
+    const given: GivenBlock[] = [
+      ...(brief?.title && !brief.blocks.some((b) => plain(b.heading) === plain(brief.title!))
+        ? [{ heading: brief.title, bullets: [], visuals: '', from: filmFrom + INTRO_SECONDS, to: filmFrom + INTRO_SECONDS + 4 }]
+        : []),
+      ...(brief?.blocks ?? []),
+    ];
     const planned = await brain().planVideoEdit({
       doctorName, category: profile.category, words: heard.words, rules: refs,
       ...(given.length > 0 ? { given } : {}),
     });
-    const placed = given.length > 0 ? keepGiven(given, planned.blocks, heard.meta.durationSeconds) : planned.blocks;
+    const placed = given.length > 0 ? keepGiven(given, planned.blocks, seconds) : brief ? [] : planned.blocks;
 
     const byRef = new Map(refs.map((r) => [r.ref, r.rule]));
-    const blocks = placed.map((b): EditBlock => ({
+    const blocks = placed.map((b, i): EditBlock => ({
       heading: b.heading, bullets: b.bullets, from: b.from, to: b.to, visuals: b.visuals,
       footage: null, suggestion: null, brollSkipped: false,
+      brollWanted: Boolean(given[i]?.visuals),
       concern: b.concern,
       rules: b.ruleRefs.map((r) => byRef.get(r)).filter((r): r is string => Boolean(r)),
     }));
-    await chooseFootage(scope, blocks, provided, input.fileId);
-    const plan: EditPlan = { title: planned.title || given[0]?.heading || doctorName, cuts: planned.cuts, blocks };
+    // B-roll the brief asked for, with no text of its own.
+    for (const b of brief?.broll ?? []) {
+      const from = Math.min(b.from!, seconds);
+      const to = Math.min(b.to!, seconds);
+      if (to > from) {
+        blocks.push({
+          heading: '', bullets: [], from, to, visuals: b.note || 'B-roll', footage: null, suggestion: null,
+          brollSkipped: false, brollWanted: true, concern: null, rules: [],
+        });
+      }
+    }
+    blocks.sort((a, b) => a.from - b.from);
+    // Never the recording itself, nor the hospital's end screens.
+    const notBroll = new Set([input.fileId, template.endVideoFileId, template.endVideoVerticalFileId].filter((x): x is string => Boolean(x)));
+    await chooseFootage(scope, blocks, provided, notBroll);
+
+    // A brief's own trims replace the planner's; without a brief, the fumbles go.
+    const cuts = brief
+      ? [
+          ...(brief.start !== null && brief.start > 0 ? [{ from: 0, to: Math.min(brief.start, seconds), reason: 'Before the start in your plan' }] : []),
+          ...(brief.end !== null && brief.end < seconds ? [{ from: brief.end, to: seconds, reason: 'After the end in your plan' }] : []),
+        ]
+      : planned.cuts;
+    const plan: EditPlan = {
+      title: brief?.title || planned.title || given[0]?.heading || doctorName,
+      cuts, blocks, description: brief?.description ?? null,
+    };
     const concerns = blocks.filter((b) => b.concern).length;
     let status: VideoEditDTO['status'] = 'planned';
     let note: string | null = null;
     if (input.autoMake) {
-      for (const b of blocks) if (brollAsked(b)) b.brollSkipped = true;
-      if (concerns === 0) status = 'approved';
-      else note = `Not made yet: ${concerns === 1 ? 'one block' : `${concerns} blocks`} may break a rule. Read them, then approve.`;
+      // Only what the person asked for is asked about; a visual CIP merely suggested is let go.
+      for (const b of blocks) if (brollAsked(b) && !b.brollWanted) b.brollSkipped = true;
+      const waiting = blocks.filter(brollAsked).length;
+      if (concerns === 0 && waiting === 0) status = 'approved';
+      else if (concerns > 0) note = `Not made yet: ${concerns === 1 ? 'one block' : `${concerns} blocks`} may break a rule. Read them, then approve.`;
+      else note = `Not made yet: your plan asks for b-roll in ${waiting === 1 ? 'one place' : `${waiting} places`}. Choose or upload it below, then approve.`;
     }
 
     await withCompanyScope(scope, (tx) => tx`
@@ -378,7 +478,7 @@ async function chooseFootage(
   scope: CompanyScope,
   blocks: EditBlock[],
   provided: { fileId: string; fileName: string }[],
-  sourceId: string,
+  notBroll: Set<string>,
 ): Promise<void> {
   if (provided.length > 0) {
     const left = new Map(provided.map((p) => [p.fileId, p]));
@@ -403,7 +503,7 @@ async function chooseFootage(
   for (const b of blocks) {
     if (!b.visuals.trim()) continue;
     const hit = (await searchAssets(scope, b.visuals, 12).catch(() => []))
-      .find((h) => h.mimeType.startsWith('video/') && h.fileId !== sourceId);
+      .find((h) => h.mimeType.startsWith('video/') && !notBroll.has(h.fileId));
     b.suggestion = hit ? { fileId: hit.fileId, fileName: hit.fileName } : null;
   }
 }
@@ -426,7 +526,7 @@ export async function updatePlan(scope: CompanyScope, id: string, plan: EditPlan
     cuts: (plan.cuts ?? []).map(span).filter((c): c is NonNullable<typeof c> => c !== null)
       .map((c) => ({ from: c.from, to: c.to, reason: String(c.reason ?? '').slice(0, 120) })),
     blocks: (plan.blocks ?? []).map(span)
-      .filter((b): b is NonNullable<typeof b> => b !== null && Boolean(String(b.heading ?? '').trim()))
+      .filter((b): b is NonNullable<typeof b> => b !== null && (Boolean(String(b.heading ?? '').trim()) || Boolean(b.footage) || Boolean(b.brollWanted)))
       .map((b) => ({
         heading: String(b.heading).trim().slice(0, 80),
         bullets: (Array.isArray(b.bullets) ? b.bullets : []).map((x) => String(x).trim().slice(0, 90)).filter(Boolean).slice(0, 5),
@@ -436,10 +536,12 @@ export async function updatePlan(scope: CompanyScope, id: string, plan: EditPlan
         footage: b.footage && UUID.test(b.footage.fileId) ? { fileId: b.footage.fileId, fileName: String(b.footage.fileName ?? '') } : null,
         suggestion: b.suggestion && UUID.test(b.suggestion.fileId) ? { fileId: b.suggestion.fileId, fileName: String(b.suggestion.fileName ?? '') } : null,
         brollSkipped: Boolean(b.brollSkipped) && !b.footage,
+        brollWanted: Boolean(b.brollWanted),
         concern: b.concern ?? null,
         rules: Array.isArray(b.rules) ? b.rules : [],
       })),
   };
+  clean.description = typeof plan.description === 'string' ? plan.description.trim().slice(0, 5_000) || null : null;
   if (!clean.title) throw new VideoEditRejected('The film needs a title.');
   const footage = clean.blocks.flatMap((b) => (b.footage ? [b.footage.fileId] : []));
   const known = new Map((await videosIn(scope, footage)).map((f) => [f.fileId, f.fileName]));
@@ -515,7 +617,7 @@ export async function renderEdit(scope: CompanyScope, id: string): Promise<void>
     doctorTitle: row.doctor_title,
     hospitalLine: row.hospital_line,
     cuts: row.plan.cuts,
-    blocks: row.plan.blocks.map((b) => ({ heading: b.heading, bullets: b.bullets, from: b.from, to: b.to })),
+    blocks: row.plan.blocks.filter((b) => b.heading.trim()).map((b) => ({ heading: b.heading, bullets: b.bullets, from: b.from, to: b.to })),
     broll,
     // Only the hospital's own wording: CIP never writes a disclaimer.
     disclaimer: template.disclaimerText ? { text: template.disclaimerText, seconds: template.disclaimerSeconds } : null,
@@ -584,8 +686,17 @@ export async function renderApprovedEdits(options: { outOfTime: () => boolean })
   }
 }
 
-/** The recordings a film can be made from: the company's videos, newest first. */
-export async function listRecordings(scope: CompanyScope): Promise<{ id: string; name: string; sizeBytes: number; createdAt: string }[]> {
+/**
+ * The recordings a film can be made from: the company's videos, newest first.
+ * The hospital's end screens are left out unless asked for - they are never a
+ * recording or b-roll.
+ */
+export async function listRecordings(
+  scope: CompanyScope,
+  options: { endScreens?: boolean } = {},
+): Promise<{ id: string; name: string; sizeBytes: number; createdAt: string }[]> {
+  const template = options.endScreens ? null : await getTemplate(scope);
+  const hidden = [template?.endVideoFileId, template?.endVideoVerticalFileId].filter((x): x is string => Boolean(x));
   const rows = await withCompanyScope(scope, (tx) => tx<{ id: string; name: string; file_size: string; created_at: Date }[]>`
     select id, name, file_size, created_at from drive_files
      where company_id = ${scope.companyId} and archived_at is null and bytes_retained
@@ -593,5 +704,7 @@ export async function listRecordings(scope: CompanyScope): Promise<{ id: string;
      order by created_at desc
      limit 200
   `);
-  return rows.map((r) => ({ id: r.id, name: r.name, sizeBytes: Number(r.file_size), createdAt: r.created_at.toISOString() }));
+  return rows
+    .filter((r) => !hidden.includes(r.id))
+    .map((r) => ({ id: r.id, name: r.name, sizeBytes: Number(r.file_size), createdAt: r.created_at.toISOString() }));
 }

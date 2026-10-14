@@ -53,6 +53,7 @@ import type {
   FilingsDigest,
   VideoPlan,
   VideoPlanInput,
+  EditBrief,
   ReviewVerdict,
   VideoSequence,
 } from './types';
@@ -599,6 +600,45 @@ const VIDEO_PLAN_SCHEMA = {
           concern: { type: ['string', 'null'] },
           ruleRefs: { type: 'array', items: { type: 'string' } },
         },
+      },
+    },
+  },
+} as const;
+
+const EDIT_BRIEF_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['start', 'end', 'doctorName', 'doctorTitle', 'hospitalLine', 'title', 'description', 'blocks', 'broll'],
+  properties: {
+    start: { type: ['number', 'null'] },
+    end: { type: ['number', 'null'] },
+    doctorName: { type: ['string', 'null'] },
+    doctorTitle: { type: ['string', 'null'] },
+    hospitalLine: { type: ['string', 'null'] },
+    title: { type: ['string', 'null'] },
+    description: { type: ['string', 'null'] },
+    blocks: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['heading', 'bullets', 'from', 'to', 'visuals'],
+        properties: {
+          heading: { type: 'string' },
+          bullets: { type: 'array', items: { type: 'string' } },
+          from: { type: ['number', 'null'] },
+          to: { type: ['number', 'null'] },
+          visuals: { type: 'string' },
+        },
+      },
+    },
+    broll: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['from', 'to', 'note'],
+        properties: { from: { type: ['number', 'null'] }, to: { type: ['number', 'null'] }, note: { type: 'string' } },
       },
     },
   },
@@ -1417,6 +1457,62 @@ export class OpenAIBrainProvider implements BrainProvider {
 
     const { parsed, usage } = await this.call<{ concepts: ConceptDraft[] }>(content, IDEAS_SCHEMA, 'campaign_concepts', 5_000);
     return { concepts: Array.isArray(parsed.concepts) ? parsed.concepts : [], usage };
+  }
+
+  async readEditBrief(text: string): Promise<EditBrief> {
+    const { parsed, usage } = await this.call<Omit<EditBrief, 'usage'>>(
+      [
+        {
+          type: 'text',
+          text:
+            'Below is an edit brief a video team wrote for a doctor\'s recording, in their own shorthand. Split ' +
+            'it into its parts. You copy; you never write, reword, translate, correct or add. Every string you ' +
+            'return must appear in the brief exactly as written, apart from dropping labels, bullets and brackets.\n\n' +
+            'Times: "0:17", "00:17" or "0:17 - 0:20" are minutes:seconds in the raw recording; return seconds.\n' +
+            '- start / end: where the film starts and ends ("Start - 0:02", "End - 0:31", "trim to"). A note in ' +
+            'brackets after it, such as what is said there, is not on-screen text. Null when not said.\n' +
+            '- doctorName, doctorTitle, hospitalLine: the name plate, when the brief gives it (a name such as ' +
+            '"Dr ...", the designation under it, and a hospital or "Hospital | City" line). Null when not given.\n' +
+            '- title: the film\'s title as written ("Title - ..."), without the label. Null when none.\n' +
+            '- description: text meant to be posted with the film - a description, caption or synopsis - copied ' +
+            'whole, without its label or wrapping brackets. Never put on screen. Null when none.\n' +
+            '- blocks: text meant to appear on screen, in order: heading is its first line, bullets the lines ' +
+            'under it (a list such as "Get support from / Obstetrician / Paediatrician" is heading plus bullets). ' +
+            'from/to its time when given, else null. visuals: what to show while it is up, when the brief says, ' +
+            'else "". The name plate, the title, the description and the trims are not blocks.\n' +
+            '- broll: where the brief asks for b-roll, footage or a cutaway with no text of its own (e.g. ' +
+            '"0:17 - 0:20 (slide 1) B-roll"): from/to and a note of what it should show, from the brief ("slide ' +
+            '1"), or "" when nothing is said.\n' +
+            'Labels such as "Raw File", "Start", "End", "Title", "B-roll", "OST" are instructions, not text.\n\n' +
+            `Brief:\n${text}`,
+        },
+      ],
+      EDIT_BRIEF_SCHEMA,
+      'edit_brief',
+      6_000,
+    );
+    const seconds = (n: unknown) => (typeof n === 'number' && Number.isFinite(n) && n >= 0 ? n : null);
+    const words = (s: unknown) => (typeof s === 'string' && s.trim() ? s.trim() : null);
+    return {
+      start: seconds(parsed.start),
+      end: seconds(parsed.end),
+      doctorName: words(parsed.doctorName),
+      doctorTitle: words(parsed.doctorTitle),
+      hospitalLine: words(parsed.hospitalLine),
+      title: words(parsed.title),
+      description: words(parsed.description),
+      blocks: (Array.isArray(parsed.blocks) ? parsed.blocks : []).slice(0, 24).map((b) => ({
+        heading: String(b.heading ?? '').trim(),
+        bullets: (Array.isArray(b.bullets) ? b.bullets : []).map((x) => String(x).trim()).filter(Boolean),
+        from: seconds(b.from),
+        to: seconds(b.to),
+        visuals: String(b.visuals ?? '').trim(),
+      })),
+      broll: (Array.isArray(parsed.broll) ? parsed.broll : []).slice(0, 24).map((b) => ({
+        from: seconds(b.from), to: seconds(b.to), note: String(b.note ?? '').trim(),
+      })),
+      usage,
+    };
   }
 
   async planVideoEdit(input: VideoPlanInput): Promise<VideoPlan> {

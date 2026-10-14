@@ -179,6 +179,13 @@ export class FakeGoogleDrive implements GoogleDriveApi {
     return { files: page.map((f) => ({ ...f })), nextPageToken: next };
   }
 
+  async listVideos(): Promise<GoogleFile[]> {
+    this.check();
+    return [...this.folders.values()].flatMap((f) => [...f.values()])
+      .filter((f) => f.mimeType.startsWith('video/') && !f.trashed)
+      .map((f) => ({ ...f }));
+  }
+
   async getFile(accessToken: string, fileId: string): Promise<GoogleFile> {
     this.check();
     // The service account sees only what was shared with it, as in Drive.

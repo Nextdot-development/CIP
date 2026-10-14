@@ -415,3 +415,5 @@ a.gtag:hover { color: var(--ink-900); border-color: var(--ink-400); }
 .video-block { display: grid; gap: 6px; margin-top: 10px; padding: 10px; border: 1px solid var(--ink-100); border-radius: var(--r-sm); }
 .video-block.has-concern { border-left: 3px solid var(--warn-500, #d97706); }
 .video-block .video-heading { font-weight: 600; }
+.video-check { grid-column: 1 / -1; display: flex; gap: 8px; align-items: flex-start; }
+.video-check input { margin-top: 3px; }

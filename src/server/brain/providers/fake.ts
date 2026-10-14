@@ -28,6 +28,7 @@ import type {
   FilingsDigest,
   VideoPlan,
   VideoPlanInput,
+  EditBrief,
   ReviewVerdict,
   FramesCheckAnalysis,
   FramesCheckInput,
@@ -150,6 +151,7 @@ export class FakeBrainProvider implements BrainProvider {
     this.lastCheckInput = null;
     this.lastBriefInput = null;
     this.videoPlan = null;
+    this.editBrief = null;
     this.frameTexts = null;
     this.frameReadFails = false;
     this.reviewVerdicts = null;
@@ -595,6 +597,21 @@ export class FakeBrainProvider implements BrainProvider {
         frame: this.reviewPlaces?.[i]?.frame ?? 0,
         box: this.reviewPlaces?.[i]?.box ?? [],
       })),
+      usage: { durationMs: 1 },
+    };
+  }
+
+  /** What the next brief reads as; read with the plain parser when unset. */
+  editBrief: Omit<EditBrief, 'usage'> | null = null;
+
+  async readEditBrief(text: string): Promise<EditBrief> {
+    this.check();
+    const { parseGivenPlan } = await import('../../video/givenPlan');
+    return {
+      ...(this.editBrief ?? {
+        start: null, end: null, doctorName: null, doctorTitle: null, hospitalLine: null, title: null, description: null,
+        blocks: parseGivenPlan(text), broll: [],
+      }),
       usage: { durationMs: 1 },
     };
   }

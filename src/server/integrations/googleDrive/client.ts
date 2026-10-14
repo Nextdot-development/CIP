@@ -98,10 +98,12 @@ export interface GoogleDriveApi {
    * "Assets" is which.
    */
   listFolders(accessToken: string): Promise<PickableFolder[]>;
+  /** The newest videos anywhere this account can read, for somebody to pick one. */
+  listVideos(accessToken: string): Promise<GoogleFile[]>;
   /** Metadata for one file, used to confirm a folder exists and is readable. */
   getFile(accessToken: string, fileId: string): Promise<GoogleFile>;
-  /** Downloads a binary file as-is. */
-  download(accessToken: string, fileId: string): Promise<Buffer>;
+  /** Downloads a binary file as-is, up to maxBytes (the sync's own limit when not given). */
+  download(accessToken: string, fileId: string, maxBytes?: number): Promise<Buffer>;
   /** Exports a Google-native document to a format the extractor understands. */
   exportFile(accessToken: string, fileId: string, mimeType: string): Promise<Buffer>;
 }
@@ -367,6 +369,23 @@ export class GoogleDriveClient implements GoogleDriveApi {
     };
   }
 
+  async listVideos(accessToken: string): Promise<GoogleFile[]> {
+    const params = new URLSearchParams({
+      q: "mimeType contains 'video/' and trashed = false",
+      fields: 'files(id, name, mimeType, modifiedTime, md5Checksum, size, trashed)',
+      orderBy: 'modifiedTime desc',
+      pageSize: '50',
+      supportsAllDrives: 'true',
+      includeItemsFromAllDrives: 'true',
+      corpora: 'allDrives',
+    });
+    const response = await this.fetchWithRetry(`${API}/files?${params}`, {
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+    const payload = (await response.json()) as { files?: Record<string, unknown>[] };
+    return (payload.files ?? []).map(toGoogleFile);
+  }
+
   async getFile(accessToken: string, fileId: string): Promise<GoogleFile> {
     const params = new URLSearchParams({
       fields: 'id, name, mimeType, modifiedTime, md5Checksum, size, trashed',
@@ -381,12 +400,12 @@ export class GoogleDriveClient implements GoogleDriveApi {
     return toGoogleFile((await response.json()) as Record<string, unknown>);
   }
 
-  async download(accessToken: string, fileId: string): Promise<Buffer> {
+  async download(accessToken: string, fileId: string, maxBytes?: number): Promise<Buffer> {
     const response = await this.fetchWithRetry(
       `${API}/files/${encodeURIComponent(fileId)}?alt=media&supportsAllDrives=true`,
       { headers: { authorization: `Bearer ${accessToken}` } },
     );
-    return this.readBody(response);
+    return this.readBody(response, maxBytes);
   }
 
   async exportFile(accessToken: string, fileId: string, mimeType: string): Promise<Buffer> {
@@ -398,11 +417,11 @@ export class GoogleDriveClient implements GoogleDriveApi {
     return this.readBody(response);
   }
 
-  private async readBody(response: Response): Promise<Buffer> {
+  private async readBody(response: Response, maxBytes?: number): Promise<Buffer> {
     // Content-Length first, when Google sends one. Refusing before reading the
     // body is the difference between declining a 200 MB file and holding it in
     // memory in order to decline it.
-    const limit = maxDownloadBytes();
+    const limit = maxBytes ?? maxDownloadBytes();
     const declared = Number(response.headers.get('content-length'));
     if (Number.isFinite(declared) && declared > limit) {
       throw new GoogleDriveTooLarge(declared, limit);

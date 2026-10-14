@@ -568,7 +568,34 @@ export interface BrainProvider {
    * their times, the doctor's name and the rules - nothing else.
    */
   planVideoEdit(input: VideoPlanInput): Promise<VideoPlan>;
+
+  /**
+   * Reads an edit brief a person wrote in their own words - trims, the name
+   * plate, the title, timed on-screen text, b-roll slots, the description -
+   * into its parts. Copies; never writes. CIP checks every on-screen line
+   * against the brief afterwards and drops any that is not in it.
+   */
+  readEditBrief(text: string): Promise<EditBrief>;
 }
+
+/** A person's edit brief, in parts. Times are in the raw recording, in seconds. */
+export type EditBrief = {
+  /** Where the film starts and ends in the raw recording, when the brief says. */
+  start: number | null;
+  end: number | null;
+  doctorName: string | null;
+  doctorTitle: string | null;
+  hospitalLine: string | null;
+  /** The film's title as written, for the screen. */
+  title: string | null;
+  /** Text to post with the film - never put on screen. */
+  description: string | null;
+  /** On-screen text, as written. */
+  blocks: { heading: string; bullets: string[]; from: number | null; to: number | null; visuals: string }[];
+  /** Where the brief asks for b-roll, and what of. */
+  broll: { from: number | null; to: number | null; note: string }[];
+  usage: BrainUsage;
+};
 
 /** What a market signal is about. A closed list, so the page can group them. */
 export const MARKET_SIGNAL_KINDS = [

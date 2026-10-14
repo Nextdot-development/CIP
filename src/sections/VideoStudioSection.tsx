@@ -46,6 +46,10 @@ export function VideoStudioSection() {
   const [form, setForm] = useState(EMPTY);
   const [planning, setPlanning] = useState(false);
   const [uploading, setUploading] = useState<'recording' | 'broll' | null>(null);
+  // Which list a Google Drive pick goes into, while the picker is open.
+  const [picking, setPicking] = useState<'recording' | 'broll' | null>(null);
+  // "Make it straight away" follows the plan box until a person sets it.
+  const [autoTouched, setAutoTouched] = useState(false);
 
   const load = useCallback(async () => {
     const [e, r] = await Promise.all([
@@ -66,6 +70,14 @@ export function VideoStudioSection() {
   }, [busy, load]);
   const open = edits.find((e) => e.id === openId) ?? null;
 
+  /** A video now in the workspace joins the lists, and is chosen. */
+  const take = (added: { id: string; name: string }[], kind: 'recording' | 'broll') => {
+    setRecordings((r) => [...added, ...r.filter((x) => !added.some((a) => a.id === x.id))]);
+    setForm((f) => kind === 'recording'
+      ? { ...f, fileId: added[0]!.id }
+      : { ...f, brollIds: [...new Set([...f.brollIds, ...added.map((a) => a.id)])] });
+  };
+
   /** Uploads to the workspace's files; the new videos join the lists here. */
   const upload = async (files: File[], kind: 'recording' | 'broll') => {
     setUploading(kind);
@@ -79,11 +91,7 @@ export function VideoStudioSection() {
         if (!res?.ok || !body?.id) { note(body?.message ?? `${file.name} could not be uploaded.`); continue; }
         added.push({ id: body.id, name: body.name ?? file.name });
       }
-      if (added.length === 0) return;
-      setRecordings((r) => [...added, ...r.filter((x) => !added.some((a) => a.id === x.id))]);
-      setForm((f) => kind === 'recording'
-        ? { ...f, fileId: added[0]!.id }
-        : { ...f, brollIds: [...f.brollIds, ...added.map((a) => a.id)] });
+      if (added.length > 0) take(added, kind);
     } finally {
       setUploading(null);
     }
@@ -99,6 +107,7 @@ export function VideoStudioSection() {
       if (body.edit.status === 'approved') note('Planned and sent to be made. It appears below when ready.');
       setOpenId(body.edit.id);
       setForm(EMPTY);
+      setAutoTouched(false);
       await load();
     } finally {
       setPlanning(false);
@@ -111,9 +120,9 @@ export function VideoStudioSection() {
         <p className="eyebrow">Video Studio</p>
         <h1>Doctor recordings into finished films</h1>
         <p className="lede">
-          Choose a recording. CIP cuts the fumbles, writes the on-screen text block by block (or uses yours, word for word), places
-          your b-roll and checks every block against your rules. Any block still needing b-roll is asked about. You read the plan and
-          approve it before the film is made.
+          Choose a recording - from here, your computer or Google Drive. Paste your own plan and CIP makes the film from it word for
+          word, asking only for b-roll it does not have. Leave the plan empty and CIP writes it - cutting the fumbles and checking every
+          block against your rules - for you to read and approve.
         </p>
       </header>
 
@@ -127,23 +136,31 @@ export function VideoStudioSection() {
               <option value="">Choose a recording…</option>
               {recordings.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
             </select>
-            <label className="btn btn-sm" title="Upload the doctor's recording">
+            <label className="btn btn-sm" title="Upload the doctor's recording from this computer">
               {uploading === 'recording' ? 'Uploading…' : 'Upload'}
               <input type="file" accept="video/*" hidden disabled={uploading !== null}
                 onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) void upload([f], 'recording'); }} />
             </label>
+            <button type="button" className="btn btn-sm" onClick={() => setPicking(picking === 'recording' ? null : 'recording')}>
+              Google Drive
+            </button>
           </div>
-          <input className="field-input" placeholder="Doctor's name, e.g. Dr. A. Kumar" value={form.doctorName}
+          {picking && (
+            <GooglePicker kind={picking} onClose={() => setPicking(null)}
+              onPicked={(file) => { take([file], picking); setPicking(null); }} />
+          )}
+          <input className="field-input" placeholder={form.givenPlan.trim() ? "Doctor's name (or as in your plan)" : "Doctor's name, e.g. Dr. A. Kumar"} value={form.doctorName}
             onChange={(e) => setForm({ ...form, doctorName: e.target.value })} />
           <input className="field-input" placeholder="Designation, e.g. Senior Consultant – Cardiology (optional)" value={form.doctorTitle}
             onChange={(e) => setForm({ ...form, doctorTitle: e.target.value })} />
           <input className="field-input" placeholder="Hospital | City, e.g. Narayana Health City | Bengaluru (optional)" value={form.hospitalLine}
             onChange={(e) => setForm({ ...form, hospitalLine: e.target.value })} />
           <label className="tiny muted video-wide">
-            Your plan (optional) — paste the OST table, or write a block a paragraph: [00:12–00:40] a heading line, then a point a line,
-            then &quot;Visuals: …&quot;. It goes on screen exactly as written; CIP only fits it to the recording. Leave empty and CIP writes it.
-            <textarea className="field-input" rows={4} value={form.givenPlan}
-              onChange={(e) => setForm({ ...form, givenPlan: e.target.value })} />
+            Your plan (optional) — paste it as you write it for the editor: start and end times, the name plate, the title, timed
+            on-screen text, where b-roll goes, the description. Or paste the OST table. Your words go on screen exactly as written. Leave
+            empty and CIP writes the plan.
+            <textarea className="field-input" rows={6} value={form.givenPlan}
+              onChange={(e) => setForm({ ...form, givenPlan: e.target.value, autoMake: autoTouched ? form.autoMake : Boolean(e.target.value.trim()) })} />
           </label>
           <div className="tiny muted video-wide">
             <span className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -153,6 +170,9 @@ export function VideoStudioSection() {
                 <input type="file" accept="video/*" multiple hidden disabled={uploading !== null}
                   onChange={(e) => { const f = [...(e.target.files ?? [])]; e.target.value = ''; if (f.length) void upload(f, 'broll'); }} />
               </label>
+              <button type="button" className="btn btn-sm" onClick={() => setPicking(picking === 'broll' ? null : 'broll')}>
+                B-roll from Google Drive
+              </button>
             </span>
             {recordings.length > 1 && (
               <div className="video-picks">
@@ -167,14 +187,20 @@ export function VideoStudioSection() {
               </div>
             )}
           </div>
-          <label className="small video-wide">
-            <input type="checkbox" checked={form.autoMake} onChange={(e) => setForm({ ...form, autoMake: e.target.checked })} />
-            {' '}Make the film straight away — skip the review. Blocks without b-roll keep the doctor on screen. If a block may break a
-            rule, it still stops for you.
+          <label className="small video-check">
+            <input type="checkbox" checked={form.autoMake}
+              onChange={(e) => { setAutoTouched(true); setForm({ ...form, autoMake: e.target.checked }); }} />
+            <span>
+              Make the film straight away — no review step. It stops only to ask for b-roll your plan wants and you have not given,
+              or if a block may break a rule.
+            </span>
           </label>
-          <button type="button" className="btn btn-primary btn-sm" disabled={planning || !form.fileId || !form.doctorName.trim()}
+          <button type="button" className="btn btn-primary btn-sm"
+            disabled={planning || !form.fileId || (!form.doctorName.trim() && !form.givenPlan.trim())}
             onClick={() => void plan()}>
-            {planning ? 'Listening and planning… about a minute' : form.autoMake ? 'Make the film' : 'Plan the edit'}
+            {planning
+              ? form.givenPlan.trim() ? 'Reading your plan and fitting it to the recording…' : 'Listening and planning… about a minute'
+              : form.autoMake ? 'Make the film' : 'Plan the edit'}
           </button>
         </div>
         <p className="tiny muted">Upload here, or add videos to your Drive folder and they appear in these lists.</p>
@@ -302,11 +328,17 @@ function PlanEditor({ edit, footage, onChanged }: {
                 onClick={() => setPlan({ ...plan, blocks: plan.blocks.filter((_, j) => j !== i) })}>Remove</button>
             )}
           </div>
-          <input className="field-input video-heading" value={b.heading} disabled={locked}
-            onChange={(e) => setBlock(i, { heading: e.target.value })} />
-          <textarea className="field-input" rows={Math.max(2, b.bullets.length)} disabled={locked}
-            value={b.bullets.join('\n')} placeholder="One pointer a line"
-            onChange={(e) => setBlock(i, { bullets: e.target.value.split('\n') })} />
+          {b.heading || b.bullets.length > 0 ? (
+            <>
+              <input className="field-input video-heading" value={b.heading} disabled={locked}
+                onChange={(e) => setBlock(i, { heading: e.target.value })} />
+              <textarea className="field-input" rows={Math.max(2, b.bullets.length)} disabled={locked}
+                value={b.bullets.join('\n')} placeholder="One pointer a line"
+                onChange={(e) => setBlock(i, { bullets: e.target.value.split('\n') })} />
+            </>
+          ) : (
+            <p className="small strong" style={{ margin: 0 }}>B-roll only — no text on screen</p>
+          )}
           {brollAsked(b) && !locked ? (
             <div className="video-broll">
               <span className="tiny strong">B-roll needed: {b.visuals}</span>
@@ -341,6 +373,20 @@ function PlanEditor({ edit, footage, onChanged }: {
         </div>
       ))}
 
+      {(plan.description || edit.givenPlan) && (
+        <>
+          <div className="row" style={{ justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
+            <p className="small strong video-head">Description to post with the film</p>
+            {plan.description && (
+              <button type="button" className="linkbtn tiny"
+                onClick={() => void navigator.clipboard?.writeText(plan.description ?? '').then(() => note('Copied'))}>Copy</button>
+            )}
+          </div>
+          <textarea className="field-input" rows={4} disabled={locked} value={plan.description ?? ''}
+            placeholder="None in your plan" onChange={(e) => setPlan({ ...plan, description: e.target.value })} />
+        </>
+      )}
+
       <p className="small strong video-head">Cut out ({plan.cuts.length})</p>
       {plan.cuts.length === 0 && <p className="tiny muted">Nothing to cut.</p>}
       {plan.cuts.map((c, i) => (
@@ -366,6 +412,67 @@ function PlanEditor({ edit, footage, onChanged }: {
   );
 }
 
+/** The newest videos in the connected Google Drive; one click brings one in. */
+function GooglePicker({ kind, onPicked, onClose }: {
+  kind: 'recording' | 'broll'; onPicked: (file: { id: string; name: string }) => void; onClose: () => void;
+}) {
+  const { note } = useToast();
+  const [list, setList] = useState<{ connected: boolean; videos: { id: string; name: string; sizeBytes: number | null; modifiedAt: string | null }[] } | null>(null);
+  const [bringing, setBringing] = useState<string | null>(null);
+  const [query, setQuery] = useState('');
+  // Looked up once, when the picker opens.
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    void send<NonNullable<typeof list>>('/api/video/google').then((b) => {
+      if (failed(b)) setError(b.message); else setList(b);
+    });
+  }, []);
+
+  const pick = async (id: string) => {
+    setBringing(id);
+    try {
+      const body = await send<{ file: { id: string; name: string } }>('/api/video/google', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }),
+      });
+      if (failed(body)) { note(body.message); return; }
+      onPicked(body.file);
+    } finally {
+      setBringing(null);
+    }
+  };
+  const shown = (list?.videos ?? []).filter((v) => v.name.toLowerCase().includes(query.trim().toLowerCase()));
+  const mb = (n: number | null) => (n === null ? '' : ` · ${(n / 1024 / 1024).toFixed(n > 100 * 1024 * 1024 ? 0 : 1)} MB`);
+
+  return (
+    <div className="video-broll video-wide">
+      <div className="row" style={{ justifyContent: 'space-between', gap: 8 }}>
+        <span className="tiny strong">{kind === 'recording' ? 'Pick the recording' : 'Pick b-roll'} from Google Drive</span>
+        <button type="button" className="linkbtn tiny" onClick={onClose}>Close</button>
+      </div>
+      {error && <span className="tiny">{error}</span>}
+      {!list && !error && <span className="tiny muted">Looking in your Google Drive…</span>}
+      {list && !list.connected && (
+        <span className="tiny">Google Drive is not connected. Connect it from <a href="/teach">Add data to brain</a>, then come back.</span>
+      )}
+      {list?.connected && (
+        <>
+          <input className="field-input" placeholder="Search by name" value={query} onChange={(e) => setQuery(e.target.value)} />
+          {shown.length === 0 && <span className="tiny muted">No videos found.</span>}
+          <div className="video-picks" style={{ flexDirection: 'column', flexWrap: 'nowrap' }}>
+            {shown.map((v) => (
+              <button key={v.id} type="button" className="linkbtn tiny" style={{ textAlign: 'left' }} disabled={bringing !== null}
+                onClick={() => void pick(v.id)}>
+                {bringing === v.id ? 'Bringing it in…' : v.name}
+                <span className="muted">{mb(v.sizeBytes)}{v.modifiedAt ? ` · ${new Date(v.modifiedAt).toLocaleDateString()}` : ''}</span>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 /** The fixed frames around every film. */
 function TemplateCard() {
   const { note } = useToast();
@@ -374,7 +481,7 @@ function TemplateCard() {
   const [saving, setSaving] = useState(false);
   useEffect(() => {
     void send<{ template: VideoTemplateDTO }>('/api/video/template').then((b) => { if (!failed(b)) setT(b.template); });
-    void send<{ recordings: { id: string; name: string }[] }>('/api/video/recordings').then((b) => { if (!failed(b)) setVideos(b.recordings); });
+    void send<{ recordings: { id: string; name: string }[] }>('/api/video/recordings?endScreens=1').then((b) => { if (!failed(b)) setVideos(b.recordings); });
   }, []);
   if (!t) return null;
 
