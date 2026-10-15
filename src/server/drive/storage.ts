@@ -85,8 +85,9 @@ const SAFE_KEY = new RegExp(
     // A frame a video check was judged on, kept small so a flag can show the
     // moment it is about. Numbered, never named: 1 to 99, nothing a caller chose.
     `|check-frames\\/${UUID}\\/(?:[1-9]|[1-9][0-9])` +
-    // A finished film from the video editor, named by its edit.
-    `|video-edits\\/${UUID}` +
+    // A finished film from the video editor, named by its edit - and what is
+    // made with it, each a fixed word after the id, nothing a caller chose.
+    `|video-edits\\/${UUID}(?:-(?:vertical|thumbnail|preview|waveform))?` +
     `)${EXTENSION}$`,
   'i',
 );

@@ -1,5 +1,5 @@
 import { noStore, withBrainScope } from '@/server/brain/http';
-import { approveEdit, deleteEdit, getEdit, updatePlan } from '@/server/video/edit';
+import { approveEdit, deleteEdit, getEdit, previewEdit, updatePlan } from '@/server/video/edit';
 import type { EditPlan } from '@/server/video/edit';
 import { pumpInBackground } from '@/server/jobs/pump';
 
@@ -18,12 +18,13 @@ export async function GET(_request: Request, { params }: Params) {
   });
 }
 
-/** PATCH { plan } - a person's changes to the plan. */
+/** PATCH { plan, makeVertical? } - a person's changes to the plan. */
 export async function PATCH(request: Request, { params }: Params) {
   return withBrainScope(async (scope) => {
-    const body = (await request.json().catch(() => ({}))) as { plan?: EditPlan };
+    const body = (await request.json().catch(() => ({}))) as { plan?: EditPlan; makeVertical?: unknown };
     if (!body.plan) return Response.json({ error: 'rejected', message: 'Send the plan.' }, { status: 422, headers: noStore });
-    return Response.json({ edit: await updatePlan(scope, (await params).id, body.plan) }, { headers: noStore });
+    const makeVertical = typeof body.makeVertical === 'boolean' ? body.makeVertical : undefined;
+    return Response.json({ edit: await updatePlan(scope, (await params).id, body.plan, { makeVertical }) }, { headers: noStore });
   });
 }
 
@@ -35,10 +36,16 @@ export async function DELETE(_request: Request, { params }: Params) {
   });
 }
 
-/** POST { action: "approve" } - the plan is read; make the film. */
+/**
+ * POST { action: "approve" } - the plan is read; make the film.
+ * POST { action: "preview" } - a quick rough cut of the plan as it stands, made now.
+ */
+export const maxDuration = 300;
+
 export async function POST(request: Request, { params }: Params) {
   return withBrainScope(async (scope) => {
     const body = (await request.json().catch(() => ({}))) as { action?: unknown };
+    if (body.action === 'preview') return Response.json({ edit: await previewEdit(scope, (await params).id) }, { headers: noStore });
     if (body.action !== 'approve') return Response.json({ error: 'rejected', message: 'Unknown action.' }, { status: 422, headers: noStore });
     const edit = await approveEdit(scope, (await params).id);
     // Made by the next pump pass; nudged now so nobody waits a quarter of an hour.

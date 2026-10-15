@@ -143,3 +143,89 @@ export function mergeCuts<T extends Span & { reason: string }>(cuts: readonly T[
   }
   return merged;
 }
+
+/**
+ * Retakes, as cuts: a run of words said again a few seconds later - the
+ * doctor starting a sentence over. The earlier take goes, up to where the
+ * later one begins; the last take is the one kept. Fillers are ignored
+ * when comparing, so "the uh the baby" still matches "the baby".
+ */
+export function retakeCuts(words: readonly { w: string; from: number; to: number }[]): (Span & { reason: string })[] {
+  const said = words
+    .map((w) => ({ t: bare(w.w), from: w.from }))
+    .filter((w) => w.t && !FILLER.test(w.t));
+  const cuts: (Span & { reason: string })[] = [];
+  for (let i = 0; i < said.length; i++) {
+    for (let j = i + 2; j < said.length && said[j]!.from - said[i]!.from <= 10; j++) {
+      let n = 0;
+      while (i + n < j && j + n < said.length && said[i + n]!.t === said[j + n]!.t) n++;
+      const chars = said.slice(i, i + n).reduce((c, w) => c + w.t.length, 0);
+      if (n >= 3 || (n === 2 && chars >= 8)) {
+        cuts.push({ from: said[i]!.from, to: said[j]!.from, reason: 'Retake' });
+        i = j - 1;
+        break;
+      }
+    }
+  }
+  return cuts;
+}
+
+/**
+ * Each cut's edges moved to the quietest moment close by - inward only, so a
+ * cut can shrink into the quiet but never grow into the word either side of
+ * it. `loudness` is the sound's level in steps of `step` seconds. The start
+ * of the recording and its end stay put.
+ */
+export function snapCuts<T extends Span>(cuts: readonly T[], loudness: ArrayLike<number>, step: number, duration: number): T[] {
+  const quietest = (lo: number, hi: number, fallback: number) => {
+    const a = Math.max(0, Math.floor(lo / step));
+    const b = Math.min(loudness.length - 1, Math.ceil(hi / step));
+    if (b <= a) return fallback;
+    let best = a;
+    for (let k = a; k <= b; k++) if (loudness[k]! < loudness[best]!) best = k;
+    return (best + 0.5) * step;
+  };
+  return cuts.map((c) => {
+    const from = c.from <= 0.01 ? c.from : quietest(c.from, c.from + 0.1, c.from);
+    const to = c.to >= duration - 0.01 ? c.to : quietest(c.to - 0.1, c.to, c.to);
+    return to > from ? { ...c, from, to } : c;
+  });
+}
+
+/**
+ * The captions, as an .srt: what the doctor says, fillers left out, timed to
+ * the finished film - after `offset` seconds of opening, with the cuts taken
+ * out. A caption is at most one line of 42 characters and five seconds, and
+ * breaks at the end of a sentence or a pause.
+ */
+export function captionsSrt(words: readonly { w: string; from: number; to: number }[], kept: readonly Span[], offset: number): string {
+  const heard = words
+    .filter((w) => !FILLER.test(bare(w.w)))
+    // A word mostly inside a cut is not in the film; one only clipped by it is.
+    .filter((w) => {
+      const end = Math.max(w.to, w.from + 0.05);
+      const inFilm = kept.reduce((n, k) => n + Math.max(0, Math.min(end, k.to) - Math.max(w.from, k.from)), 0);
+      return inFilm >= (end - w.from) * 0.5;
+    })
+    .map((w) => ({ w: w.w.trim(), from: toFilmTime(w.from, kept), to: toFilmTime(Math.max(w.to, w.from + 0.05), kept) }))
+    .filter((w) => Boolean(w.w));
+  const cues: { from: number; to: number; text: string; closed: boolean }[] = [];
+  for (const word of heard) {
+    const from = word.from + offset;
+    const to = word.to + offset;
+    const last = cues.at(-1);
+    if (last && !last.closed && last.text.length + 1 + word.w.length <= 42 && to - last.from <= 5 && from - last.to <= 0.8) {
+      last.to = to;
+      last.text = `${last.text} ${word.w}`;
+      last.closed = /[.!?]$/.test(word.w);
+    } else {
+      cues.push({ from, to, text: word.w, closed: /[.!?]$/.test(word.w) });
+    }
+  }
+  const stamp = (t: number) => {
+    const ms = Math.max(0, Math.round(t * 1000));
+    const p = (n: number, w = 2) => String(n).padStart(w, '0');
+    return `${p(Math.floor(ms / 3_600_000))}:${p(Math.floor(ms / 60_000) % 60)}:${p(Math.floor(ms / 1000) % 60)},${p(ms % 1000, 3)}`;
+  };
+  return cues.map((c, i) => `${i + 1}\n${stamp(c.from)} --> ${stamp(Math.max(c.to, c.from + 0.8))}\n${c.text}\n`).join('\n');
+}

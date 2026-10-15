@@ -3,9 +3,9 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readVideoMetadata, runFfmpeg } from '../brain/media';
-import { PANEL_LEFT, disclaimerCard, houseEndCard, housePanel, introCard, logoBadge, namePlate } from './cards';
+import { PANEL_LEFT, disclaimerCard, houseEndCard, housePanel, houseThumbnail, introCard, logoBadge, namePlate } from './cards';
 import type { HouseColours } from './cards';
-import { keptLength, keptSpans, toFilmSpan, toFilmTime } from './timeline';
+import { captionsSrt, keptLength, keptSpans, snapCuts, toFilmSpan, toFilmTime } from './timeline';
 import type { Span } from './timeline';
 
 /**
@@ -54,6 +54,25 @@ export type RenderInput = {
     tagline: string | null;
     seconds: number;
   };
+  /** 'vertical' makes a 9:16 Short from a horizontal recording, cropped to the doctor. */
+  shape?: 'source' | 'vertical';
+  /** A quick, small, rough cut to check before the film is made. */
+  preview?: boolean;
+  /** Every word with its time, for the captions. */
+  words?: { w: string; from: number; to: number }[];
+  /** The YouTube thumbnail, with this title. */
+  thumbnail?: { title: string } | null;
+};
+
+export type RenderResult = {
+  bytes: Buffer;
+  /** The film's shape as made. */
+  shape: 'horizontal' | 'vertical';
+  seconds: number;
+  /** The captions as an .srt, in the finished film's time. */
+  captions: string | null;
+  /** The YouTube thumbnail, 1280 x 720 PNG. */
+  thumbnail: Buffer | null;
 };
 
 const FPS = 30;
@@ -84,7 +103,9 @@ async function subjectAt(path: string, dir: string, from: number): Promise<numbe
   if (frames < 3) return 0.5;
   const energy = new Array<number>(W).fill(0);
   for (let f = 1; f < frames; f++) {
-    for (let y = 0; y < H; y++) {
+    // The upper part of the frame: the face moves as the doctor talks; the
+    // hands, lower down, wander wider than the doctor sits.
+    for (let y = 0; y < Math.round(H * 0.55); y++) {
       for (let x = 0; x < W; x++) {
         const i = y * W + x;
         energy[x]! += Math.abs(bytes[f * W * H + i]! - bytes[(f - 1) * W * H + i]!);
@@ -103,19 +124,55 @@ async function subjectAt(path: string, dir: string, from: number): Promise<numbe
   return sum > 0 ? weighted / sum / W : 0.5;
 }
 
-export async function renderFilm(input: RenderInput): Promise<{ bytes: Buffer; seconds: number }> {
+/**
+ * The sound's loudness every 10 ms, for placing cuts in the quiet. Empty when
+ * the recording has no sound.
+ */
+async function loudnessOf(path: string, dir: string): Promise<Float32Array> {
+  const raw = join(dir, 'sound.raw');
+  await runFfmpeg(['-i', path, '-vn', '-ac', '1', '-ar', '8000', '-f', 's16le', '-y', raw], 120_000).catch(() => {});
+  const bytes = await readFile(raw).catch(() => Buffer.alloc(0));
+  const per = 80;
+  const out = new Float32Array(Math.floor(bytes.length / 2 / per));
+  for (let k = 0; k < out.length; k++) {
+    let sum = 0;
+    for (let i = 0; i < per; i++) {
+      const v = bytes.readInt16LE((k * per + i) * 2);
+      sum += v * v;
+    }
+    out[k] = Math.sqrt(sum / per);
+  }
+  return out;
+}
+
+export async function renderFilm(input: RenderInput): Promise<RenderResult> {
   const dir = await mkdtemp(join(tmpdir(), 'cip-film-'));
   try {
     const sourcePath = join(dir, `source.${input.sourceExtension}`);
     await writeFile(sourcePath, input.source);
     const meta = await readVideoMetadata(sourcePath);
-    // The film keeps the recording's shape, capped at 1080 on its short side.
-    const scale = Math.min(1, 1080 / Math.min(meta.width ?? 1920, meta.height ?? 1080));
-    const size = { width: even((meta.width ?? 1920) * scale), height: even((meta.height ?? 1080) * scale) };
+    const srcW = meta.width ?? 1920;
+    const srcH = meta.height ?? 1080;
+    let subject: number | null = null;
+    const subjectX = async () => (subject ??= await subjectAt(sourcePath, dir, 0));
+
+    // The film keeps the recording's shape, capped at 1080 on its short side -
+    // or is a 1080 x 1920 Short cut from a horizontal recording. A preview is
+    // a third of the size.
+    const toVertical = input.shape === 'vertical' && srcW > srcH;
+    const fit1080 = Math.min(1, 1080 / Math.min(srcW, srcH));
+    const full = toVertical ? { width: 1080, height: 1920 } : { width: srcW * fit1080, height: srcH * fit1080 };
+    const shrink = input.preview ? 360 / Math.min(full.width, full.height) : 1;
+    const size = { width: even(full.width * shrink), height: even(full.height * shrink) };
     const vertical = size.height > size.width;
     const { width, height } = size;
+    const x264 = input.preview ? ['-preset', 'ultrafast', '-crf', '32'] : ['-preset', 'veryfast', '-crf', '21'];
 
-    const kept = keptSpans(meta.durationSeconds, input.cuts);
+    // Every cut's edges in the quietest moment close by.
+    const loudness = meta.hasAudio ? await loudnessOf(sourcePath, dir) : new Float32Array(0);
+    const cuts = loudness.length ? snapCuts(input.cuts, loudness, 0.01, meta.durationSeconds) : input.cuts;
+    const kept = keptSpans(meta.durationSeconds, cuts);
+    const openSeconds = (input.intro?.seconds ?? 0) + (input.disclaimer?.seconds ?? 0);
     const filmSeconds = keptLength(kept);
     const plateSeconds = vertical ? PLATE_SECONDS.vertical : PLATE_SECONDS.horizontal;
     const inputs: string[] = ['-i', sourcePath];
@@ -144,19 +201,31 @@ export async function renderFilm(input: RenderInput): Promise<{ bytes: Buffer; s
     };
 
     // 1. The recording, with its fumbles cut.
+    let fit = `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=white`;
+    if (toVertical) {
+      const cw = even(srcH * (9 / 16));
+      const cx = even(clamp((await subjectX()) * srcW - cw / 2, 0, srcW - cw));
+      fit = `crop=${cw}:${srcH}:${cx}:0,scale=${width}:${height}`;
+    }
     kept.forEach((span, i) => {
-      graph.push(
-        `[0:v]trim=start=${t3(span.from)}:end=${t3(span.to)},setpts=PTS-STARTPTS,` +
-          `scale=${width}:${height}:force_original_aspect_ratio=decrease,` +
-          `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=white,setsar=1,fps=${FPS}[v${i}]`,
-      );
+      const length = span.to - span.from;
+      graph.push(`[0:v]trim=start=${t3(span.from)}:end=${t3(span.to)},setpts=PTS-STARTPTS,${fit},setsar=1,fps=${FPS}[v${i}]`);
+      // A few milliseconds of fade either side of every join: no click at a cut.
       graph.push(
         meta.hasAudio
-          ? `[0:a]atrim=start=${t3(span.from)}:end=${t3(span.to)},asetpts=PTS-STARTPTS,aresample=48000[a${i}]`
-          : `anullsrc=r=48000:cl=stereo,atrim=duration=${t3(span.to - span.from)}[a${i}]`,
+          ? `[0:a]atrim=start=${t3(span.from)}:end=${t3(span.to)},asetpts=PTS-STARTPTS,aresample=48000,` +
+              `afade=t=in:d=0.012,afade=t=out:st=${t3(Math.max(0, length - 0.012))}:d=0.012[a${i}]`
+          : `anullsrc=r=48000:cl=stereo,atrim=duration=${t3(length)}[a${i}]`,
       );
     });
-    graph.push(`${kept.map((_, i) => `[v${i}][a${i}]`).join('')}concat=n=${kept.length}:v=1:a=1[base][audio]`);
+    graph.push(`${kept.map((_, i) => `[v${i}][a${i}]`).join('')}concat=n=${kept.length}:v=1:a=1[base][rawaudio]`);
+    // The voice cleaned: rumble off, steady background hiss reduced, and the
+    // level set to YouTube's loudness.
+    graph.push(
+      meta.hasAudio
+        ? `[rawaudio]highpass=f=70,afftdn=nf=-25,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000[audio]`
+        : `[rawaudio]anull[audio]`,
+    );
 
     // 2. B-roll over the picture; the doctor's voice carries on underneath.
     for (const [j, b] of input.broll.entries()) {
@@ -191,7 +260,7 @@ export async function renderFilm(input: RenderInput): Promise<{ bytes: Buffer; s
 
     // On a horizontal film the doctor moves left into the half that stays.
     if (!vertical && shownBlocks.length > 0) {
-      const at = await subjectAt(sourcePath, dir, kept[0]?.from ?? 0);
+      const at = await subjectX();
       const dx = even(clamp(at * width - (PANEL_LEFT * width) / 2, 0, width * (1 - PANEL_LEFT)));
       if (dx > 4) {
         graph.push(`[${current}]pad=${width + dx}:${height}:0:0:color=white,crop=${width}:${height}:x='${dx}*(${onScreen})':y=0[shift]`);
@@ -246,7 +315,7 @@ export async function renderFilm(input: RenderInput): Promise<{ bytes: Buffer; s
     const mainPath = join(dir, 'main.mp4');
     await runFfmpeg(
       [...inputs, '-filter_complex', graph.join(';'), '-map', '[film]', '-map', '[audio]',
-        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '21', '-c:a', 'aac', '-b:a', '160k', '-ar', '48000', '-ac', '2',
+        '-c:v', 'libx264', ...x264, '-c:a', 'aac', '-b:a', '160k', '-ar', '48000', '-ac', '2',
         '-t', t3(filmSeconds), '-movflags', '+faststart', '-y', mainPath],
       Math.max(240_000, filmSeconds * 6_000),
     );
@@ -322,11 +391,24 @@ export async function renderFilm(input: RenderInput): Promise<{ bytes: Buffer; s
     const total = pieces.reduce((n, p) => n + p.seconds, 0);
     await runFfmpeg(
       [...joinInputs, '-filter_complex', joinGraph.join(';'), '-map', '[v]', '-map', '[a]',
-        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '21', '-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart', '-y', outPath],
+        '-c:v', 'libx264', ...x264, '-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart', '-y', outPath],
       Math.max(240_000, total * 5_000),
     );
 
-    return { bytes: await readFile(outPath), seconds: total };
+    // The captions, in the finished film's time, and the thumbnail from a
+    // moment of the doctor early on.
+    const captions = input.words?.length ? captionsSrt(input.words, kept, openSeconds) : null;
+    let thumbnail: Buffer | null = null;
+    if (input.thumbnail) {
+      const first = kept[0] ?? { from: 0, to: meta.durationSeconds };
+      const still = join(dir, 'thumb-frame.png');
+      await runFfmpeg(['-ss', t3(first.from + Math.min(2.5, (first.to - first.from) / 2)), '-i', sourcePath, '-frames:v', '1', '-update', '1', '-y', still], 60_000);
+      thumbnail = await houseThumbnail({
+        frame: await readFile(still), subjectX: await subjectX(), colours: input.colours, logo: input.logo,
+        title: input.thumbnail.title, name: input.doctorName, designation: input.doctorTitle, hospitalLine: input.hospitalLine,
+      });
+    }
+    return { bytes: await readFile(outPath), shape: vertical ? 'vertical' : 'horizontal', seconds: total, captions, thumbnail };
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => {});
   }

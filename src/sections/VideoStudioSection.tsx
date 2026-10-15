@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
+import { VideoTimeline } from './VideoTimeline';
 import { useToast } from '@/context/toast';
 import type { EditPlan, VideoEditDTO, VideoTemplateDTO } from '@/server/video/edit';
 
@@ -52,7 +53,7 @@ export function VideoStudioSection() {
   const [recordings, setRecordings] = useState<{ id: string; name: string }[]>([]);
   // Which film is open; what it says is always read from the list.
   const [openId, setOpenId] = useState<string | null>(null);
-  const EMPTY = { fileId: '', doctorName: '', doctorTitle: '', hospitalLine: '', givenPlan: '', brollIds: [] as string[], autoMake: false, noBroll: false };
+  const EMPTY = { fileId: '', doctorName: '', doctorTitle: '', hospitalLine: '', givenPlan: '', brollIds: [] as string[], autoMake: false, noBroll: false, makeVertical: false };
   const [form, setForm] = useState(EMPTY);
   const [planning, setPlanning] = useState(false);
   const [uploading, setUploading] = useState<'recording' | 'broll' | null>(null);
@@ -213,6 +214,10 @@ export function VideoStudioSection() {
             <input type="checkbox" checked={form.noBroll} onChange={(e) => setForm({ ...form, noBroll: e.target.checked })} />
             <span>No b-roll — keep the doctor on screen throughout, and don&apos;t ask for any.</span>
           </label>
+          <label className="small video-check">
+            <input type="checkbox" checked={form.makeVertical} onChange={(e) => setForm({ ...form, makeVertical: e.target.checked })} />
+            <span>Also make a vertical Short from a horizontal recording — cropped to the doctor, in the Short layout.</span>
+          </label>
           <button type="button" className="btn btn-primary btn-sm"
             disabled={planning || !form.fileId || (!form.doctorName.trim() && !form.givenPlan.trim())}
             onClick={() => void plan()}>
@@ -253,7 +258,11 @@ function PlanEditor({ edit, footage, onChanged }: {
   const [plan, setPlan] = useState<EditPlan | null>(edit.plan);
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState<number | null>(null);
+  const [makeVertical, setMakeVertical] = useState(edit.makeVertical);
+  const [previewing, setPreviewing] = useState(false);
   const locked = edit.status === 'approved' || edit.status === 'rendering' || edit.status === 'planning';
+  const v = encodeURIComponent(edit.updatedAt);
+  const out = (kind: string, inline = false) => `/api/video/edits/${edit.id}/film?kind=${kind}&v=${v}${inline ? '&disposition=inline' : ''}`;
 
   if (edit.status === 'failed' && !edit.plan) {
     return <section className="card pad" style={{ marginTop: 16 }}><p className="small"><Icon name="alert" size={14} /> {edit.error}</p></section>;
@@ -273,7 +282,7 @@ function PlanEditor({ edit, footage, onChanged }: {
     try {
       if (changed !== plan) setPlan(changed);
       const saved = await send<{ edit: VideoEditDTO }>(`/api/video/edits/${edit.id}`, {
-        method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ plan: changed }),
+        method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ plan: changed, makeVertical }),
       });
       if (failed(saved)) { note(saved.message); return; }
       if (!approve) { note('Saved'); onChanged(saved.edit); return; }
@@ -285,6 +294,23 @@ function PlanEditor({ edit, footage, onChanged }: {
       onChanged(approved.edit);
     } finally {
       setSaving(false);
+    }
+  };
+  /** Saves the plan as it stands, then makes a quick rough cut of it to watch. */
+  const preview = async () => {
+    setPreviewing(true);
+    try {
+      const saved = await send<{ edit: VideoEditDTO }>(`/api/video/edits/${edit.id}`, {
+        method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ plan, makeVertical }),
+      });
+      if (failed(saved)) { note(saved.message); return; }
+      const made = await send<{ edit: VideoEditDTO }>(`/api/video/edits/${edit.id}`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'preview' }),
+      });
+      if (failed(made)) { note(made.message); return; }
+      onChanged(made.edit);
+    } finally {
+      setPreviewing(false);
     }
   };
   const setBlock = (i: number, change: Partial<EditPlan['blocks'][number]>) =>
@@ -322,11 +348,29 @@ function PlanEditor({ edit, footage, onChanged }: {
       {edit.error && <p className="small" style={{ color: 'var(--stop-700)' }}>{edit.error}</p>}
 
       {edit.status === 'ready' && (
-        <div style={{ margin: '12px 0' }}>
-          <video src={`/api/video/edits/${edit.id}/film?disposition=inline&v=${encodeURIComponent(edit.updatedAt)}`} controls style={{ width: '100%', maxHeight: 420, borderRadius: 8 }} />
-          <a className="btn btn-sm" href={`/api/video/edits/${edit.id}/film?v=${encodeURIComponent(edit.updatedAt)}`} style={{ marginTop: 8 }}>
-            <Icon name="download" size={14} /> Download
-          </a>
+        <div className="video-outputs">
+          <div style={{ display: 'grid', gap: 6, flex: '1 1 360px' }}>
+            <video src={out('film', true)} controls style={{ width: '100%' }} />
+            <a className="btn btn-sm" href={out('film')}><Icon name="download" size={14} /> Download film</a>
+          </div>
+          {edit.has.vertical && (
+            <div style={{ display: 'grid', gap: 6 }}>
+              <video src={out('vertical', true)} controls style={{ width: 236 }} />
+              <a className="btn btn-sm" href={out('vertical')}><Icon name="download" size={14} /> Download Short</a>
+            </div>
+          )}
+          <div style={{ display: 'grid', gap: 6 }}>
+            {edit.has.thumbnail && (
+              <>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={out('thumbnail', true)} alt="YouTube thumbnail" />
+                <a className="btn btn-sm" href={out('thumbnail')}><Icon name="download" size={14} /> Download thumbnail</a>
+              </>
+            )}
+            {edit.has.captions && (
+              <a className="btn btn-sm" href={out('captions')}><Icon name="download" size={14} /> Captions (.srt) for YouTube</a>
+            )}
+          </div>
         </div>
       )}
 
@@ -429,21 +473,47 @@ function PlanEditor({ edit, footage, onChanged }: {
         </>
       )}
 
-      <p className="small strong video-head">Cut out ({plan.cuts.length})</p>
-      {plan.cuts.length === 0 && <p className="tiny muted">Nothing to cut.</p>}
-      {plan.cuts.map((c, i) => (
-        <div key={i} className="video-item">
-          <span className="tiny muted">{clock(c.from)}–{clock(c.to)}</span>
-          <span className="small">{c.reason}</span>
-          {!locked && (
-            <button type="button" className="linkbtn tiny"
-              onClick={() => setPlan({ ...plan, cuts: plan.cuts.filter((_, j) => j !== i) })}>Keep it in</button>
-          )}
+      <p className="small strong video-head">Timeline — what is cut ({plan.cuts.length})</p>
+      {edit.durationSeconds ? (
+        <VideoTimeline editId={edit.id} duration={edit.durationSeconds} cuts={plan.cuts} blocks={plan.blocks} locked={locked}
+          onChange={(cuts) => setPlan({ ...plan, cuts })} />
+      ) : null}
+      <details>
+        <summary className="tiny muted" style={{ cursor: 'pointer' }}>Every cut, as a list</summary>
+        {plan.cuts.length === 0 && <p className="tiny muted">Nothing to cut.</p>}
+        {plan.cuts.map((c, i) => (
+          <div key={i} className="video-item">
+            <span className="tiny muted">{clock(c.from)}–{clock(c.to)}</span>
+            <span className="small">{c.reason}</span>
+            {!locked && (
+              <button type="button" className="linkbtn tiny"
+                onClick={() => setPlan({ ...plan, cuts: plan.cuts.filter((_, j) => j !== i) })}>Keep it in</button>
+            )}
+          </div>
+        ))}
+      </details>
+
+      {edit.has.preview && !locked && (
+        <div className="video-outputs">
+          <div style={{ display: 'grid', gap: 4 }}>
+            <span className="tiny muted">Quick preview — small and rough, as the plan stood when it was made</span>
+            <video src={out('preview', true)} controls style={{ maxHeight: 320 }} />
+          </div>
         </div>
-      ))}
+      )}
 
       {!locked && (
-        <div className="row" style={{ justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
+        <label className="small video-check" style={{ marginTop: 12 }}>
+          <input type="checkbox" checked={makeVertical} onChange={(e) => setMakeVertical(e.target.checked)} />
+          <span>Also make a vertical Short (from a horizontal recording)</span>
+        </label>
+      )}
+
+      {!locked && (
+        <div className="row" style={{ justifyContent: 'flex-end', gap: 8, marginTop: 16, flexWrap: 'wrap' }}>
+          <button type="button" className="btn btn-sm" disabled={saving || previewing} onClick={() => void preview()}>
+            {previewing ? 'Making a quick preview…' : 'Quick preview'}
+          </button>
           <button type="button" className="btn btn-sm" disabled={saving} onClick={() => void save(false)}>Save changes</button>
           <button type="button" className="btn btn-primary btn-sm" disabled={saving || !plan.title.trim() || asked > 0} onClick={() => void save(true)}>
             {edit.status === 'ready' ? 'Make it again' : 'Approve & make film'}

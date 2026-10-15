@@ -9,7 +9,7 @@ import ffmpeg from 'ffmpeg-static';
 import postgres from 'postgres';
 import { startTestDatabase } from './harness';
 import type { TestDb } from './harness';
-import { fillerCuts, keptLength, keptSpans, mergeCuts, pauseCuts, toFilmSpan, toFilmTime } from '../src/server/video/timeline';
+import { captionsSrt, fillerCuts, keptLength, keptSpans, mergeCuts, pauseCuts, retakeCuts, snapCuts, toFilmSpan, toFilmTime } from '../src/server/video/timeline';
 import { parseGivenPlan, readSpan } from '../src/server/video/givenPlan';
 
 /**
@@ -105,6 +105,27 @@ describe('time before and after the cuts', () => {
     assert.match(cuts[0]!.reason, /Pause \(1\.6 s\)/);
     // With no sound to go on, the gaps between the words stand in.
     assert.equal(pauseCuts(null, words).length, 1);
+  });
+
+  it('cuts a retake back to the last take', () => {
+    const words = 'the baby needs the the baby needs feeding often'.split(' ').map((w, i) => ({ w, from: i, to: i + 0.8 }));
+    // "the baby needs" said, then said again: the first take goes, up to where the last begins.
+    assert.deepEqual(retakeCuts(words).map((c) => [c.from, c.to, c.reason]), [[0, 4, 'Retake']]);
+    const apart = 'support the breastfeeding and then much later we support the breastfeeding again'.split(' ').map((w, i) => ({ w, from: i * 1.5, to: i * 1.5 + 1 }));
+    assert.deepEqual(retakeCuts(apart), [], 'the same words long apart are not a retake');
+  });
+
+  it('moves a cut edge into the quiet nearby - inward only, never into a word - and leaves the ends alone', () => {
+    const loud = Array.from({ length: 1000 }, (_, k) => (k === 215 || k === 295 || k === 205 || k === 309 ? 0 : 100));
+    const [c] = snapCuts([{ from: 2.1, to: 3.0 }], loud, 0.01, 10);
+    assert.ok(Math.abs(c!.from - 2.155) < 1e-9 && Math.abs(c!.to - 2.955) < 1e-9, 'the quiet just outside the cut is not reached for');
+    assert.equal(snapCuts([{ from: 0, to: 1 }], loud, 0.01, 10)[0]!.from, 0);
+  });
+
+  it("writes captions in the finished film's time, without the fillers or what was cut", () => {
+    const words = [{ w: 'Hello', from: 0, to: 0.5 }, { w: 'um', from: 0.6, to: 0.9 }, { w: 'doctor.', from: 1, to: 1.5 }, { w: 'Cut', from: 2, to: 2.5 }, { w: 'Next', from: 3, to: 3.4 }];
+    const srt = captionsSrt(words, keptSpans(4, [{ from: 2, to: 2.9 }]), 9);
+    assert.equal(srt, '1\n00:00:09,000 --> 00:00:10,500\nHello doctor.\n\n2\n00:00:11,100 --> 00:00:11,900\nNext\n');
   });
 
   it('cuts "er"s and words said twice, without reaching into the words around them', () => {
@@ -342,6 +363,37 @@ describe('a recording into a film', () => {
     assert.equal(await video.renderApprovedEdits({ outOfTime: () => false }), 1);
     assert.equal((await video.getEdit(nh, planned.id))!.status, 'ready');
     fake.editBrief = null;
+  });
+
+  it('makes a vertical Short, the captions and the thumbnail with the film, and a quick preview before it', async () => {
+    fake.videoPlan = { title: 'Tremor in short', cuts: [], blocks: [] };
+    const planned = await video.createEdit(nh, { fileId, doctorName: 'Dr. S', makeVertical: true });
+    assert.equal(planned.makeVertical, true);
+    const previewed = await video.previewEdit(nh, planned.id);
+    assert.equal(previewed.has.preview, true);
+    const { readVideoMetadata } = await import('../src/server/brain/media');
+    const look = async (kind: 'film' | 'vertical' | 'preview') => {
+      const file = (await video.readOutput(nh, planned.id, kind))!;
+      const path = join(workdir, `out-${kind}.mp4`);
+      writeFileSync(path, file.bytes);
+      return readVideoMetadata(path);
+    };
+    const small = await look('preview');
+    assert.equal(Math.min(small.width ?? 0, small.height ?? 0), 360, 'a preview is small');
+
+    await video.approveEdit(nh, planned.id);
+    assert.equal(await video.renderApprovedEdits({ outOfTime: () => false }), 1);
+    const done = (await video.getEdit(nh, planned.id))!;
+    assert.equal(done.status, 'ready', done.error ?? '');
+    assert.deepEqual(done.has, { vertical: true, captions: true, thumbnail: true, preview: true });
+    const short = await look('vertical');
+    assert.deepEqual([short.width, short.height], [1080, 1920], 'the Short is 9:16');
+    assert.equal((await video.readOutput(nh, planned.id, 'thumbnail'))!.type, 'image/png');
+    const srt = (await video.readOutput(nh, planned.id, 'captions'))!.bytes.toString('utf8');
+    assert.match(srt, /^1\n00:00:0\d,\d{3} --> /);
+    assert.doesNotMatch(srt, /\bum\b/, 'no fillers in the captions');
+    assert.equal(await video.readOutput(mm, planned.id, 'vertical'), null, 'another company sees none of it');
+    assert.ok(await video.readWaveform(nh, planned.id), 'the timeline has the sound to draw');
   });
 
   it('with "no b-roll", asks for none and makes the film straight away', async () => {

@@ -2,7 +2,8 @@ import 'server-only';
 import { withCompanyScope } from '../db';
 import type { CompanyScope } from '../db';
 import { adminSql } from '../db-admin';
-import { extractAudio, findSilences, readVideoMetadata, withTempFile } from '../brain/media';
+import { readFile as readFileFs } from 'node:fs/promises';
+import { extractAudio, findSilences, readVideoMetadata, runFfmpeg, withTempFile } from '../brain/media';
 import { rulesForBrief } from '../brain/checker';
 import { companyProfile } from '../brain/category';
 import { brain } from '../brain/providers';
@@ -13,7 +14,8 @@ import { parseGivenPlan } from './givenPlan';
 import type { GivenBlock } from './givenPlan';
 import type { EditBrief } from '../brain/providers/types';
 import { renderFilm } from './render';
-import { LONGEST_PAUSE, fillerCuts, mergeCuts, pauseCuts } from './timeline';
+import type { RenderInput } from './render';
+import { LONGEST_PAUSE, fillerCuts, mergeCuts, pauseCuts, retakeCuts } from './timeline';
 import { transcribeWords } from './words';
 import type { Word } from './words';
 
@@ -117,6 +119,10 @@ export type VideoEditDTO = {
   createdAt: string;
   /** Changes whenever the film is re-made, so a page asks for the new one. */
   updatedAt: string;
+  /** A vertical Short is made alongside a horizontal film. */
+  makeVertical: boolean;
+  /** What has been made: the vertical Short, the captions, the thumbnail, a quick preview. */
+  has: { vertical: boolean; captions: boolean; thumbnail: boolean; preview: boolean };
 };
 
 export type VideoTemplateDTO = {
@@ -205,6 +211,7 @@ type Row = {
   id: string; source_file_id: string; source_name: string; doctor_name: string; doctor_title: string | null;
   hospital_line: string | null; given: boolean; status: VideoEditDTO['status']; plan: EditPlan | null; duration_seconds: string | null;
   error_message: string | null; created_at: Date; updated_at: Date;
+  make_vertical: boolean; has_vertical: boolean; has_captions: boolean; has_thumbnail: boolean; has_preview: boolean;
 };
 
 const toDTO = (r: Row): VideoEditDTO => ({
@@ -212,11 +219,15 @@ const toDTO = (r: Row): VideoEditDTO => ({
   doctorTitle: r.doctor_title, hospitalLine: r.hospital_line, givenPlan: r.given, status: r.status, plan: r.plan,
   durationSeconds: r.duration_seconds === null ? null : Number(r.duration_seconds),
   error: r.error_message, createdAt: r.created_at.toISOString(), updatedAt: r.updated_at.toISOString(),
+  makeVertical: r.make_vertical,
+  has: { vertical: r.has_vertical, captions: r.has_captions, thumbnail: r.has_thumbnail, preview: r.has_preview },
 });
 
 const SELECT = `select e.id, e.source_file_id, f.name as source_name, e.doctor_name, e.doctor_title,
                        e.hospital_line, e.given_plan is not null as given, e.status,
-                       e.plan, e.duration_seconds, e.error_message, e.created_at, e.updated_at
+                       e.plan, e.duration_seconds, e.error_message, e.created_at, e.updated_at, e.make_vertical,
+                       e.output_vertical_path is not null as has_vertical, e.captions is not null as has_captions,
+                       e.thumbnail_path is not null as has_thumbnail, e.preview_path is not null as has_preview
                   from video_edits e join drive_files f on f.id = e.source_file_id and f.company_id = e.company_id`;
 
 export async function listEdits(scope: CompanyScope): Promise<VideoEditDTO[]> {
@@ -341,7 +352,7 @@ export async function createEdit(
   scope: CompanyScope,
   input: {
     fileId: string; doctorName?: string | null; doctorTitle?: string | null; hospitalLine?: string | null;
-    givenPlan?: string | null; brollIds?: string[]; autoMake?: boolean; noBroll?: boolean;
+    givenPlan?: string | null; brollIds?: string[]; autoMake?: boolean; noBroll?: boolean; makeVertical?: boolean;
   },
 ): Promise<VideoEditDTO> {
   if (!UUID.test(input.fileId)) throw new VideoEditRejected('That recording is not in this workspace.');
@@ -365,10 +376,10 @@ export async function createEdit(
   const provided = await videosIn(scope, (input.brollIds ?? []).filter((id) => id !== input.fileId));
 
   const [created] = await withCompanyScope(scope, (tx) => tx<{ id: string }[]>`
-    insert into video_edits (company_id, source_file_id, doctor_name, doctor_title, hospital_line, given_plan, created_by)
+    insert into video_edits (company_id, source_file_id, doctor_name, doctor_title, hospital_line, given_plan, make_vertical, created_by)
     values (${scope.companyId}, ${input.fileId}, ${doctorName.slice(0, 120)},
             ${doctorTitle?.slice(0, 120) || null}, ${hospitalLine?.slice(0, 120) || null},
-            ${givenText}, ${scope.userId})
+            ${givenText}, ${Boolean(input.makeVertical)}, ${scope.userId})
     returning id
   `);
   const id = created!.id;
@@ -442,20 +453,34 @@ export async function createEdit(
     await chooseFootage(scope, blocks, provided, notBroll);
 
     // A brief's own trims replace the planner's; without a brief, the fumbles go.
+    // A brief's start and end never fall inside a word: a word still being
+    // said at the end is let finish, one begun before the start is kept whole.
+    const inWord = (t: number | null | undefined) => (t == null ? undefined : heard.words!.find((w) => w.from < t && w.to > t));
+    const startWord = inWord(brief?.start);
+    const endWord = inWord(brief?.end);
+    const start = startWord ? Math.max(0, startWord.from - 0.05) : (brief?.start ?? null);
+    const end = endWord ? endWord.to + 0.1 : (brief?.end ?? null);
     const trims = brief
       ? [
-          ...(brief.start !== null && brief.start > 0 ? [{ from: 0, to: Math.min(brief.start, seconds), reason: 'Before the start in your plan' }] : []),
-          ...(brief.end !== null && brief.end < seconds ? [{ from: brief.end, to: seconds, reason: 'After the end in your plan' }] : []),
+          ...(start !== null && start > 0 ? [{ from: 0, to: Math.min(start, seconds), reason: 'Before the start in your plan' }] : []),
+          ...(end !== null && end < seconds ? [{ from: end, to: seconds, reason: 'After the end in your plan' }] : []),
         ]
       : planned.cuts;
     // Either way, the doctor's pauses go - all but a breath - and so do the
     // "er"s and words said twice.
-    const cuts = mergeCuts([...trims, ...pauseCuts(heard.silences, heard.words), ...fillerCuts(heard.words)]);
+    const cuts = mergeCuts([...trims, ...pauseCuts(heard.silences, heard.words), ...fillerCuts(heard.words), ...retakeCuts(heard.words)]);
     const plan: EditPlan = {
       title: brief?.title || planned.title || given[0]?.heading || doctorName,
       cuts, blocks, description: brief?.description ?? null,
     };
-    if (input.noBroll) for (const b of blocks) if (!b.footage) b.brollSkipped = true;
+    // "No b-roll": nothing from the library either - only footage the person gave.
+    const gaveFootage = new Set(provided.map((p) => p.fileId));
+    if (input.noBroll) {
+      for (const b of blocks) {
+        if (b.footage && !gaveFootage.has(b.footage.fileId)) b.footage = null;
+        if (!b.footage) b.brollSkipped = true;
+      }
+    }
     const concerns = blocks.filter((b) => b.concern).length;
     let status: VideoEditDTO['status'] = 'planned';
     let note: string | null = null;
@@ -512,16 +537,30 @@ async function chooseFootage(
     }
     return;
   }
+  // A clip whose description plainly matches is taken - shown in the plan, to
+  // change if wrong; a weaker match is only offered when the question is asked.
+  // Each clip is used once.
+  const used = new Set<string>();
   for (const b of blocks) {
     if (!b.visuals.trim()) continue;
-    const hit = (await searchAssets(scope, b.visuals, 12).catch(() => []))
-      .find((h) => h.mimeType.startsWith('video/') && !notBroll.has(h.fileId));
-    b.suggestion = hit ? { fileId: hit.fileId, fileName: hit.fileName } : null;
+    const hit = (await searchAssets(scope, `${b.visuals} ${b.heading}`.trim(), 12).catch(() => []))
+      .find((h) => h.mimeType.startsWith('video/') && !notBroll.has(h.fileId) && !used.has(h.fileId));
+    if (!hit) continue;
+    const clip = { fileId: hit.fileId, fileName: hit.fileName };
+    if (hit.score >= SURE_MATCH) {
+      b.footage = clip;
+      used.add(hit.fileId);
+    } else {
+      b.suggestion = clip;
+    }
   }
 }
 
+/** How alike a clip's description and a block's visual must be for the clip to be taken without asking. */
+const SURE_MATCH = 0.55;
+
 /** A person's changes to the plan. Times stay inside the recording. */
-export async function updatePlan(scope: CompanyScope, id: string, plan: EditPlan): Promise<VideoEditDTO> {
+export async function updatePlan(scope: CompanyScope, id: string, plan: EditPlan, options: { makeVertical?: boolean } = {}): Promise<VideoEditDTO> {
   const edit = await getEdit(scope, id);
   if (!edit) throw new VideoEditRejected('That edit is not in this workspace.');
   if (edit.status !== 'planned' && edit.status !== 'ready' && edit.status !== 'failed') {
@@ -559,7 +598,8 @@ export async function updatePlan(scope: CompanyScope, id: string, plan: EditPlan
   const known = new Map((await videosIn(scope, footage)).map((f) => [f.fileId, f.fileName]));
   for (const b of clean.blocks) if (b.footage) b.footage.fileName = known.get(b.footage.fileId)!;
   await withCompanyScope(scope, (tx) => tx`
-    update video_edits set plan = ${tx.json(clean)}, status = 'planned', updated_at = now()
+    update video_edits set plan = ${tx.json(clean)}, status = 'planned', updated_at = now(),
+           make_vertical = coalesce(${options.makeVertical ?? null}, make_vertical)
      where id = ${id} and company_id = ${scope.companyId}
   `);
   return (await getEdit(scope, id))!;
@@ -606,13 +646,25 @@ export function whenSaid(words: readonly Word[], block: { from: number; to: numb
   });
 }
 
-/** Makes one approved film. */
-export async function renderEdit(scope: CompanyScope, id: string): Promise<void> {
+/** Where each thing made for a film is kept. */
+const keysFor = (companyId: string, id: string) => {
+  const film = videoEditKeyFor(companyId, id);
+  return {
+    film,
+    vertical: film.replace(/\.mp4$/, '-vertical.mp4'),
+    thumbnail: film.replace(/\.mp4$/, '-thumbnail.png'),
+    preview: film.replace(/\.mp4$/, '-preview.mp4'),
+    waveform: film.replace(/\.mp4$/, '-waveform.png'),
+  };
+};
+
+/** Everything a film is made from, read once. */
+async function renderInputFor(scope: CompanyScope, id: string): Promise<{ input: RenderInput; makeVertical: boolean }> {
   const [row] = await withCompanyScope(scope, (tx) => tx<{
     source_file_id: string; doctor_name: string; doctor_title: string | null; hospital_line: string | null;
-    plan: EditPlan; company: string; transcript: Word[] | null;
+    plan: EditPlan; company: string; transcript: Word[] | null; make_vertical: boolean;
   }[]>`
-    select e.source_file_id, e.doctor_name, e.doctor_title, e.hospital_line, e.plan, e.transcript, c.name as company
+    select e.source_file_id, e.doctor_name, e.doctor_title, e.hospital_line, e.plan, e.transcript, e.make_vertical, c.name as company
       from video_edits e join companies c on c.id = e.company_id
      where e.id = ${id} and e.company_id = ${scope.companyId}
   `);
@@ -639,7 +691,7 @@ export async function renderEdit(scope: CompanyScope, id: string): Promise<void>
     }
   }
 
-  const film = await renderFilm({
+  const input: RenderInput = {
     source: source.body,
     sourceExtension: source.filename.split('.').pop()?.toLowerCase() || 'mp4',
     // The template's brand colour carries the panels; its accent, the bar.
@@ -664,37 +716,121 @@ export async function renderEdit(scope: CompanyScope, id: string): Promise<void>
       tagline: template.tagline ?? template.endScreenText,
       seconds: template.outroSeconds,
     },
-  });
+    words: row.transcript ?? [],
+    thumbnail: { title: row.plan.title },
+  };
+  return { input, makeVertical: row.make_vertical };
+}
 
-  const key = videoEditKeyFor(scope.companyId, id);
-  await driveStorage().put(key, film.bytes, 'video/mp4');
+/**
+ * Makes one approved film - and with it the captions, the YouTube thumbnail
+ * and, when asked for and the recording is horizontal, a vertical Short.
+ */
+export async function renderEdit(scope: CompanyScope, id: string): Promise<void> {
+  const { input, makeVertical } = await renderInputFor(scope, id);
+  const film = await renderFilm(input);
+  const keys = keysFor(scope.companyId, id);
+  await driveStorage().put(keys.film, film.bytes, 'video/mp4');
+  if (film.thumbnail) await driveStorage().put(keys.thumbnail, film.thumbnail, 'image/png');
+
+  let vertical: string | null = null;
+  if (makeVertical && film.shape === 'horizontal') {
+    const short = await renderFilm({ ...input, shape: 'vertical', words: undefined, thumbnail: null });
+    await driveStorage().put(keys.vertical, short.bytes, 'video/mp4');
+    vertical = keys.vertical;
+  }
   await withCompanyScope(scope, (tx) => tx`
-    update video_edits set status = 'ready', output_path = ${key}, error_message = null, updated_at = now()
+    update video_edits
+       set status = 'ready', output_path = ${keys.film}, output_vertical_path = ${vertical},
+           captions = ${film.captions}, thumbnail_path = ${film.thumbnail ? keys.thumbnail : null},
+           error_message = null, updated_at = now()
      where id = ${id} and company_id = ${scope.companyId}
   `);
+}
+
+/**
+ * A quick, small, rough cut of the plan as it stands, to check the cuts and
+ * the text before the film itself is made. Made there and then: seconds, not
+ * minutes.
+ */
+export async function previewEdit(scope: CompanyScope, id: string): Promise<VideoEditDTO> {
+  const edit = await getEdit(scope, id);
+  if (!edit?.plan) throw new VideoEditRejected('That edit has no plan to preview.');
+  if (edit.status === 'rendering' || edit.status === 'approved') throw new VideoEditRejected('This film is being made.');
+  const { input } = await renderInputFor(scope, id);
+  const preview = await renderFilm({ ...input, preview: true, words: undefined, thumbnail: null });
+  const key = keysFor(scope.companyId, id).preview;
+  await driveStorage().put(key, preview.bytes, 'video/mp4');
+  await withCompanyScope(scope, (tx) => tx`
+    update video_edits set preview_path = ${key}, updated_at = now() where id = ${id} and company_id = ${scope.companyId}
+  `);
+  return (await getEdit(scope, id))!;
 }
 
 /** Removes a film and its plan. One being made is left alone until it is done. */
 export async function deleteEdit(scope: CompanyScope, id: string): Promise<void> {
   if (!UUID.test(id)) throw new VideoEditRejected('That edit is not in this workspace.');
-  const [row] = await withCompanyScope(scope, (tx) => tx<{ status: VideoEditDTO['status']; output_path: string | null }[]>`
-    select status, output_path from video_edits where id = ${id} and company_id = ${scope.companyId}
+  const [row] = await withCompanyScope(scope, (tx) => tx<{ status: VideoEditDTO['status'] }[]>`
+    select status from video_edits where id = ${id} and company_id = ${scope.companyId}
   `);
   if (!row) throw new VideoEditRejected('That edit is not in this workspace.');
   if (row.status === 'rendering') throw new VideoEditRejected('This film is being made. Delete it once it is done.');
   await withCompanyScope(scope, (tx) => tx`delete from video_edits where id = ${id} and company_id = ${scope.companyId}`);
-  if (row.output_path) await driveStorage().remove(row.output_path).catch(() => {});
+  for (const key of Object.values(keysFor(scope.companyId, id))) await driveStorage().remove(key).catch(() => {});
+}
+
+/** Something made for a film: the film, its vertical Short, its thumbnail, its preview or its captions. */
+export async function readOutput(
+  scope: CompanyScope,
+  id: string,
+  kind: 'film' | 'vertical' | 'thumbnail' | 'preview' | 'captions',
+): Promise<{ bytes: Buffer; name: string; type: string } | null> {
+  if (!UUID.test(id)) return null;
+  const [row] = await withCompanyScope(scope, (tx) => tx<{
+    status: VideoEditDTO['status']; plan: EditPlan | null; output_path: string | null; output_vertical_path: string | null;
+    thumbnail_path: string | null; preview_path: string | null; captions: string | null;
+  }[]>`
+    select status, plan, output_path, output_vertical_path, thumbnail_path, preview_path, captions
+      from video_edits where id = ${id} and company_id = ${scope.companyId}
+  `);
+  if (!row) return null;
+  const base = (row.plan?.title || 'film').replace(/[^\w\- ]+/g, '').trim().slice(0, 60) || 'film';
+  if (kind === 'captions') {
+    return row.captions ? { bytes: Buffer.from(row.captions, 'utf8'), name: `${base}.srt`, type: 'application/x-subrip' } : null;
+  }
+  if (kind === 'preview') {
+    return row.preview_path ? { bytes: await driveStorage().get(row.preview_path), name: `${base} (preview).mp4`, type: 'video/mp4' } : null;
+  }
+  if (row.status !== 'ready') return null;
+  const path = kind === 'film' ? row.output_path : kind === 'vertical' ? row.output_vertical_path : row.thumbnail_path;
+  if (!path) return null;
+  const name = kind === 'film' ? `${base}.mp4` : kind === 'vertical' ? `${base} (Short).mp4` : `${base} (thumbnail).png`;
+  return { bytes: await driveStorage().get(path), name, type: kind === 'thumbnail' ? 'image/png' : 'video/mp4' };
 }
 
 /** The finished film. */
 export async function readFilm(scope: CompanyScope, id: string): Promise<{ bytes: Buffer; name: string } | null> {
-  if (!UUID.test(id)) return null;
-  const [row] = await withCompanyScope(scope, (tx) => tx<{ output_path: string | null; plan: EditPlan | null }[]>`
-    select output_path, plan from video_edits where id = ${id} and company_id = ${scope.companyId} and status = 'ready'
-  `);
-  if (!row?.output_path) return null;
-  const name = `${(row.plan?.title || 'film').replace(/[^\w\- ]+/g, '').trim().slice(0, 60) || 'film'}.mp4`;
-  return { bytes: await driveStorage().get(row.output_path), name };
+  return readOutput(scope, id, 'film');
+}
+
+/**
+ * The recording's sound as a picture, for the timeline: one wide strip, made
+ * once and kept.
+ */
+export async function readWaveform(scope: CompanyScope, id: string): Promise<Buffer | null> {
+  const edit = await getEdit(scope, id);
+  if (!edit) return null;
+  const key = keysFor(scope.companyId, id).waveform;
+  const kept = await driveStorage().get(key).catch(() => null);
+  if (kept) return kept;
+  const source = await readFile(scope, edit.sourceFileId);
+  const png = await withTempFile(source.body, source.filename.split('.').pop()?.toLowerCase() || 'mp4', async (path) => {
+    const out = `${path}.wave.png`;
+    await runFfmpeg(['-i', path, '-filter_complex', 'aformat=channel_layouts=mono,showwavespic=s=1600x120:colors=0x7aa7d9:scale=sqrt', '-frames:v', '1', '-y', out], 120_000);
+    return readFileFs(out);
+  }).catch(() => null);
+  if (png) await driveStorage().put(key, png, 'image/png').catch(() => {});
+  return png;
 }
 
 /**
