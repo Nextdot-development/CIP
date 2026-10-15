@@ -76,6 +76,8 @@ export type RenderResult = {
 };
 
 const FPS = 30;
+/** How much closer the alternate shot is, after a cut: 8%, enough to read as a new angle. */
+const PUNCH_IN = 1.08;
 /** How long a panel takes to slide in or out, and a point to fade in. */
 const SLIDE = 0.5;
 const FADE = 0.35;
@@ -207,9 +209,29 @@ export async function renderFilm(input: RenderInput): Promise<RenderResult> {
       const cx = even(clamp((await subjectX()) * srcW - cw / 2, 0, srcW - cw));
       fit = `crop=${cw}:${srcH}:${cx}:0,scale=${width}:${height}`;
     }
+    // A jump cut hidden as a change of shot: after each cut the picture
+    // alternates between the full frame and a closer one on the doctor's
+    // face, so the head does not jump - it looks like a second camera.
+    let punch = '';
+    if (kept.length > 1) {
+      const cw = even(width / PUNCH_IN);
+      const ch = even(height / PUNCH_IN);
+      const at = toVertical ? 0.5 : await subjectX();
+      const cx = even(clamp(at * width - cw / 2, 0, width - cw));
+      const cy = even((height - ch) * 0.3);
+      punch = `,crop=${cw}:${ch}:${cx}:${cy},scale=${width}:${height}`;
+    }
+    // The shot changes at a cut only into a piece long enough to settle in;
+    // a moment-long piece keeps the shot before it, so nothing flickers.
+    const closeUp: boolean[] = [];
+    kept.forEach((span, i) => {
+      const before = closeUp[i - 1] ?? true;
+      closeUp.push(i === 0 ? false : span.to - span.from >= 1.2 ? !before : before);
+    });
     kept.forEach((span, i) => {
       const length = span.to - span.from;
-      graph.push(`[0:v]trim=start=${t3(span.from)}:end=${t3(span.to)},setpts=PTS-STARTPTS,${fit},setsar=1,fps=${FPS}[v${i}]`);
+      const closer = closeUp[i] ? punch : '';
+      graph.push(`[0:v]trim=start=${t3(span.from)}:end=${t3(span.to)},setpts=PTS-STARTPTS,${fit}${closer},setsar=1,fps=${FPS}[v${i}]`);
       // A few milliseconds of fade either side of every join: no click at a cut.
       graph.push(
         meta.hasAudio
