@@ -64,29 +64,32 @@ export const NARAYANA_QC_RULES: QcRuleSeed[] = [
     format: 'video',
   }),
   N('VID-004', {
-    from: `${GUIDE}, slides 3, 5, 14 and 16`,
+    from: "The hospital's published films and its disclaimer card (supersedes the ticker in the guideline, slides 3, 5, 14 and 16)",
     domain: 'Disclaimer',
     ruleType: 'mandatory',
     severity: 'critical',
-    rule: "The disclaimer runs as a ticker at the bottom of the screen immediately after the doctor's introduction, for at least 5-7 seconds.",
-    rationale: 'Placement and duration set by the guideline, as per compliance requirements.',
+    rule:
+      'The disclaimer is a full white card right after the opening logo card, before the doctor appears: "Disclaimer" in bold, ' +
+      'the wording centred below it in black, on screen for at least 5 seconds.',
+    rationale: "As the hospital's own published films carry it.",
     allowed: [],
-    prohibited: ['No disclaimer', 'A disclaimer shown for under 5 seconds', 'A disclaimer anywhere but the bottom'],
+    prohibited: ['No disclaimer', 'A disclaimer shown for under 5 seconds', 'A disclaimer over the doctor instead of its own card'],
     humanReview: false,
     requirement: 'required',
     category: 'disclaimer',
     format: 'video',
   }),
   N('VID-005', {
-    from: `${GUIDE}, slides 5 and 16`,
+    from: "The hospital's disclaimer card, as supplied (supersedes the wording in the guideline, slides 5 and 16)",
     domain: 'Disclaimer',
     ruleType: 'mandatory',
     severity: 'critical',
     rule:
-      'The disclaimer reads exactly: "Disclaimer: This video is for general information and educational purposes only. It does not replace ' +
-      'professional medical diagnosis, treatment, or advice. Always seek the counsel of your physician or other qualified healthcare provider ' +
-      'regarding any medical condition. Narayana Health does not recommend or endorse any tests, physicians, procedures, or opinions mentioned. ' +
-      'Reliance on any information provided here is solely at your own risk."',
+      'The disclaimer reads exactly, under the heading "Disclaimer": "The information provided is intended for general knowledge and ' +
+      'informational purposes only. It does not replace professional diagnosis, treatment, or advice. Always seek the advice of your ' +
+      'physician or other qualified healthcare provider with any questions you may have regarding a medical condition. Narayana Health ' +
+      'does not recommend or endorse any specific tests, physicians, procedures, opinions, or other information that may be mentioned. ' +
+      'Reliance on any information provided is solely at your own risk."',
     rationale: 'Set at layout in this wording; never rewritten.',
     allowed: [],
     prohibited: ['Shortened or reworded disclaimer'],
