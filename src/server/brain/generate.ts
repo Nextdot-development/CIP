@@ -243,15 +243,16 @@ export async function generateWithBrain(
   const words = WORDS[profile.category];
   const stamping = input.mediaType === 'image' && Boolean(plan.brief.brand) && profile.logoCorner !== null;
   const briefPrompt = stamping
-    ? `${logoLead(profile.logoCorner!)} ${withoutLogoAsks(promptFromBrief(plan.brief))}`
+    ? `${logoLead(profile.logoCorner!, shape)} ${withoutLogoAsks(promptFromBrief(plan.brief))}`
     : promptFromBrief(plan.brief);
   const prompt =
     input.mediaType === 'image'
       ? withNotes(briefPrompt, [
+          compositionNote(shape, shots > 0),
           referenceNote(attached.length, shots, profile.category),
-          framingNote(shape),
+          framingNote(shape, stamping),
           words.legalLinesNote,
-          stamping ? logoNote(profile.logoCorner!) : null,
+          stamping ? logoNote(profile.logoCorner!, shape) : null,
         ])
       : withNotes(briefPrompt, [words.legalLinesNote]);
 
@@ -300,7 +301,7 @@ export async function generateWithBrain(
     onQc: input.onQc,
     remake: (from, broke) =>
       generateImage(scope, {
-        prompt: withNotes(prompt, [fixNote(broke)]),
+        prompt: withNotes(prompt, [fixNote(broke, stamping ? profile.logoCorner : null)]),
         provider: generator.choice ?? input.provider,
         referenceFileIds,
         aspectRatio: shape.aspectRatio,
@@ -311,6 +312,9 @@ export async function generateWithBrain(
         // Built on the picture that failed, so what was right about it stays
         // and only the fault is changed.
         basedOnGenerationId: from.id,
+        // The remake carries the approved logo too. It used to come back
+        // without one, though its prompt still kept the corner free for it.
+        stampLogoFor: stamping ? { brand: plan.brief.brand!, corner: profile.logoCorner! } : null,
       }),
   });
 
@@ -355,15 +359,22 @@ export function rulesBroken(check: CreativeCheck): BrokenRule[] {
     .map((f) => ({ rule: f.citedRule!.rule, message: f.message, severity: f.severity as BrokenRule['severity'] }));
 }
 
-/** What the generator is told the last version got wrong. */
-function fixNote(broke: BrokenRule[]): string {
+/**
+ * What the generator is told the last version got wrong. The last version is
+ * attached to build on, and it carries the approved logo stamped on it - the
+ * generator is told that is not part of the picture, or it draws a copy.
+ */
+function fixNote(broke: BrokenRule[], stampedCorner: LogoCorner | null = null): string {
   const faults = broke
     .slice(0, 6)
     .map((b) => `"${b.rule}" (${b.message.replace(/\s+/g, ' ').slice(0, 160)})`)
     .join('; ');
   return (
     `IMPORTANT - the previous version was rejected by brand compliance review for breaking: ${faults}. ` +
-    'Keep everything else about it, and make sure this version obeys every one of these rules.'
+    'Keep everything else about it, and make sure this version obeys every one of these rules.' +
+    (stampedCorner
+      ? ` The logo in its ${stampedCorner} corner was added afterwards and is added again: do not copy it - leave that corner plain.`
+      : '')
   );
 }
 
@@ -607,7 +618,7 @@ function nearestSupported(want: number, supported: readonly string[]): string | 
  * naming a canvas the generator was not asked for is how you get a picture of
  * a banner — so this says which edges go, in words.
  */
-function framingNote(shape: ChosenShape): string | null {
+function framingNote(shape: ChosenShape, stamping = false): string | null {
   const made = shape.aspectRatio ? ratioOf(shape.aspectRatio) : null;
   if (!shape.deliver || made === null) return null;
 
@@ -617,10 +628,11 @@ function framingNote(shape: ChosenShape): string | null {
 
   if (willCrop(shape)) {
     const kept = Math.round(100 * (made > want ? want / made : made / want));
+    const what = stamping ? 'the subject and any text' : 'the subject, logo and any text';
     note +=
       made > want
-        ? `. Keep the subject, logo and any text inside the middle ${kept}% of the width; the left and right edges are cropped away`
-        : `. Keep the subject, logo and any text inside the middle ${kept}% of the height; the top and bottom edges are cropped away`;
+        ? `. Keep ${what} inside the middle ${kept}% of the width; the left and right edges are cropped away`
+        : `. Keep ${what} inside the middle ${kept}% of the height; the top and bottom edges are cropped away`;
   }
 
   return note;
@@ -681,16 +693,62 @@ function referenceNote(attached: number, shots: number, category: Category = 'al
  * The approved logo is placed on the picture afterwards (see logoStamp), so
  * the generator draws none of its own and keeps the corner it goes in clear.
  */
-function logoNote(corner: LogoCorner): string {
+function logoNote(corner: LogoCorner, shape?: ChosenShape): string {
   return (
     "Do not draw any brand logo, emblem or wordmark anywhere except as printed on the product's own " +
-    `label. Keep the ${corner} corner free of text and busy detail: the approved logo is placed there afterwards.`
+    `label. Keep ${cornerPlace(corner, shape)} free of text and busy detail: the approved logo is placed there afterwards.`
   );
 }
 
 /** Said first, because a generator weighs the start of a prompt most. */
-function logoLead(corner: LogoCorner): string {
-  return `Leave the ${corner} corner of the frame - about a fifth of its width - as plain background: no text, no logo, no objects.`;
+function logoLead(corner: LogoCorner, shape?: ChosenShape): string {
+  return `Leave ${cornerPlace(corner, shape)} - about a fifth of its width - as plain background: no text, no logo, no objects.`;
+}
+
+/**
+ * Where the logo's corner falls in the picture the generator makes.
+ *
+ * The logo is stamped on the delivered picture. When that is cut from a
+ * wider or taller one, the generated frame's own corner is cut away, and the
+ * delivered corner sits inside the band the generator was told to keep its
+ * subject in - so the logo landed on the subject. The corner it must keep
+ * clear is the corner of the part that is kept.
+ */
+export function cornerPlace(corner: LogoCorner, shape?: ChosenShape): string {
+  const made = shape?.aspectRatio ? ratioOf(shape.aspectRatio) : null;
+  if (!shape?.deliver || made === null || !willCrop(shape)) return `the ${corner} corner of the frame`;
+  const [v, h] = corner.split('-') as ['top' | 'bottom', 'left' | 'right'];
+  const want = shape.deliver.ratio;
+  const kept = Math.round(100 * (made > want ? want / made : made / want));
+  return made > want
+    ? `the ${v} of the frame just inside the ${h} edge of its middle ${kept}% (the part that is kept)`
+    : `the ${h} side of the frame just inside the ${v} edge of its middle ${kept}% (the part that is kept)`;
+}
+
+/**
+ * How the picture is laid out, said every time.
+ *
+ * Nothing used to ask for it: layout came only from whatever the brief
+ * writer happened to say, and pictures came back tilted, crowded, off
+ * balance or with the product cut by the edge. The shape decides where the
+ * hero sits - on the centre line of a square or tall frame, on a third of a
+ * wide one with the other side left for the words.
+ */
+export function compositionNote(shape: ChosenShape, hasProduct: boolean): string {
+  const made = shape.aspectRatio ? ratioOf(shape.aspectRatio) : 1;
+  const ratio = shape.deliver?.ratio ?? made ?? 1;
+  const hero = hasProduct ? 'the product' : 'the main subject';
+  const placing = ratio > 1.25
+    ? `Place ${hero} on the left or right third and keep the other side calm and open for the headline`
+    : `Centre ${hero} on the vertical centre line of the frame, with the headline space above or below it`;
+  return (
+    `Compose it as a clean, balanced, symmetrical advertisement with one clear focal point. ${placing}. ` +
+    `Show ${hero} upright, straight-on and complete - ${hasProduct ? 'label facing the camera, ' : ''}not tilted, ` +
+    'not skewed and not cut off by the edge of the frame - on a level surface with a level horizon. ' +
+    'Arrange any supporting elements in balanced, evenly spaced pairs either side or a deliberate triangle, never ' +
+    'a cluttered pile. Keep even margins to the edges, clean negative space, one consistent light direction and ' +
+    'believable shadows and reflections.'
+  );
 }
 
 

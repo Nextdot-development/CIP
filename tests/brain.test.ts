@@ -2904,6 +2904,27 @@ describe('what the Brain hands the generator', () => {
     assert.deepEqual(none.outcome, { status: 'no_logo' });
   });
 
+  it('asks for a balanced, symmetrical layout placed for the shape', () => {
+    const square = brainGenerate.compositionNote({ aspectRatio: '1:1', exact: true, deliver: null }, true);
+    assert.match(square, /symmetrical/);
+    assert.match(square, /Centre the product on the vertical centre line/);
+    assert.match(square, /upright, straight-on and complete - label facing the camera/);
+    const banner = brainGenerate.compositionNote(
+      { aspectRatio: '3:2', exact: false, deliver: { ratio: 3, label: '3:1', pixels: null } }, false);
+    assert.match(banner, /Place the main subject on the left or right third/);
+    assert.doesNotMatch(banner, /label facing/);
+  });
+
+  it('keeps the logo corner clear in the part of the picture that is kept, not the part cut away', () => {
+    assert.equal(brainGenerate.cornerPlace('top-right', { aspectRatio: '1:1', exact: true, deliver: null }), 'the top-right corner of the frame');
+    // A banner cut from a 3:2 picture keeps the middle half of its height.
+    const banner = brainGenerate.cornerPlace('top-right', { aspectRatio: '3:2', exact: false, deliver: { ratio: 3, label: '3:1', pixels: null } });
+    assert.equal(banner, 'the right side of the frame just inside the top edge of its middle 50% (the part that is kept)');
+    // A story cut from a 2:3 picture keeps the middle of its width.
+    const story = brainGenerate.cornerPlace('bottom-left', { aspectRatio: '2:3', exact: false, deliver: { ratio: 9 / 16, label: '9:16', pixels: null } });
+    assert.match(story, /^the bottom of the frame just inside the left edge of its middle \d+% /);
+  });
+
   it("speaks to a hospital in a hospital's words, not a distiller's", async () => {
     mediaProviders.__setProviders(null, null);
     const out = await brainGenerate.generateWithBrain(nh, { requestText: 'A World Heart Day post', mediaType: 'image' });
