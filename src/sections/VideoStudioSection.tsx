@@ -493,15 +493,25 @@ const QUALITIES = [
   { q: 480, label: 'Small (480p)', hint: 'Smallest - for WhatsApp' },
 ] as const;
 
+/** Choose a size, then download it: a size button only chooses. */
 function Downloads({ label, href }: { label: string; href: (quality: number) => string }) {
+  const [chosen, setChosen] = useState<number>(1080);
+  const hint = QUALITIES.find((o) => o.q === chosen)?.hint;
   return (
     <div className="video-downloads">
-      <span className="tiny strong"><Icon name="download" size={12} /> {label}</span>
-      <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
-        {QUALITIES.map((o) => (
-          <a key={o.q} className={`btn btn-sm ${o.q === 1080 ? 'btn-primary' : ''}`} href={href(o.q)} title={o.hint}>{o.label}</a>
-        ))}
+      <span className="tiny strong">{label}</span>
+      <div className="video-downloads-row">
+        <div className="video-quality" role="radiogroup" aria-label="Size to download">
+          {QUALITIES.map((o) => (
+            <button key={o.q} type="button" role="radio" aria-checked={chosen === o.q}
+              className={`btn btn-sm ${chosen === o.q ? 'is-chosen' : ''}`} title={o.hint} onClick={() => setChosen(o.q)}>
+              {o.label}
+            </button>
+          ))}
+        </div>
+        <a className="btn btn-primary btn-sm" href={href(chosen)}><Icon name="download" size={14} /> Download</a>
       </div>
+      {hint && <span className="tiny muted">{hint}</span>}
     </div>
   );
 }
