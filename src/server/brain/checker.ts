@@ -49,6 +49,13 @@ import type {
  * so. A brain that only ever grows and cannot be corrected drifts.
  */
 
+/**
+ * The checker's own version, for answers kept away from a deployment: raise it
+ * whenever the prompts or the way findings are judged change, so a kept answer
+ * from before is not served as if it were new.
+ */
+const CHECKER_VERSION = 2;
+
 export class CheckRejected extends Error {
   constructor(message: string) {
     super(message);
@@ -607,6 +614,8 @@ async function resolveSubject(
   market: string | null;
   /** True only for a page drawn out of a PDF. */
   fromDocument: boolean;
+  /** The rest of a tall page, below the first image, in order. */
+  restOfPage?: { bytes: Buffer; mimeType: string }[];
   /** Set when the image is a video laid out frame by frame. */
   sequence?: VideoSequence | null;
   /** The sheet's frames at full size, in order. */
@@ -652,17 +661,20 @@ async function resolveSubject(
         throw new CheckRejected(`CIP could not draw page ${page} of that PDF.`);
       }
       // The whole page, not a strip of it: a rule about where the logo sits
-      // cannot be judged from the top third of a page.
-      const band = drawn.bands[0]!;
+      // cannot be judged from the top third of a page. A tall page is drawn in
+      // bands, and only the first used to be looked at - so the bottom of the
+      // page, where the statutory lines sit, was never seen. The rest follow.
+      const [band, ...below] = drawn.bands;
       return {
         fileId: file.id,
         generationId: null,
         subject: pages.length > 0 ? `${file.name} — page ${page}` : file.name,
-        bytes: band.bytes,
-        mimeType: band.mimeType,
+        bytes: band!.bytes,
+        mimeType: band!.mimeType,
         brand: file.brand,
         market: file.market,
         fromDocument: true,
+        restOfPage: below.slice(0, 3).map((b) => ({ bytes: b.bytes, mimeType: b.mimeType })),
       };
     }
 
@@ -1071,6 +1083,104 @@ export async function lookAgain<F extends { ref: string; severity: CheckFinding[
 }
 
 /**
+ * A second look at a still's findings - a single creative or a page.
+ *
+ * Videos always had one; a picture was judged in a single pass, so a wrong
+ * reading of small print stood. Each finding that would cost the creative
+ * anything is held up against the picture again and a close-up cut from it
+ * where the finding points, so a health warning read as missing can be read.
+ * The same terms as a film's: only a plain "this is wrong" removes a finding,
+ * and what was removed is kept with the reason.
+ */
+async function lookAgainStill<F extends { ref: string; severity: CheckFinding['severity']; message: string; place?: FlagBox | null }>(
+  provider: BrainProvider,
+  input: {
+    filename: string;
+    brand: string | null;
+    findings: F[];
+    rules: Map<string, CheckRule>;
+    image: { bytes: Buffer; mimeType: string };
+    rest: { bytes: Buffer; mimeType: string }[];
+  },
+): Promise<{ kept: F[]; secondLook: SecondLook | null }> {
+  const serious = input.findings.filter((f) => f.severity !== 'note');
+  if (serious.length === 0) return { kept: input.findings, secondLook: null };
+
+  let verdicts;
+  try {
+    const whole = await fitForVision(input.image.bytes, input.image.mimeType);
+    const frames: { bytes: Buffer; mimeType: string; label: string }[] = [
+      { ...whole, label: 'Frame 1: the creative, whole:' },
+    ];
+    for (const part of input.rest) {
+      const fitted = await fitForVision(part.bytes, part.mimeType);
+      frames.push({ ...fitted, label: `Frame ${frames.length + 1}: the same page, continued below the frame before:` });
+    }
+    // A close-up where each finding points, while there is room.
+    for (const f of serious) {
+      if (!f.place || frames.length >= MAX_CLOSE_UPS) continue;
+      const crop = await closeUpOf(input.image.bytes, f.place).catch(() => null);
+      if (crop) frames.push({ ...crop, label: `Frame ${frames.length + 1}: a close-up of where ${f.ref} points:` });
+    }
+    const review = await provider.reviewFindings({
+      filename: input.filename,
+      brand: input.brand,
+      findings: serious.map((f) => ({ id: f.ref, rule: ruleLine(input.rules, f.ref), severity: f.severity, message: f.message })),
+      frames,
+      onScreen: '',
+      heard: '',
+      still: true,
+    });
+    verdicts = new Map(review.verdicts.map((v) => [v.id, v]));
+  } catch {
+    return { kept: input.findings, secondLook: { status: 'failed', reviewed: 0, unsure: 0, dropped: [] } };
+  }
+
+  const dropped: SecondLook['dropped'] = [];
+  let unsure = 0;
+  const kept = input.findings.filter((f) => {
+    if (f.severity === 'note') return true;
+    const verdict = verdicts.get(f.ref);
+    if (verdict?.verdict === 'rejected') {
+      dropped.push({ rule: input.rules.get(f.ref)?.statement ?? f.ref, message: f.message, reason: verdict.reason });
+      return false;
+    }
+    if (!verdict || verdict.verdict === 'unsure') unsure += 1;
+    return true;
+  });
+  return { kept, secondLook: { status: 'done', reviewed: serious.length, unsure, dropped } };
+}
+
+/** A rule as the second look reads it: its kind, what it says, and what it allows and forbids. */
+function ruleLine(rules: Map<string, CheckRule>, ref: string): string {
+  const rule = rules.get(ref);
+  if (!rule) return ref;
+  let line = `${rule.kind ?? rule.requirement}: ${rule.statement}`;
+  if (rule.allowed && rule.allowed.length > 0) line += ` (allows: ${rule.allowed.join(', ')})`;
+  if (rule.prohibited && rule.prohibited.length > 0) line += ` (forbids: ${rule.prohibited.join(', ')})`;
+  if (rule.overruled && rule.overruled.length > 0) line += ` (reviewers overruled it before: ${rule.overruled.join('; ')})`;
+  return line;
+}
+
+/** The part of a picture a box marks, with room around it, at a size small print can be read. */
+async function closeUpOf(bytes: Buffer, box: FlagBox): Promise<{ bytes: Buffer; mimeType: string }> {
+  const { createCanvas, loadImage } = await import('@napi-rs/canvas');
+  const img = await loadImage(bytes);
+  const padX = Math.max(box.w * 0.4, 0.05);
+  const padY = Math.max(box.h * 0.4, 0.05);
+  const x0 = Math.max(0, box.x - padX) * img.width;
+  const y0 = Math.max(0, box.y - padY) * img.height;
+  const x1 = Math.min(1, box.x + box.w + padX) * img.width;
+  const y1 = Math.min(1, box.y + box.h + padY) * img.height;
+  const w = Math.max(1, Math.round(x1 - x0));
+  const h = Math.max(1, Math.round(y1 - y0));
+  const scale = Math.min(4, 1200 / Math.max(w, h));
+  const out = createCanvas(Math.round(w * Math.max(1, scale)), Math.round(h * Math.max(1, scale)));
+  out.getContext('2d').drawImage(img, x0, y0, w, h, 0, 0, out.width, out.height);
+  return { bytes: out.toBuffer('image/png'), mimeType: 'image/png' };
+}
+
+/**
  * Checks one creative, start to finish.
  *
  * The provider call happens between two short transactions rather than inside
@@ -1121,7 +1231,8 @@ export async function runCheck(
   // Checks of the same creative, asked the same way, are answered from the
   // last one rather than paid for again (see fingerprint below). Off for the
   // fake provider: tests check one file twice on purpose, with new answers.
-  const reuse = provider.name !== 'fake' || process.env.CIP_CHECK_CACHE === 'on';
+  // CIP_CHECK_CACHE=off turns it off outright, for measuring accuracy.
+  const reuse = process.env.CIP_CHECK_CACHE === 'off' ? false : provider.name !== 'fake' || process.env.CIP_CHECK_CACHE === 'on';
 
   let identified: { brand: string | null; product: string | null; confidence: number; evidence: string | null } | null = null;
 
@@ -1300,7 +1411,9 @@ export async function runCheck(
       : [];
     fingerprint = createHash('sha256')
       .update(JSON.stringify({
-        release: process.env.VERCEL_GIT_COMMIT_SHA ?? 'local',
+        // Away from a deployment there is no commit to go by, and an answer
+        // given by an older checker came back after its prompts had changed.
+        release: process.env.VERCEL_GIT_COMMIT_SHA ?? `local-${CHECKER_VERSION}`,
         file: file?.checksum_sha256 ?? subject.fileId ?? `${subject.generationId}:${input.assetId ?? ''}`,
         page: input.page ?? 1,
         brand,
@@ -1344,7 +1457,12 @@ export async function runCheck(
   let video = subject.sequence ?? null;
 
   let analysis;
-  let closeUps: { bytes: Buffer; mimeType: string; label: string }[] = [];
+  let closeUps: { bytes: Buffer; mimeType: string; label: string }[] = (subject.restOfPage ?? []).map((part, i, all) => ({
+    ...part,
+    label:
+      `The next image is part ${i + 2} of ${all.length + 1} of this same page, continuing straight on below the ` +
+      'one before it. Judge the page as these parts together, top to bottom, as one creative.',
+  }));
   let closeFound: Promise<{ findings: CheckFinding[]; pass: ClosePass }> | null = null;
   try {
     if (video && frames.length > 0) {
@@ -1428,9 +1546,22 @@ export async function runCheck(
     frames.length,
   );
 
-  // A video's findings were made from thumbnails. Each one that would cost the
-  // film anything is looked at again, close up, before it is reported.
+  // A video's findings were made from thumbnails, and a still's in one pass.
+  // Each one that would cost the creative anything is looked at again, close
+  // up, before it is reported.
   let secondLook: SecondLook | null = null;
+  if (!video && analysis.assetKind === 'creative') {
+    const looked = await lookAgainStill(provider, {
+      filename: subject.subject,
+      brand,
+      findings: grounded,
+      rules: new Map(sent.map((r) => [r.ref, r])),
+      image: { bytes: subject.bytes, mimeType: subject.mimeType },
+      rest: subject.restOfPage ?? [],
+    });
+    grounded = looked.kept;
+    secondLook = looked.secondLook;
+  }
   if (video && frames.length > 0 && analysis.assetKind === 'creative') {
     const looked = await lookAgain(provider, {
       filename: subject.subject,
@@ -1464,8 +1595,8 @@ export async function runCheck(
   if (video && frames.length > 0) await keepFrames(scope, checkId, frames);
 
   await withCompanyScope(scope, async (tx) => {
-    for (const finding of grounded) {
-      await tx`
+    // Every flag sent at once: each was a round trip to the database, in turn.
+    await Promise.all(grounded.map((finding) => tx`
         insert into check_flags
           (company_id, check_id, dimension, severity, message, fact_id, rule_id, at_seconds, issue, also_rule_ids, box)
         values
@@ -1477,8 +1608,7 @@ export async function runCheck(
            ${finding.place
              ? tx.json({ ...finding.place, at: finding.place.frame ? frames[finding.place.frame - 1]!.atSeconds : null })
              : null})
-      `;
-    }
+      `));
     await tx`
       update creative_checks
          set status = 'ready', summary = ${summary}, asset_kind = ${analysis.assetKind},

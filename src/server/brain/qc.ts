@@ -72,12 +72,12 @@ export async function runQc(
 /** The reviewer's view of a check that has already run. */
 export async function reportOn(scope: CompanyScope, check: CreativeCheck): Promise<QcReport> {
   // The same rules the check was judged against: a film's, or a picture's.
-  const rules = await rulesForBrief(scope, {
-    brand: check.brand,
-    market: check.market,
-    format: check.video ? 'video' : 'image',
-  });
-  const everyFormat = await rulesForBrief(scope, { brand: check.brand, market: check.market });
+  // Both lists at once: each was a round trip to the database, in turn, for
+  // every page of a document.
+  const [rules, everyFormat] = await Promise.all([
+    rulesForBrief(scope, { brand: check.brand, market: check.market, format: check.video ? 'video' : 'image' }),
+    rulesForBrief(scope, { brand: check.brand, market: check.market }),
+  ]);
   const applied = new Set(rules.map((r) => r.id));
   const notApplicable = everyFormat.filter((r) => !applied.has(r.id)).map((r) => ({ id: r.id, rule: r.rule }));
 
@@ -116,8 +116,12 @@ export async function reportOn(scope: CompanyScope, check: CreativeCheck): Promi
     };
   }
 
+  // A flag that cites no rule departs from a pattern the brand has usually
+  // followed - its Brand DNA - not from anything it must do. That is for a
+  // person to weigh, not a fault to fix: counted as one, it failed creatives
+  // that broke no rule at all.
   const advisory = (flag: CheckFlag): boolean => {
-    if (!flag.citedRule) return false;
+    if (!flag.citedRule) return true;
     return flag.citedRule.source === 'suggested' && verifiedById.get(flag.citedRule.id) !== true;
   };
 

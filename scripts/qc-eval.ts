@@ -157,7 +157,10 @@ async function main(): Promise<void> {
       const check = await runCheck(scope!, { fileId, brand: row.brand || null, market: row.market || null, page: row.page });
       const report = await reportOn(scope!, check);
       const flags = [...report.mustFix, ...report.toReview];
-      const got = report.mustFix.length > 0 ? 'fix' : flags.some((f) => f.severity !== 'note') ? 'fix' : 'pass';
+      // The verdict the reviewer sees: only what must be fixed fails it.
+      // A pattern the brand usually follows, or an unverified suggestion, is
+      // for a person to weigh and does not make a creative "fix".
+      const got = report.mustFix.length > 0 ? 'fix' : 'pass';
 
       // A flag matches an expected fault by code, or by its words.
       const text = (f: (typeof flags)[number]) =>

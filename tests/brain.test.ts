@@ -987,6 +987,22 @@ describe('THE CHECKER: a creative judged against the brand, and nothing else', (
     assert.equal(report.mustFix.length, 0);
   });
 
+  it("puts a departure from the brand's usual look up for review, not as a fault to fix", async () => {
+    await adminSql`
+      insert into brand_dna_facts (company_id, section, attribute, value, brand, kind, confidence, evidence_count)
+      values (${mm.companyId}, 'visual', 'palette', 'deep purple and gold', null, 'derived', 0.8, 6)
+    `;
+    fake.checkFindings = [{ ref: 'F1', dimension: 'visual', severity: 'warning', message: 'The palette is green, not purple and gold.' }];
+    const check = await checkedImage();
+    assert.equal(check.flags.length, 1);
+    assert.equal(check.flags[0]!.citedRule, null, 'it cites a pattern, not a rule');
+    const { reportOn } = await import('../src/server/brain/qc');
+    const report = await reportOn(mm, check);
+    assert.equal(report.mustFix.length, 0);
+    assert.equal(report.toReview.length, 1);
+    assert.equal(report.verdict, 'review');
+  });
+
   // The picker offered "Let CIP work it out" and CIP did not: with no brand
   // named, only the house-wide rules were ever fetched, so 8PM Honey's
   // prohibition on bees never applied to an 8PM Honey creative.
@@ -1587,16 +1603,24 @@ describe('THE CHECKER: a creative judged against the brand, and nothing else', (
     assert.equal(check.video!.closePass, null);
   });
 
-  it('does not look twice at a picture, only at a film', async () => {
+  it('looks twice at a picture too, close up, and drops only what is plainly wrong', async () => {
     await rule('required', 'Carry the statutory warning.');
+    await rule('forbidden', 'Never show a competitor logo.');
     fake.checkFindings = [
       { ref: 'R1', dimension: 'compliance', severity: 'critical', message: 'No statutory warning.' },
+      { ref: 'R2', dimension: 'compliance', severity: 'critical', message: 'A competitor logo, bottom left.', box: [0.05, 0.8, 0.2, 0.1] },
     ];
+    fake.reviewVerdicts = ['confirmed', 'rejected'];
     const check = await checkedImage();
-    assert.equal(fake.calls.review, 0);
+    assert.equal(fake.calls.review, 1, 'one second look for the picture');
+    assert.equal(fake.lastReviewInput?.still, true);
+    assert.equal(fake.lastReviewInput?.frames[0]?.label, 'Frame 1: the creative, whole:');
+    assert.ok(fake.lastReviewInput?.frames.some((f) => /close-up of where R2 points/.test(f.label)), 'a close-up where the finding points');
     assert.equal(fake.calls.frameText, 0);
     assert.equal(check.video, null);
+    assert.deepEqual(check.flags.map((f) => f.message), ['No statutory warning.'], 'the rejected one is dropped');
     assert.deepEqual(check.flags[0]!.atSeconds, []);
+    fake.reviewVerdicts = null;
   });
 
   // "Subtitles must match the voiceover" sent to the checker for a banner is a

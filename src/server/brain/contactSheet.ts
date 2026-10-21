@@ -70,13 +70,17 @@ export async function videoContactSheet(
     ]);
     const plan = framesForShots(metadata.durationSeconds, cuts);
 
-    const frames: SampledFrame[] = [];
-    for (const at of plan.at) {
-      // The last moment can land past the final keyframe and decode to
-      // nothing. A second earlier is still the end card.
-      const frame = (await frameAt(path, at, 1280)) ?? (await frameAt(path, Math.max(0, at - 1), 1280));
-      if (frame) frames.push(frame);
+    // Taken four at a time rather than one after another: each is its own
+    // short ffmpeg run, and they do not wait on each other. Order is kept.
+    const taken: (SampledFrame | null)[] = new Array(plan.at.length).fill(null);
+    for (let start = 0; start < plan.at.length; start += 4) {
+      await Promise.all(plan.at.slice(start, start + 4).map(async (at, i) => {
+        // The last moment can land past the final keyframe and decode to
+        // nothing. A second earlier is still the end card.
+        taken[start + i] = (await frameAt(path, at, 1280)) ?? (await frameAt(path, Math.max(0, at - 1), 1280));
+      }));
     }
+    const frames = taken.filter((f): f is SampledFrame => f !== null);
     if (frames.length === 0) {
       throw new BrainFailed('UNSUPPORTED_ASSET', 'permanent', 'CIP could not take any frames from that video.');
     }

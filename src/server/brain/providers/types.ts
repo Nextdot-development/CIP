@@ -781,6 +781,11 @@ export type ReviewInput = {
   onScreen: string;
   /** The soundtrack in words, or a line saying why there are none. */
   heard: string;
+  /**
+   * A single picture or page, not a film: the frames are the creative itself
+   * and close-ups cut from it, and there is no soundtrack.
+   */
+  still?: boolean;
 };
 
 export type ReviewVerdict = {

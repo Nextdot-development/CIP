@@ -1186,41 +1186,13 @@ export class OpenAIBrainProvider implements BrainProvider {
     const content: Content[] = [
       {
         type: 'text',
+        // The instructions every check shares come first and word for word the
+        // same, so the provider's prompt cache can hold them; what changes - this
+        // creative, its brand, its frames, its rules - comes after. Starting with
+        // the filename meant no two prompts shared a beginning, and nothing was
+        // ever served from the cache.
         text:
-          `You are reviewing one creative named "${input.filename}" before it is published` +
-          (input.brand ? ` for the brand ${input.brand}` : '') +
-          (input.market ? ` in ${input.market}` : '') +
-          '.\n\n' +
-          (input.sequence ? videoSheetNote(input.sequence) : '') +
-          (input.fromDocument
-            ? 'This is one page of a document, so first say what is on it.\n' +
-              '- "creative": an advert, post, banner, packshot, or anything laid out to ' +
-              'promote the product to a customer.\n' +
-              '- "document_page": the document\'s own furniture — a title slide, a section ' +
-              'divider, a contents page, a chart, a table, a page of body text, an agenda, ' +
-              'a thank-you slide.\n' +
-              '- "blank": nothing on it worth judging.\n\n' +
-              'If it is not a creative, return no findings at all. The rules below are ' +
-              'about advertising, and a divider slide has not broken one by lacking a logo ' +
-              'in the top-right or by not showing the product.\n\n' +
-              'When it could be either, say "creative". A missed fault on a real advert is ' +
-              'far worse than a divider that was checked anyway.\n\n'
-            : // Somebody uploaded this one picture and asked whether it can go
-              // out. Letting it answer "this looks like a chart" checks nothing
-              // and reports it as perfect, which is how a creative with real
-              // faults came back at a hundred out of a hundred.
-              'Set assetKind to "creative": this is a single creative somebody has ' +
-              'submitted for review, not a page of a document.\n\n') +
-          (input.houseBrands.length > 0
-            ? // A rule about competitor logos was turned against the house
-              // itself: checking a Magic Moments creative as 8PM, the Brain
-              // asked for the Magic Moments logo to be removed. Which names
-              // belong to this company is a fact, not something to judge.
-              `These brands all belong to this same company: ${input.houseBrands.join(', ')}. ` +
-              'None of them is a competitor, whichever one this creative is for. If it ' +
-              'carries another of the house\'s brands, say so plainly — but do not report ' +
-              'it as a competitor logo.\n\n'
-            : '') +
+          'You review creatives before they are published, against the rules listed at the end.\n\n' +
           'Judge it only against the rules listed below. Each has a ref. Report a finding ' +
           'only where the creative visibly breaks a rule or visibly lacks something a rule ' +
           'requires, and cite exactly one ref per finding. Never report a rule that is not ' +
@@ -1270,6 +1242,40 @@ export class OpenAIBrainProvider implements BrainProvider {
               '[x, y, width, height] in fractions of the picture from its top-left corner - tight ' +
               'around the logo, the bottle, the words at fault. Leave box empty when the fault is ' +
               'something missing, or the whole picture.\n\n') +
+          `This one is "${input.filename}"` +
+          (input.brand ? `, for the brand ${input.brand}` : '') +
+          (input.market ? `, in ${input.market}` : '') +
+          '.\n\n' +
+          (input.sequence ? videoSheetNote(input.sequence) : '') +
+          (input.fromDocument
+            ? 'This is one page of a document, so first say what is on it.\n' +
+              '- "creative": an advert, post, banner, packshot, or anything laid out to ' +
+              'promote the product to a customer.\n' +
+              '- "document_page": the document\'s own furniture — a title slide, a section ' +
+              'divider, a contents page, a chart, a table, a page of body text, an agenda, ' +
+              'a thank-you slide.\n' +
+              '- "blank": nothing on it worth judging.\n\n' +
+              'If it is not a creative, return no findings at all. The rules below are ' +
+              'about advertising, and a divider slide has not broken one by lacking a logo ' +
+              'in the top-right or by not showing the product.\n\n' +
+              'When it could be either, say "creative". A missed fault on a real advert is ' +
+              'far worse than a divider that was checked anyway.\n\n'
+            : // Somebody uploaded this one picture and asked whether it can go
+              // out. Letting it answer "this looks like a chart" checks nothing
+              // and reports it as perfect, which is how a creative with real
+              // faults came back at a hundred out of a hundred.
+              'Set assetKind to "creative": this is a single creative somebody has ' +
+              'submitted for review, not a page of a document.\n\n') +
+          (input.houseBrands.length > 0
+            ? // A rule about competitor logos was turned against the house
+              // itself: checking a Magic Moments creative as 8PM, the Brain
+              // asked for the Magic Moments logo to be removed. Which names
+              // belong to this company is a fact, not something to judge.
+              `These brands all belong to this same company: ${input.houseBrands.join(', ')}. ` +
+              'None of them is a competitor, whichever one this creative is for. If it ' +
+              'carries another of the house\'s brands, say so plainly — but do not report ' +
+              'it as a competitor logo.\n\n'
+            : '') +
           `Rules:\n${rules || '(none)'}`,
       },
       {
@@ -1324,7 +1330,7 @@ export class OpenAIBrainProvider implements BrainProvider {
       assetKind: string;
       summary: string;
       findings: CheckFinding[];
-    }>(content, CHECK_SCHEMA, 'creative_check', 3_000);
+    }>(content, CHECK_SCHEMA, 'creative_check', 6_000);
 
     // Only a page of a document may excuse itself. A single uploaded creative
     // that decides it is a chart checks nothing and scores a hundred, which is
@@ -1800,11 +1806,17 @@ export class OpenAIBrainProvider implements BrainProvider {
       {
         type: 'text',
         text:
-          `A first check of the video "${input.filename}"` +
-          (input.brand ? ` for ${input.brand}` : '') +
-          ' looked at small thumbnails of its frames and reported the findings below. You now ' +
-          'have the frames at full size, the text read off every frame, and what the soundtrack ' +
-          'says. Decide, for each finding, whether it is really there.\n\n' +
+          (input.still
+            ? `A first check of the creative "${input.filename}"` +
+              (input.brand ? ` for ${input.brand}` : '') +
+              ' looked at it once, as a whole, and reported the findings below. You now have it ' +
+              'again (frame 1), and close-ups cut from it at the places the findings point to, ' +
+              'where small print can be read. Decide, for each finding, whether it is really there.\n\n'
+            : `A first check of the video "${input.filename}"` +
+              (input.brand ? ` for ${input.brand}` : '') +
+              ' looked at small thumbnails of its frames and reported the findings below. You now ' +
+              'have the frames at full size, the text read off every frame, and what the soundtrack ' +
+              'says. Decide, for each finding, whether it is really there.\n\n') +
           '- confirmed: what you can now see or read shows the finding is right.\n' +
           '- rejected: what you can now see or read plainly shows it is wrong - the required ' +
           'thing is there after all (in a frame, in the text read off the frames, or in the ' +
@@ -1825,9 +1837,10 @@ export class OpenAIBrainProvider implements BrainProvider {
           'cell. If the element is in the cell the rule names, the finding is plainly wrong: ' +
           'reject it. An end card, final frame or last frame rule is judged on the end card ' +
           'alone.\n\n' +
-          `Findings:\n${findings}\n\n` +
-          `Text read off each frame:\n${input.onScreen || '(none read)'}\n\n` +
-          `Soundtrack: ${input.heard}`,
+          `Findings:\n${findings}` +
+          (input.still
+            ? ''
+            : `\n\nText read off each frame:\n${input.onScreen || '(none read)'}\n\n` + `Soundtrack: ${input.heard}`),
       },
     ];
     for (const frame of input.frames) {
@@ -1860,7 +1873,32 @@ export class OpenAIBrainProvider implements BrainProvider {
     };
   }
 
+  /**
+   * One call, tried a second time when it failed for a reason that passes: a
+   * brief rate limit, a provider hiccup, or an answer cut short because the
+   * budget went on reasoning - that one with twice the budget. A whole check
+   * used to fail on the first such blip. A timeout is not tried again: it has
+   * already cost two minutes.
+   */
   private async call<T>(
+    content: Content[],
+    schema: unknown,
+    schemaName: string,
+    maxTokens: number,
+  ): Promise<{ parsed: T; usage: BrainUsage }> {
+    try {
+      return await this.callOnce<T>(content, schema, schemaName, maxTokens);
+    } catch (error) {
+      if (!(error instanceof BrainFailed) || error.code === 'TIMEOUT') throw error;
+      if (error.kind !== 'transient' && error.kind !== 'rate_limited') throw error;
+      const ranOut = error.message.includes('ran out of token budget');
+      const wait = error.kind === 'rate_limited' ? Math.min(20, error.retryAfterSeconds ?? 3) * 1000 : ranOut ? 0 : 1_500;
+      if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+      return this.callOnce<T>(content, schema, schemaName, ranOut ? maxTokens * 2 : maxTokens);
+    }
+  }
+
+  private async callOnce<T>(
     content: Content[],
     schema: unknown,
     schemaName: string,
