@@ -168,7 +168,14 @@ export async function renderFilm(input: RenderInput): Promise<RenderResult> {
     const size = { width: even(full.width * shrink), height: even(full.height * shrink) };
     const vertical = size.height > size.width;
     const { width, height } = size;
-    const x264 = input.preview ? ['-preset', 'ultrafast', '-crf', '32'] : ['-preset', 'veryfast', '-crf', '21'];
+    // The pieces are kept near-lossless and the film is compressed once, at
+    // the end, carefully: each round of compression costs sharpness.
+    const working = input.preview
+      ? ['-preset', 'ultrafast', '-crf', '30', '-c:a', 'aac', '-b:a', '128k']
+      : ['-preset', 'ultrafast', '-crf', '10', '-c:a', 'aac', '-b:a', '320k'];
+    const x264 = input.preview
+      ? ['-preset', 'ultrafast', '-crf', '32']
+      : ['-preset', 'fast', '-crf', '18', '-profile:v', 'high', '-pix_fmt', 'yuv420p'];
 
     // Every cut's edges in the quietest moment close by.
     const loudness = meta.hasAudio ? await loudnessOf(sourcePath, dir) : new Float32Array(0);
@@ -337,7 +344,7 @@ export async function renderFilm(input: RenderInput): Promise<RenderResult> {
     const mainPath = join(dir, 'main.mp4');
     await runFfmpeg(
       [...inputs, '-filter_complex', graph.join(';'), '-map', '[film]', '-map', '[audio]',
-        '-c:v', 'libx264', ...x264, '-c:a', 'aac', '-b:a', '160k', '-ar', '48000', '-ac', '2',
+        '-c:v', 'libx264', ...working, '-ar', '48000', '-ac', '2',
         '-t', t3(filmSeconds), '-movflags', '+faststart', '-y', mainPath],
       Math.max(240_000, filmSeconds * 6_000),
     );
@@ -364,7 +371,7 @@ export async function renderFilm(input: RenderInput): Promise<RenderResult> {
         [...openInputs, '-f', 'lavfi', '-t', t3(total), '-i', 'anullsrc=r=48000:cl=stereo',
           '-filter_complex', `${cards.map((_, i) => `[${i}:v]scale=${width}:${height},setsar=1,fps=${FPS},format=yuv420p[c${i}]`).join(';')};` +
             `${cards.map((_, i) => `[c${i}]`).join('')}concat=n=${cards.length}:v=1:a=0[v]`,
-          '-map', '[v]', '-map', `${cards.length}:a`, '-c:v', 'libx264', '-preset', 'veryfast', '-c:a', 'aac', '-ar', '48000', '-ac', '2',
+          '-map', '[v]', '-map', `${cards.length}:a`, '-c:v', 'libx264', ...working, '-ar', '48000', '-ac', '2',
           '-t', t3(total), '-y', openPath],
         120_000,
       );
@@ -386,7 +393,7 @@ export async function renderFilm(input: RenderInput): Promise<RenderResult> {
       await runFfmpeg(
         ['-loop', '1', '-t', endSeconds.toFixed(2), '-i', image, '-f', 'lavfi', '-t', endSeconds.toFixed(2), '-i', 'anullsrc=r=48000:cl=stereo',
           '-vf', `scale=${width}:${height},setsar=1,fps=${FPS},format=yuv420p`,
-          '-c:v', 'libx264', '-preset', 'veryfast', '-c:a', 'aac', '-ar', '48000', '-ac', '2', '-shortest', '-y', endPath],
+          '-c:v', 'libx264', ...working, '-ar', '48000', '-ac', '2', '-shortest', '-y', endPath],
         120_000,
       );
     }
@@ -413,7 +420,7 @@ export async function renderFilm(input: RenderInput): Promise<RenderResult> {
     const total = pieces.reduce((n, p) => n + p.seconds, 0);
     await runFfmpeg(
       [...joinInputs, '-filter_complex', joinGraph.join(';'), '-map', '[v]', '-map', '[a]',
-        '-c:v', 'libx264', ...x264, '-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart', '-y', outPath],
+        '-c:v', 'libx264', ...x264, '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', '-y', outPath],
       Math.max(240_000, total * 5_000),
     );
 

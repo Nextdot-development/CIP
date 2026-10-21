@@ -649,14 +649,50 @@ export function whenSaid(words: readonly Word[], block: { from: number; to: numb
 /** Where each thing made for a film is kept. */
 const keysFor = (companyId: string, id: string) => {
   const film = videoEditKeyFor(companyId, id);
+  const vertical = film.replace(/\.mp4$/, '-vertical.mp4');
+  const smaller = (key: string, q: number) => key.replace(/\.mp4$/, `-${q}.mp4`);
   return {
     film,
-    vertical: film.replace(/\.mp4$/, '-vertical.mp4'),
+    vertical,
     thumbnail: film.replace(/\.mp4$/, '-thumbnail.png'),
     preview: film.replace(/\.mp4$/, '-preview.mp4'),
     waveform: film.replace(/\.mp4$/, '-waveform.png'),
+    film720: smaller(film, 720),
+    film480: smaller(film, 480),
+    vertical720: smaller(vertical, 720),
+    vertical480: smaller(vertical, 480),
   };
 };
+
+/**
+ * The sizes a film can be downloaded at, by its short side: the film as made
+ * (Full HD), HD, and a small one for sharing on a phone.
+ */
+export const DOWNLOAD_QUALITIES = [1080, 720, 480] as const;
+export type DownloadQuality = (typeof DOWNLOAD_QUALITIES)[number];
+
+/**
+ * A film at a smaller size, made the first time it is asked for and kept.
+ * A film already that small or smaller is returned as it is.
+ */
+async function atQuality(bytes: Buffer, quality: 720 | 480, key: string): Promise<Buffer> {
+  const kept = await driveStorage().get(key).catch(() => null);
+  if (kept) return kept;
+  const smaller = await withTempFile(bytes, 'mp4', async (path) => {
+    const meta = await readVideoMetadata(path);
+    if (Math.min(meta.width ?? 0, meta.height ?? 0) <= quality) return bytes;
+    const out = `${path}.${quality}.mp4`;
+    await runFfmpeg(
+      ['-i', path, '-vf', `scale='if(gt(iw,ih),-2,${quality})':'if(gt(iw,ih),${quality},-2)':flags=lanczos`,
+        '-c:v', 'libx264', '-preset', 'fast', '-crf', quality === 720 ? '20' : '23', '-pix_fmt', 'yuv420p',
+        '-c:a', 'aac', '-b:a', quality === 720 ? '160k' : '128k', '-movflags', '+faststart', '-y', out],
+      Math.max(120_000, (meta.durationSeconds || 60) * 4_000),
+    );
+    return readFileFs(out);
+  });
+  if (smaller !== bytes) await driveStorage().put(key, smaller, 'video/mp4').catch(() => {});
+  return smaller;
+}
 
 /** Everything a film is made from, read once. */
 async function renderInputFor(scope: CompanyScope, id: string): Promise<{ input: RenderInput; makeVertical: boolean }> {
@@ -731,13 +767,22 @@ export async function renderEdit(scope: CompanyScope, id: string): Promise<void>
   const film = await renderFilm(input);
   const keys = keysFor(scope.companyId, id);
   await driveStorage().put(keys.film, film.bytes, 'video/mp4');
+  for (const old of [keys.film720, keys.film480, keys.vertical720, keys.vertical480]) await driveStorage().remove(old).catch(() => {});
   if (film.thumbnail) await driveStorage().put(keys.thumbnail, film.thumbnail, 'image/png');
 
   let vertical: string | null = null;
+  let short: Buffer | null = null;
   if (makeVertical && film.shape === 'horizontal') {
-    const short = await renderFilm({ ...input, shape: 'vertical', words: undefined, thumbnail: null });
-    await driveStorage().put(keys.vertical, short.bytes, 'video/mp4');
+    short = (await renderFilm({ ...input, shape: 'vertical', words: undefined, thumbnail: null })).bytes;
+    await driveStorage().put(keys.vertical, short, 'video/mp4');
     vertical = keys.vertical;
+  }
+  // The smaller downloads made now, so each is there the moment it is asked for.
+  await atQuality(film.bytes, 720, keys.film720);
+  await atQuality(film.bytes, 480, keys.film480);
+  if (short) {
+    await atQuality(short, 720, keys.vertical720);
+    await atQuality(short, 480, keys.vertical480);
   }
   await withCompanyScope(scope, (tx) => tx`
     update video_edits
@@ -784,6 +829,7 @@ export async function readOutput(
   scope: CompanyScope,
   id: string,
   kind: 'film' | 'vertical' | 'thumbnail' | 'preview' | 'captions',
+  quality: DownloadQuality = 1080,
 ): Promise<{ bytes: Buffer; name: string; type: string } | null> {
   if (!UUID.test(id)) return null;
   const [row] = await withCompanyScope(scope, (tx) => tx<{
@@ -804,8 +850,13 @@ export async function readOutput(
   if (row.status !== 'ready') return null;
   const path = kind === 'film' ? row.output_path : kind === 'vertical' ? row.output_vertical_path : row.thumbnail_path;
   if (!path) return null;
-  const name = kind === 'film' ? `${base}.mp4` : kind === 'vertical' ? `${base} (Short).mp4` : `${base} (thumbnail).png`;
-  return { bytes: await driveStorage().get(path), name, type: kind === 'thumbnail' ? 'image/png' : 'video/mp4' };
+  if (kind === 'thumbnail') return { bytes: await driveStorage().get(path), name: `${base} (thumbnail).png`, type: 'image/png' };
+  const full = await driveStorage().get(path);
+  const label = kind === 'vertical' ? ' (Short)' : '';
+  if (quality === 1080) return { bytes: full, name: `${base}${label}.mp4`, type: 'video/mp4' };
+  const keys = keysFor(scope.companyId, id);
+  const key = kind === 'vertical' ? (quality === 720 ? keys.vertical720 : keys.vertical480) : quality === 720 ? keys.film720 : keys.film480;
+  return { bytes: await atQuality(full, quality, key), name: `${base}${label} (${quality}p).mp4`, type: 'video/mp4' };
 }
 
 /** The finished film. */

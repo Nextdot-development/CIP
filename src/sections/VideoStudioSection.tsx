@@ -351,12 +351,12 @@ function PlanEditor({ edit, footage, onChanged }: {
         <div className="video-outputs">
           <div style={{ display: 'grid', gap: 6, flex: '1 1 360px' }}>
             <video src={out('film', true)} controls style={{ width: '100%' }} />
-            <a className="btn btn-sm" href={out('film')}><Icon name="download" size={14} /> Download film</a>
+            <Downloads label="Download film" href={(q) => `${out('film')}&quality=${q}`} />
           </div>
           {edit.has.vertical && (
             <div style={{ display: 'grid', gap: 6 }}>
               <video src={out('vertical', true)} controls style={{ width: 236 }} />
-              <a className="btn btn-sm" href={out('vertical')}><Icon name="download" size={14} /> Download Short</a>
+              <Downloads label="Download Short" href={(q) => `${out('vertical')}&quality=${q}`} />
             </div>
           )}
           <div style={{ display: 'grid', gap: 6 }}>
@@ -521,6 +521,26 @@ function PlanEditor({ edit, footage, onChanged }: {
         </div>
       )}
     </section>
+  );
+}
+
+/** The sizes a film can be downloaded at, all made with the film. */
+const QUALITIES = [
+  { q: 1080, label: 'Full HD (1080p)', hint: 'Best - for YouTube' },
+  { q: 720, label: 'HD (720p)', hint: 'Smaller - for websites' },
+  { q: 480, label: 'Small (480p)', hint: 'Smallest - for WhatsApp' },
+] as const;
+
+function Downloads({ label, href }: { label: string; href: (quality: number) => string }) {
+  return (
+    <div className="video-downloads">
+      <span className="tiny strong"><Icon name="download" size={12} /> {label}</span>
+      <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+        {QUALITIES.map((o) => (
+          <a key={o.q} className={`btn btn-sm ${o.q === 1080 ? 'btn-primary' : ''}`} href={href(o.q)} title={o.hint}>{o.label}</a>
+        ))}
+      </div>
+    </div>
   );
 }
 

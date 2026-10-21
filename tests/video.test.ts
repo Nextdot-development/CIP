@@ -394,6 +394,18 @@ describe('a recording into a film', () => {
     assert.doesNotMatch(srt, /\bum\b/, 'no fillers in the captions');
     assert.equal(await video.readOutput(mm, planned.id, 'vertical'), null, 'another company sees none of it');
     assert.ok(await video.readWaveform(nh, planned.id), 'the timeline has the sound to draw');
+
+    // Downloads at a smaller size: made once, kept, named for their size.
+    const hd = (await video.readOutput(nh, planned.id, 'vertical', 720))!;
+    assert.match(hd.name, /\(Short\) \(720p\)\.mp4$/);
+    writeFileSync(join(workdir, 'short-720.mp4'), hd.bytes);
+    const hdMeta = await readVideoMetadata(join(workdir, 'short-720.mp4'));
+    assert.deepEqual([hdMeta.width, hdMeta.height], [720, 1280]);
+    assert.ok(hd.bytes.length < (await video.readOutput(nh, planned.id, 'vertical'))!.bytes.length);
+    const again = (await video.readOutput(nh, planned.id, 'vertical', 720))!;
+    assert.equal(again.bytes.length, hd.bytes.length, 'the second time it is the kept copy');
+    const small480 = (await video.readOutput(nh, planned.id, 'film', 480))!;
+    assert.equal(small480.bytes.length, (await video.readOutput(nh, planned.id, 'film'))!.bytes.length, 'a film already that small is given as it is');
   });
 
   it('with "no b-roll", asks for none and makes the film straight away', async () => {

@@ -443,3 +443,4 @@ a.gtag:hover { color: var(--ink-900); border-color: var(--ink-400); }
 .video-outputs { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-start; margin: 12px 0; }
 .video-outputs video { max-height: 420px; border-radius: 8px; background: #000; }
 .video-outputs img { width: 320px; border-radius: 6px; }
+.video-downloads { display: grid; gap: 4px; }

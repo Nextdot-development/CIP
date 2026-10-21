@@ -79,8 +79,8 @@ async function forEditing(bytes: Buffer, extension: string): Promise<Buffer> {
     const out = `${path}.edit.mp4`;
     await runFfmpeg(
       ['-i', path, '-vf', "scale='if(gte(iw,ih),-2,min(1080,iw))':'if(gte(iw,ih),min(1080,ih),-2)'",
-        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p',
-        '-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart', '-y', out],
+        '-c:v', 'libx264', '-preset', 'medium', '-crf', '16', '-pix_fmt', 'yuv420p',
+        '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', '-y', out],
       20 * 60_000,
     );
     return readFile(out);
