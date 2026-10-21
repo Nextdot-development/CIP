@@ -2,8 +2,9 @@ import 'server-only';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createCanvas, loadImage } from '@napi-rs/canvas';
 import { readVideoMetadata, runFfmpeg } from '../brain/media';
-import { PANEL_LEFT, disclaimerCard, houseEndCard, housePanel, houseThumbnail, introCard, logoBadge, namePlate } from './cards';
+import { PANEL_LEFT, disclaimerCard, houseEndCard, housePanel, introCard, logoBadge, namePlate } from './cards';
 import type { HouseColours } from './cards';
 import { captionsSrt, keptLength, keptSpans, snapCuts, toFilmSpan, toFilmTime } from './timeline';
 import type { Span } from './timeline';
@@ -60,8 +61,6 @@ export type RenderInput = {
   preview?: boolean;
   /** Every word with its time, for the captions. */
   words?: { w: string; from: number; to: number }[];
-  /** The YouTube thumbnail, with this title. */
-  thumbnail?: { title: string } | null;
 };
 
 export type RenderResult = {
@@ -71,8 +70,6 @@ export type RenderResult = {
   seconds: number;
   /** The captions as an .srt, in the finished film's time. */
   captions: string | null;
-  /** The YouTube thumbnail, 1280 x 720 PNG. */
-  thumbnail: Buffer | null;
 };
 
 const FPS = 30;
@@ -85,6 +82,41 @@ const FADE = 0.35;
 const PLATE_SECONDS = { horizontal: 9.5, vertical: 4.5 };
 
 const even = (n: number) => Math.max(2, Math.round(n / 2) * 2);
+
+/**
+ * A full-frame overlay cut down to what is drawn on it, and where that sits.
+ * An overlay is decoded and blended every frame it is up: a name plate is a
+ * tenth of the frame, so blending the other nine tenths is wasted work.
+ */
+async function trimmed(png: Buffer): Promise<{ png: Buffer; x: number; y: number }> {
+  const img = await loadImage(png);
+  const { width, height } = img;
+  const canvas = createCanvas(width, height);
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(img, 0, 0);
+  const { data } = ctx.getImageData(0, 0, width, height);
+  let x0 = width;
+  let y0 = height;
+  let x1 = -1;
+  let y1 = -1;
+  for (let y = 0; y < height; y++) {
+    const row = y * width * 4;
+    for (let x = 0; x < width; x++) {
+      if (data[row + x * 4 + 3]! === 0) continue;
+      if (x < x0) x0 = x;
+      if (x > x1) x1 = x;
+      if (y < y0) y0 = y;
+      if (y > y1) y1 = y;
+    }
+  }
+  if (x1 < 0) return { png, x: 0, y: 0 };
+  const w = x1 - x0 + 1;
+  const h = y1 - y0 + 1;
+  if (w * h > width * height * 0.9) return { png, x: 0, y: 0 };
+  const out = createCanvas(w, h);
+  out.getContext('2d').drawImage(canvas, x0, y0, w, h, 0, 0, w, h);
+  return { png: out.toBuffer('image/png'), x: x0, y: y0 };
+}
 const t3 = (n: number) => n.toFixed(3);
 const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));
 
@@ -175,7 +207,7 @@ export async function renderFilm(input: RenderInput): Promise<RenderResult> {
       : ['-preset', 'ultrafast', '-crf', '10', '-c:a', 'aac', '-b:a', '320k'];
     const x264 = input.preview
       ? ['-preset', 'ultrafast', '-crf', '32']
-      : ['-preset', 'fast', '-crf', '18', '-profile:v', 'high', '-pix_fmt', 'yuv420p'];
+      : ['-preset', 'veryfast', '-crf', '17', '-profile:v', 'high', '-pix_fmt', 'yuv420p'];
 
     // Every cut's edges in the quietest moment close by.
     const loudness = meta.hasAudio ? await loudnessOf(sourcePath, dir) : new Float32Array(0);
@@ -191,7 +223,8 @@ export async function renderFilm(input: RenderInput): Promise<RenderResult> {
     let label = 0;
 
     /** A still, on screen from `start` for `seconds`, optionally fading in and out. */
-    const still = async (name: string, png: Buffer, start: number, seconds: number, fade: { in?: boolean; out?: boolean } = {}) => {
+    const still = async (name: string, full: Buffer, start: number, seconds: number, fade: { in?: boolean; out?: boolean } = {}) => {
+      const { png, x, y } = await trimmed(full);
       const path = join(dir, `${name}.png`);
       await writeFile(path, png);
       inputs.push('-loop', '1', '-framerate', String(FPS), '-t', t3(seconds), '-i', path);
@@ -201,13 +234,15 @@ export async function renderFilm(input: RenderInput): Promise<RenderResult> {
         ...(fade.out ? [`fade=t=out:st=${t3(Math.max(0, seconds - FADE))}:d=${FADE}:alpha=1`] : []),
       ];
       graph.push(`[${n}:v]format=rgba,${fades.length ? `${fades.join(',')},` : ''}setpts=PTS-STARTPTS+${t3(start)}/TB[s${n}]`);
-      return `s${n}`;
+      return { stream: `s${n}`, x, y };
     };
     const overlay = (stream: string, x = '0', y = '0') => {
       const out = `o${label++}`;
       graph.push(`[${current}][${stream}]overlay=x='${x}':y='${y}':eof_action=pass[${out}]`);
       current = out;
     };
+    /** A still laid where it was drawn, moved by `dx` - an expression - when it slides. */
+    const lay = (s: { stream: string; x: number; y: number }, dx = '0') => overlay(s.stream, `${s.x}+(${dx})`, String(s.y));
 
     // 1. The recording, with its fumbles cut.
     let fit = `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=white`;
@@ -320,7 +355,7 @@ export async function renderFilm(input: RenderInput): Promise<RenderResult> {
         const end = s < n ? Math.min(b.to, starts[s + 1]! + FADE) : b.to;
         if (end - start <= 0.05) continue;
         const stream = await still(`panel${k}-${s}`, housePanel(size, input.colours, b.heading, b.bullets, s), start, end - start, { in: s > 0 });
-        overlay(stream, slideX(b));
+        lay(stream, slideX(b));
       }
     }
 
@@ -332,12 +367,12 @@ export async function renderFilm(input: RenderInput): Promise<RenderResult> {
     if (lateFrom > 0.5 + plateSeconds * 2 + 5 && !clashes(lateFrom)) plateTimes.push(lateFrom);
     for (const [i, from] of plateTimes.entries()) {
       const seconds = Math.min(plateSeconds, filmSeconds - from);
-      if (seconds > 1) overlay(await still(`plate${i}`, plate, from, seconds, { in: true, out: true }));
+      if (seconds > 1) lay(await still(`plate${i}`, plate, from, seconds, { in: true, out: true }));
     }
 
     // 5. The logo, throughout - on a horizontal film only.
     if (input.logo && !vertical) {
-      overlay(await still('logo', await logoBadge(size, input.logo, input.logoCorner), 0, filmSeconds));
+      lay(await still('logo', await logoBadge(size, input.logo, input.logoCorner), 0, filmSeconds));
     }
     graph.push(`[${current}]format=yuv420p[film]`);
 
@@ -424,20 +459,9 @@ export async function renderFilm(input: RenderInput): Promise<RenderResult> {
       Math.max(240_000, total * 5_000),
     );
 
-    // The captions, in the finished film's time, and the thumbnail from a
-    // moment of the doctor early on.
+    // The captions, in the finished film's time.
     const captions = input.words?.length ? captionsSrt(input.words, kept, openSeconds) : null;
-    let thumbnail: Buffer | null = null;
-    if (input.thumbnail) {
-      const first = kept[0] ?? { from: 0, to: meta.durationSeconds };
-      const still = join(dir, 'thumb-frame.png');
-      await runFfmpeg(['-ss', t3(first.from + Math.min(2.5, (first.to - first.from) / 2)), '-i', sourcePath, '-frames:v', '1', '-update', '1', '-y', still], 60_000);
-      thumbnail = await houseThumbnail({
-        frame: await readFile(still), subjectX: await subjectX(), colours: input.colours, logo: input.logo,
-        title: input.thumbnail.title, name: input.doctorName, designation: input.doctorTitle, hospitalLine: input.hospitalLine,
-      });
-    }
-    return { bytes: await readFile(outPath), shape: vertical ? 'vertical' : 'horizontal', seconds: total, captions, thumbnail };
+    return { bytes: await readFile(outPath), shape: vertical ? 'vertical' : 'horizontal', seconds: total, captions };
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => {});
   }

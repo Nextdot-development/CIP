@@ -32,7 +32,7 @@ import type { Word } from './words';
  *
  * Nothing is made until a person has approved the plan. A key point is the
  * one step the briefing calls risky - a pointer that overstates the doctor -
- * so every point is checked against the rules and shown with any concern.
+ * and nothing on it is invented.
  */
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -121,8 +121,8 @@ export type VideoEditDTO = {
   updatedAt: string;
   /** A vertical Short is made alongside a horizontal film. */
   makeVertical: boolean;
-  /** What has been made: the vertical Short, the captions, the thumbnail, a quick preview. */
-  has: { vertical: boolean; captions: boolean; thumbnail: boolean; preview: boolean };
+  /** What has been made: the vertical Short, the captions, a quick preview. */
+  has: { vertical: boolean; captions: boolean; preview: boolean };
 };
 
 export type VideoTemplateDTO = {
@@ -211,7 +211,7 @@ type Row = {
   id: string; source_file_id: string; source_name: string; doctor_name: string; doctor_title: string | null;
   hospital_line: string | null; given: boolean; status: VideoEditDTO['status']; plan: EditPlan | null; duration_seconds: string | null;
   error_message: string | null; created_at: Date; updated_at: Date;
-  make_vertical: boolean; has_vertical: boolean; has_captions: boolean; has_thumbnail: boolean; has_preview: boolean;
+  make_vertical: boolean; has_vertical: boolean; has_captions: boolean; has_preview: boolean;
 };
 
 const toDTO = (r: Row): VideoEditDTO => ({
@@ -220,14 +220,14 @@ const toDTO = (r: Row): VideoEditDTO => ({
   durationSeconds: r.duration_seconds === null ? null : Number(r.duration_seconds),
   error: r.error_message, createdAt: r.created_at.toISOString(), updatedAt: r.updated_at.toISOString(),
   makeVertical: r.make_vertical,
-  has: { vertical: r.has_vertical, captions: r.has_captions, thumbnail: r.has_thumbnail, preview: r.has_preview },
+  has: { vertical: r.has_vertical, captions: r.has_captions, preview: r.has_preview },
 });
 
 const SELECT = `select e.id, e.source_file_id, f.name as source_name, e.doctor_name, e.doctor_title,
                        e.hospital_line, e.given_plan is not null as given, e.status,
                        e.plan, e.duration_seconds, e.error_message, e.created_at, e.updated_at, e.make_vertical,
                        e.output_vertical_path is not null as has_vertical, e.captions is not null as has_captions,
-                       e.thumbnail_path is not null as has_thumbnail, e.preview_path is not null as has_preview
+                       e.preview_path is not null as has_preview
                   from video_edits e join drive_files f on f.id = e.source_file_id and f.company_id = e.company_id`;
 
 export async function listEdits(scope: CompanyScope): Promise<VideoEditDTO[]> {
@@ -428,13 +428,13 @@ export async function createEdit(
     });
     const placed = given.length > 0 ? keepGiven(given, planned.blocks, seconds) : brief ? [] : planned.blocks;
 
-    const byRef = new Map(refs.map((r) => [r.ref, r.rule]));
+    // Nothing is held back over a rule: the film is made as planned.
     const blocks = placed.map((b, i): EditBlock => ({
       heading: b.heading, bullets: b.bullets, from: b.from, to: b.to, visuals: b.visuals,
       footage: null, suggestion: null, brollSkipped: false,
       brollWanted: Boolean(given[i]?.visuals),
-      concern: b.concern,
-      rules: b.ruleRefs.map((r) => byRef.get(r)).filter((r): r is string => Boolean(r)),
+      concern: null,
+      rules: [],
     }));
     // B-roll the brief asked for, with no text of its own.
     for (const b of brief?.broll ?? []) {
@@ -481,17 +481,13 @@ export async function createEdit(
         if (!b.footage) b.brollSkipped = true;
       }
     }
-    const concerns = blocks.filter((b) => b.concern).length;
+    // Made straight away when asked: where there is no b-roll, the doctor stays on screen.
     let status: VideoEditDTO['status'] = 'planned';
-    let note: string | null = null;
     if (input.autoMake) {
-      // Only what the person asked for is asked about; a visual CIP merely suggested is let go.
-      for (const b of blocks) if (brollAsked(b) && !b.brollWanted) b.brollSkipped = true;
-      const waiting = blocks.filter(brollAsked).length;
-      if (concerns === 0 && waiting === 0) status = 'approved';
-      else if (concerns > 0) note = `Not made yet: ${concerns === 1 ? 'one block' : `${concerns} blocks`} may break a rule. Read them, then approve.`;
-      else note = `Not made yet: your plan asks for b-roll in ${waiting === 1 ? 'one place' : `${waiting} places`}. Choose or upload it below, then approve.`;
+      for (const b of blocks) if (brollAsked(b)) b.brollSkipped = true;
+      status = 'approved';
     }
+    const note: string | null = null;
 
     await withCompanyScope(scope, (tx) => tx`
       update video_edits
@@ -609,12 +605,6 @@ export async function updatePlan(scope: CompanyScope, id: string, plan: EditPlan
 export async function approveEdit(scope: CompanyScope, id: string): Promise<VideoEditDTO> {
   const edit = await getEdit(scope, id);
   if (!edit?.plan) throw new VideoEditRejected('That edit has no plan to approve.');
-  const asked = edit.plan.blocks.filter(brollAsked).length;
-  if (asked > 0) {
-    throw new VideoEditRejected(
-      `${asked === 1 ? 'One block is' : `${asked} blocks are`} waiting for b-roll: choose footage, upload some, or show the doctor instead.`,
-    );
-  }
   if (edit.status !== 'planned' && edit.status !== 'ready' && edit.status !== 'failed') {
     throw new VideoEditRejected('This edit is already being made.');
   }
@@ -672,6 +662,31 @@ export const DOWNLOAD_QUALITIES = [1080, 720, 480] as const;
 export type DownloadQuality = (typeof DOWNLOAD_QUALITIES)[number];
 
 /**
+ * The film at 720p and 480p, made one after the other (two at once only
+ * fight over the same processor). A film already that small or smaller is
+ * not made again in that size.
+ */
+async function smallerCopies(bytes: Buffer): Promise<Partial<Record<720 | 480, Buffer>>> {
+  return withTempFile(bytes, 'mp4', async (path) => {
+    const meta = await readVideoMetadata(path);
+    const short = Math.min(meta.width ?? 0, meta.height ?? 0);
+    const copies: Partial<Record<720 | 480, Buffer>> = {};
+    for (const q of [720, 480] as const) {
+      if (short <= q) continue;
+      const out = `${path}.${q}.mp4`;
+      await runFfmpeg(
+        ['-i', path, '-vf', `scale='if(gt(iw,ih),-2,${q})':'if(gt(iw,ih),${q},-2)':flags=lanczos`,
+          '-c:v', 'libx264', '-preset', 'veryfast', '-crf', q === 720 ? '20' : '23', '-pix_fmt', 'yuv420p',
+          '-c:a', 'aac', '-b:a', q === 720 ? '160k' : '128k', '-movflags', '+faststart', '-y', out],
+        Math.max(120_000, (meta.durationSeconds || 60) * 4_000),
+      );
+      copies[q] = await readFileFs(out);
+    }
+    return copies;
+  });
+}
+
+/**
  * A film at a smaller size, made the first time it is asked for and kept.
  * A film already that small or smaller is returned as it is.
  */
@@ -707,25 +722,29 @@ async function renderInputFor(scope: CompanyScope, id: string): Promise<{ input:
   if (!row?.plan) throw new VideoEditRejected('That edit has no plan.');
 
   const template = await getTemplate(scope);
-  const source = await readFile(scope, row.source_file_id);
-  const logo = template.logoFileId ? await readFile(scope, template.logoFileId).then((f) => f.body).catch(() => null) : null;
-  const introLogo = template.introLogoFileId
-    ? await readFile(scope, template.introLogoFileId).then((f) => f.body).catch(() => logo)
-    : logo;
+  const image = (fileId: string | null) => (fileId ? readFile(scope, fileId).then((f) => f.body).catch(() => null) : Promise.resolve(null));
   const endVideo = (fileId: string | null) => fileId
     ? readFile(scope, fileId)
         .then((f) => ({ bytes: f.body, extension: f.filename.split('.').pop()?.toLowerCase() || 'mp4' }))
         .catch(() => null)
     : Promise.resolve(null);
+  // Everything fetched at once: each file is a round trip to storage.
+  const [source, logo, introImage, endHorizontal, endVertical, brollFiles] = await Promise.all([
+    readFile(scope, row.source_file_id),
+    image(template.logoFileId),
+    image(template.introLogoFileId),
+    endVideo(template.endVideoFileId),
+    endVideo(template.endVideoVerticalFileId),
+    Promise.all(row.plan.blocks.map((b) => (b.footage ? readFile(scope, b.footage.fileId).catch(() => null) : Promise.resolve(null)))),
+  ]);
+  const introLogo = introImage ?? logo;
   // B-roll opens a block and gives way to the doctor again.
-  const broll = [];
-  for (const b of row.plan.blocks) {
-    if (!b.footage) continue;
-    const footage = await readFile(scope, b.footage.fileId).catch(() => null);
-    if (footage) {
-      broll.push({ from: b.from, to: Math.min(b.to, b.from + BROLL_SECONDS), footage: footage.body, extension: footage.filename.split('.').pop() || 'mp4' });
-    }
-  }
+  const broll = row.plan.blocks.flatMap((b, i) => {
+    const footage = brollFiles[i];
+    return footage
+      ? [{ from: b.from, to: Math.min(b.to, b.from + BROLL_SECONDS), footage: footage.body, extension: footage.filename.split('.').pop() || 'mp4' }]
+      : [];
+  });
 
   const input: RenderInput = {
     source: source.body,
@@ -747,47 +766,49 @@ async function renderInputFor(scope: CompanyScope, id: string): Promise<{ input:
     // Only the hospital's own wording: CIP never writes a disclaimer.
     disclaimer: template.disclaimerText ? { text: template.disclaimerText, seconds: template.disclaimerSeconds } : null,
     endScreen: {
-      horizontal: await endVideo(template.endVideoFileId),
-      vertical: await endVideo(template.endVideoVerticalFileId),
+      horizontal: endHorizontal,
+      vertical: endVertical,
       tagline: template.tagline ?? template.endScreenText,
       seconds: template.outroSeconds,
     },
     words: row.transcript ?? [],
-    thumbnail: { title: row.plan.title },
   };
   return { input, makeVertical: row.make_vertical };
 }
 
 /**
- * Makes one approved film - and with it the captions, the YouTube thumbnail
- * and, when asked for and the recording is horizontal, a vertical Short.
+ * Makes one approved film - and with it the captions and, when asked for
+ * and the recording is horizontal, a vertical Short.
  */
 export async function renderEdit(scope: CompanyScope, id: string): Promise<void> {
   const { input, makeVertical } = await renderInputFor(scope, id);
-  const film = await renderFilm(input);
   const keys = keysFor(scope.companyId, id);
-  await driveStorage().put(keys.film, film.bytes, 'video/mp4');
-  for (const old of [keys.film720, keys.film480, keys.vertical720, keys.vertical480]) await driveStorage().remove(old).catch(() => {});
-  if (film.thumbnail) await driveStorage().put(keys.thumbnail, film.thumbnail, 'image/png');
+  const store = driveStorage();
+  // The old film's smaller copies go while the new one is made.
+  const cleared = Promise.all([keys.film720, keys.film480, keys.vertical720, keys.vertical480].map((k) => store.remove(k).catch(() => {})));
+  const film = await renderFilm(input);
+  const uploads: Promise<unknown>[] = [cleared.then(() => store.put(keys.film, film.bytes, 'video/mp4'))];
 
   let vertical: string | null = null;
   let short: Buffer | null = null;
   if (makeVertical && film.shape === 'horizontal') {
-    short = (await renderFilm({ ...input, shape: 'vertical', words: undefined, thumbnail: null })).bytes;
-    await driveStorage().put(keys.vertical, short, 'video/mp4');
+    short = (await renderFilm({ ...input, shape: 'vertical', words: undefined })).bytes;
+    uploads.push(store.put(keys.vertical, short, 'video/mp4'));
     vertical = keys.vertical;
   }
-  // The smaller downloads made now, so each is there the moment it is asked for.
-  await atQuality(film.bytes, 720, keys.film720);
-  await atQuality(film.bytes, 480, keys.film480);
-  if (short) {
-    await atQuality(short, 720, keys.vertical720);
-    await atQuality(short, 480, keys.vertical480);
-  }
+  // The smaller downloads made now, both in one pass, and sent up together
+  // with the film, so each is there the moment it is asked for.
+  const send = (copies: Partial<Record<720 | 480, Buffer>>, k720: string, k480: string) => {
+    if (copies[720]) uploads.push(cleared.then(() => store.put(k720, copies[720]!, 'video/mp4')));
+    if (copies[480]) uploads.push(cleared.then(() => store.put(k480, copies[480]!, 'video/mp4')));
+  };
+  send(await smallerCopies(film.bytes), keys.film720, keys.film480);
+  if (short) send(await smallerCopies(short), keys.vertical720, keys.vertical480);
+  await Promise.all(uploads);
   await withCompanyScope(scope, (tx) => tx`
     update video_edits
        set status = 'ready', output_path = ${keys.film}, output_vertical_path = ${vertical},
-           captions = ${film.captions}, thumbnail_path = ${film.thumbnail ? keys.thumbnail : null},
+           captions = ${film.captions}, thumbnail_path = null,
            error_message = null, updated_at = now()
      where id = ${id} and company_id = ${scope.companyId}
   `);
@@ -803,7 +824,7 @@ export async function previewEdit(scope: CompanyScope, id: string): Promise<Vide
   if (!edit?.plan) throw new VideoEditRejected('That edit has no plan to preview.');
   if (edit.status === 'rendering' || edit.status === 'approved') throw new VideoEditRejected('This film is being made.');
   const { input } = await renderInputFor(scope, id);
-  const preview = await renderFilm({ ...input, preview: true, words: undefined, thumbnail: null });
+  const preview = await renderFilm({ ...input, preview: true, words: undefined });
   const key = keysFor(scope.companyId, id).preview;
   await driveStorage().put(key, preview.bytes, 'video/mp4');
   await withCompanyScope(scope, (tx) => tx`
@@ -824,19 +845,19 @@ export async function deleteEdit(scope: CompanyScope, id: string): Promise<void>
   for (const key of Object.values(keysFor(scope.companyId, id))) await driveStorage().remove(key).catch(() => {});
 }
 
-/** Something made for a film: the film, its vertical Short, its thumbnail, its preview or its captions. */
+/** Something made for a film: the film, its vertical Short, its preview or its captions. */
 export async function readOutput(
   scope: CompanyScope,
   id: string,
-  kind: 'film' | 'vertical' | 'thumbnail' | 'preview' | 'captions',
+  kind: 'film' | 'vertical' | 'preview' | 'captions',
   quality: DownloadQuality = 1080,
 ): Promise<{ bytes: Buffer; name: string; type: string } | null> {
   if (!UUID.test(id)) return null;
   const [row] = await withCompanyScope(scope, (tx) => tx<{
     status: VideoEditDTO['status']; plan: EditPlan | null; output_path: string | null; output_vertical_path: string | null;
-    thumbnail_path: string | null; preview_path: string | null; captions: string | null;
+    preview_path: string | null; captions: string | null;
   }[]>`
-    select status, plan, output_path, output_vertical_path, thumbnail_path, preview_path, captions
+    select status, plan, output_path, output_vertical_path, preview_path, captions
       from video_edits where id = ${id} and company_id = ${scope.companyId}
   `);
   if (!row) return null;
@@ -848,9 +869,8 @@ export async function readOutput(
     return row.preview_path ? { bytes: await driveStorage().get(row.preview_path), name: `${base} (preview).mp4`, type: 'video/mp4' } : null;
   }
   if (row.status !== 'ready') return null;
-  const path = kind === 'film' ? row.output_path : kind === 'vertical' ? row.output_vertical_path : row.thumbnail_path;
+  const path = kind === 'film' ? row.output_path : row.output_vertical_path;
   if (!path) return null;
-  if (kind === 'thumbnail') return { bytes: await driveStorage().get(path), name: `${base} (thumbnail).png`, type: 'image/png' };
   const full = await driveStorage().get(path);
   const label = kind === 'vertical' ? ' (Short)' : '';
   if (quality === 1080) return { bytes: full, name: `${base}${label}.mp4`, type: 'video/mp4' };

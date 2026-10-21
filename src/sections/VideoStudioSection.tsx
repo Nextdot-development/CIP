@@ -9,18 +9,11 @@ import type { EditPlan, VideoEditDTO, VideoTemplateDTO } from '@/server/video/ed
 /** 83.4 as "1:23". */
 const clock = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 
-/** A block that wants b-roll and has no answer yet (as the server counts it). */
+/** A block that could take b-roll and has none chosen yet. Optional: without it the doctor stays on screen. */
 const brollAsked = (b: EditPlan['blocks'][number]) => Boolean(b.visuals.trim()) && !b.footage && !b.brollSkipped;
 
-/** Where a film stands, in words - saying so when it is waiting on the person. */
-function statusOf(e: VideoEditDTO): { text: string; tone: string } {
-  if (e.status === 'planned' && e.plan) {
-    const asked = e.plan.blocks.filter(brollAsked).length;
-    if (asked > 0) return { text: `Needs b-roll (${asked}) — open to answer`, tone: 's-asking' };
-    if (e.plan.blocks.some((b) => b.concern)) return { text: 'Check a block, then approve', tone: 's-asking' };
-  }
-  return { text: STATUS[e.status], tone: `s-${e.status}` };
-}
+/** Where a film stands, in words. */
+const statusOf = (e: VideoEditDTO): { text: string; tone: string } => ({ text: STATUS[e.status], tone: `s-${e.status}` });
 
 const STATUS: Record<VideoEditDTO['status'], string> = {
   planning: 'Planning…',
@@ -206,8 +199,7 @@ export function VideoStudioSection() {
             <input type="checkbox" checked={form.autoMake}
               onChange={(e) => { setAutoTouched(true); setForm({ ...form, autoMake: e.target.checked }); }} />
             <span>
-              Make the film straight away — no review step. It stops only to ask for b-roll your plan wants and you have not given,
-              or if a block may break a rule.
+              Make the film straight away — no review step. Where there is no b-roll, the doctor stays on screen.
             </span>
           </label>
           <label className="small video-check">
@@ -316,8 +308,6 @@ function PlanEditor({ edit, footage, onChanged }: {
   const setBlock = (i: number, change: Partial<EditPlan['blocks'][number]>) =>
     setPlan({ ...plan, blocks: plan.blocks.map((b, j) => (j === i ? { ...b, ...change } : b)) });
 
-  const concerns = plan.blocks.filter((b) => b.concern).length;
-  const asked = plan.blocks.filter(brollAsked).length;
   const library = footage.filter((f) => f.id !== edit.sourceFileId);
 
   const uploadBroll = async (i: number, file: File) => {
@@ -360,13 +350,6 @@ function PlanEditor({ edit, footage, onChanged }: {
             </div>
           )}
           <div style={{ display: 'grid', gap: 6 }}>
-            {edit.has.thumbnail && (
-              <>
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={out('thumbnail', true)} alt="YouTube thumbnail" />
-                <a className="btn btn-sm" href={out('thumbnail')}><Icon name="download" size={14} /> Download thumbnail</a>
-              </>
-            )}
             {edit.has.captions && (
               <a className="btn btn-sm" href={out('captions')}><Icon name="download" size={14} /> Captions (.srt) for YouTube</a>
             )}
@@ -385,28 +368,8 @@ function PlanEditor({ edit, footage, onChanged }: {
         <p className="small strong video-head">On-screen text ({plan.blocks.length} blocks)</p>
         <a className="linkbtn tiny" href={`/api/video/edits/${edit.id}/ost`}>Download OST sheet</a>
       </div>
-      {concerns > 0 && (
-        <p className="tiny" style={{ color: 'var(--warn-700)' }}>
-          <Icon name="alert" size={12} /> {concerns} block{concerns === 1 ? '' : 's'} may break a rule. Reword or remove before approving.
-        </p>
-      )}
-      {asked > 0 && !locked && (
-        <div className="video-broll" style={{ margin: '8px 0' }}>
-          <span className="small">
-            <Icon name="alert" size={12} /> {asked} block{asked === 1 ? ' needs' : 's need'} b-roll. Choose a clip for each below — or go on without it.
-          </span>
-          <div className="row">
-            <button type="button" className="btn btn-primary btn-sm" disabled={saving || concerns > 0}
-              title={concerns > 0 ? 'A block may break a rule: check it first' : undefined}
-              onClick={() => void save(true, { ...plan, blocks: plan.blocks.map((b) => (brollAsked(b) ? { ...b, brollSkipped: true } : b)) })}>
-              Make it without b-roll
-            </button>
-            <span className="tiny muted">The doctor stays on screen where the b-roll would have been.</span>
-          </div>
-        </div>
-      )}
       {plan.blocks.map((b, i) => (
-        <div key={i} className={`video-block ${b.concern ? 'has-concern' : ''}`}>
+        <div key={i} className="video-block">
           <div className="row" style={{ justifyContent: 'space-between', gap: 8 }}>
             <span className="tiny muted">{clock(b.from)}–{clock(b.to)}</span>
             {!locked && (
@@ -455,7 +418,6 @@ function PlanEditor({ edit, footage, onChanged }: {
               )}
             </p>
           )}
-          {b.concern && <p className="tiny video-concern">{b.concern}{b.rules.length ? ` — ${b.rules.join('; ')}` : ''}</p>}
         </div>
       ))}
 
@@ -515,7 +477,7 @@ function PlanEditor({ edit, footage, onChanged }: {
             {previewing ? 'Making a quick preview…' : 'Quick preview'}
           </button>
           <button type="button" className="btn btn-sm" disabled={saving} onClick={() => void save(false)}>Save changes</button>
-          <button type="button" className="btn btn-primary btn-sm" disabled={saving || !plan.title.trim() || asked > 0} onClick={() => void save(true)}>
+          <button type="button" className="btn btn-primary btn-sm" disabled={saving || !plan.title.trim()} onClick={() => void save(true)}>
             {edit.status === 'ready' ? 'Make it again' : 'Approve & make film'}
           </button>
         </div>

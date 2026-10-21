@@ -196,8 +196,7 @@ describe('a recording into a film', () => {
     const planned = await video.createEdit(nh, { fileId, doctorName: 'Dr. A. Kumar', doctorTitle: 'Neurology' });
     assert.equal(planned.status, 'planned', planned.error ?? '');
     assert.equal(planned.plan!.title, 'Understanding essential tremor');
-    const risky = planned.plan!.blocks.find((b) => b.concern)!;
-    assert.match(risky.rules[0]!, /cures a disease/, 'the concern names the rule it may break');
+    assert.ok(planned.plan!.blocks.every((b) => b.concern === null && b.rules.length === 0), 'nothing is held back over a rule');
     assert.equal(planned.plan!.blocks[0]!.footage, null, 'no footage in the library: said, not invented');
 
     // The house's OST sheet: one table, three columns, a bold heading first, a bullet a line.
@@ -211,15 +210,10 @@ describe('a recording into a film', () => {
     // Nothing is made before a person approves it.
     assert.equal(await video.renderApprovedEdits({ outOfTime: () => false }), 0);
 
-    // The person removes the risky point. The block left wants b-roll and has
-    // none, so it is asked about before anything is made.
-    const edited = await video.updatePlan(nh, planned.id, { ...planned.plan!, blocks: planned.plan!.blocks.filter((b) => !b.concern) });
+    // The person drops the second point and approves. A block wanting b-roll
+    // with none never holds the film up: the doctor stays on screen.
+    const edited = await video.updatePlan(nh, planned.id, { ...planned.plan!, blocks: planned.plan!.blocks.slice(0, 1) });
     assert.equal(edited.plan!.blocks.length, 1);
-    await assert.rejects(() => video.approveEdit(nh, planned.id), /waiting for b-roll/);
-    const answered = await video.updatePlan(nh, planned.id, {
-      ...edited.plan!, blocks: edited.plan!.blocks.map((b) => ({ ...b, brollSkipped: true })),
-    });
-    assert.equal(answered.plan!.blocks[0]!.brollSkipped, true);
     await video.approveEdit(nh, planned.id);
     assert.equal(await video.renderApprovedEdits({ outOfTime: () => false }), 1);
 
@@ -307,7 +301,7 @@ describe('a recording into a film', () => {
     assert.ok(meta.hasAudio);
   });
 
-  it('makes the film straight away when asked, but never past a block that may break a rule', async () => {
+  it('makes the film straight away when asked, whatever is in it', async () => {
     fake.videoPlan = null;
     const clean = await video.createEdit(nh, {
       fileId, doctorName: 'Dr. F', givenPlan: 'Tremor basics\n• A shake of the hands', autoMake: true,
@@ -321,8 +315,9 @@ describe('a recording into a film', () => {
       blocks: [{ heading: 'Cure', bullets: ['Always cured'], from: 6, to: 10, visuals: '', concern: 'Promises a cure', ruleRefs: [] }],
     };
     const risky = await video.createEdit(nh, { fileId, doctorName: 'Dr. G', autoMake: true });
-    assert.equal(risky.status, 'planned');
-    assert.match(risky.error ?? '', /may break a rule/);
+    assert.equal(risky.status, 'approved', 'no block holds a film back');
+    assert.equal(risky.error, null);
+    assert.equal(await video.renderApprovedEdits({ outOfTime: () => false }), 1);
   });
 
   it("reads an editor's brief: trims, name plate, title, b-roll and description, and only the brief's own words", async () => {
@@ -345,8 +340,7 @@ describe('a recording into a film', () => {
     const planned = await video.createEdit(nh, { fileId, givenPlan: text, autoMake: true });
     assert.equal(planned.doctorName, 'Dr H. Rao', 'the name plate comes from the brief');
     assert.equal(planned.doctorTitle, 'Consultant - Neurology');
-    assert.equal(planned.status, 'planned', 'it stops to ask for the b-roll the brief wants');
-    assert.match(planned.error ?? '', /asks for b-roll/);
+    assert.equal(planned.status, 'approved', 'b-roll the brief wants and nobody gave does not hold the film up');
     const plan = planned.plan!;
     assert.equal(plan.title, 'Tremor Awareness Week');
     assert.equal(plan.description, 'Dr H. Rao on tremor.');
@@ -357,15 +351,13 @@ describe('a recording into a film', () => {
     const slot = plan.blocks[0]!;
     assert.deepEqual([slot.from, slot.to, slot.visuals, slot.brollWanted], [5, 7, 'slide 1', true]);
 
-    // Answer the question, and it is made.
-    await video.updatePlan(nh, planned.id, { ...plan, blocks: plan.blocks.map((b) => (b.heading ? b : { ...b, brollSkipped: true })) });
-    await video.approveEdit(nh, planned.id);
+    assert.equal(slot.brollSkipped, true, 'the doctor stays on screen there');
     assert.equal(await video.renderApprovedEdits({ outOfTime: () => false }), 1);
     assert.equal((await video.getEdit(nh, planned.id))!.status, 'ready');
     fake.editBrief = null;
   });
 
-  it('makes a vertical Short, the captions and the thumbnail with the film, and a quick preview before it', async () => {
+  it('makes a vertical Short and the captions with the film, and a quick preview before it', async () => {
     fake.videoPlan = { title: 'Tremor in short', cuts: [], blocks: [] };
     const planned = await video.createEdit(nh, { fileId, doctorName: 'Dr. S', makeVertical: true });
     assert.equal(planned.makeVertical, true);
@@ -385,10 +377,9 @@ describe('a recording into a film', () => {
     assert.equal(await video.renderApprovedEdits({ outOfTime: () => false }), 1);
     const done = (await video.getEdit(nh, planned.id))!;
     assert.equal(done.status, 'ready', done.error ?? '');
-    assert.deepEqual(done.has, { vertical: true, captions: true, thumbnail: true, preview: true });
+    assert.deepEqual(done.has, { vertical: true, captions: true, preview: true });
     const short = await look('vertical');
     assert.deepEqual([short.width, short.height], [1080, 1920], 'the Short is 9:16');
-    assert.equal((await video.readOutput(nh, planned.id, 'thumbnail'))!.type, 'image/png');
     const srt = (await video.readOutput(nh, planned.id, 'captions'))!.bytes.toString('utf8');
     assert.match(srt, /^1\n00:00:0\d,\d{3} --> /);
     assert.doesNotMatch(srt, /\bum\b/, 'no fillers in the captions');

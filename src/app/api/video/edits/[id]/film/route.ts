@@ -7,11 +7,11 @@ type Params = { params: Promise<{ id: string }> };
 
 export const dynamic = 'force-dynamic';
 
-const KINDS = ['film', 'vertical', 'thumbnail', 'preview', 'captions'] as const;
+const KINDS = ['film', 'vertical', 'preview', 'captions'] as const;
 
 /**
  * GET what was made for a film. ?kind= film (the default) | vertical (the
- * Short) | thumbnail | preview | captions (.srt); ?quality= 1080 (as made) |
+ * Short) | preview | captions (.srt); ?quality= 1080 (as made) |
  * 720 | 480 for the film or the Short; ?disposition=inline plays or
  * shows it in the page. The address carries ?v= the film's last update, so
  * it can be cached.
