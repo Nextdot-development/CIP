@@ -28,6 +28,8 @@ import type {
   FilingsDigest,
   VideoPlan,
   VideoPlanInput,
+  BenchBrief,
+  BenchDraft,
   EditBrief,
   ReviewVerdict,
   FramesCheckAnalysis,
@@ -611,6 +613,23 @@ export class FakeBrainProvider implements BrainProvider {
       ...(this.editBrief ?? {
         start: null, end: null, doctorName: null, doctorTitle: null, hospitalLine: null, title: null, description: null,
         blocks: parseGivenPlan(text), broll: [],
+      }),
+      usage: { durationMs: 1 },
+    };
+  }
+
+  /** What the Bench plans next; a plain plan from the first layout when unset. */
+  bench: Omit<BenchDraft, 'usage'> | null = null;
+  lastBenchBrief: BenchBrief | null = null;
+
+  async benchPlan(input: BenchBrief): Promise<BenchDraft> {
+    this.lastBenchBrief = input;
+    this.check();
+    return {
+      ...(this.bench ?? {
+        creativeDirector: { idea: 'A quiet toast.', scene: 'A polished wooden bar top, warm lamps behind.', mood: 'warm', light: 'left', surface: 'gloss', note: '' },
+        brandManager: { variant: input.variants[0] ?? null, keep: [input.brand], risks: [], note: '' },
+        artDirector: { layout: input.layouts[0]?.name ?? 'default', casing: 'sentence', headline: [{ text: 'raise a toast', role: 'lead' }], note: '' },
       }),
       usage: { durationMs: 1 },
     };

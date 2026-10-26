@@ -576,7 +576,49 @@ export interface BrainProvider {
    * against the brief afterwards and drops any that is not in it.
    */
   readEditBrief(text: string): Promise<EditBrief>;
+
+  /**
+   * The Bench plans one post before it is made: the creative director's idea
+   * and scene, the brand manager's pack and names, the art director's layout
+   * and headline. Implementations send the request, the brand, its packs,
+   * its learned layouts described in words, and its rules - nothing else.
+   */
+  benchPlan(input: BenchBrief): Promise<BenchDraft>;
 }
+
+/** What the Bench is given to plan a post. */
+export type BenchBrief = {
+  request: string;
+  brand: string;
+  /** The packs the brand has a cut-out for: "Honey", "Fire", or null for the standard pack. */
+  variants: (string | null)[];
+  /** Each layout the designers made, by name, described in words. */
+  layouts: { name: string; description: string }[];
+  rules: string[];
+  /** Width over height of the post. */
+  ratio: number;
+};
+
+/** The Bench's plan, as its three seats wrote it. CIP settles it against what exists afterwards. */
+export type BenchDraft = {
+  creativeDirector: {
+    idea: string;
+    /** The background alone: setting, surface, props, light. No bottle, no words, no logo. */
+    scene: string;
+    mood: string;
+    light: 'left' | 'right' | 'front';
+    surface: 'matte' | 'gloss';
+    note: string;
+  };
+  brandManager: { variant: string | null; keep: string[]; risks: string[]; note: string };
+  artDirector: {
+    layout: string;
+    casing: 'sentence' | 'title' | 'upper';
+    headline: { text: string; role: 'lead' | 'key' | 'tail' }[];
+    note: string;
+  };
+  usage: BrainUsage;
+};
 
 /** A person's edit brief, in parts. Times are in the raw recording, in seconds. */
 export type EditBrief = {

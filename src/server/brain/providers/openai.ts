@@ -53,6 +53,8 @@ import type {
   FilingsDigest,
   VideoPlan,
   VideoPlanInput,
+  BenchBrief,
+  BenchDraft,
   EditBrief,
   ReviewVerdict,
   VideoSequence,
@@ -600,6 +602,57 @@ const VIDEO_PLAN_SCHEMA = {
           concern: { type: ['string', 'null'] },
           ruleRefs: { type: 'array', items: { type: 'string' } },
         },
+      },
+    },
+  },
+} as const;
+
+const BENCH_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['creativeDirector', 'brandManager', 'artDirector'],
+  properties: {
+    creativeDirector: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['idea', 'scene', 'mood', 'light', 'surface', 'note'],
+      properties: {
+        idea: { type: 'string' },
+        scene: { type: 'string' },
+        mood: { type: 'string' },
+        light: { type: 'string', enum: ['left', 'right', 'front'] },
+        surface: { type: 'string', enum: ['matte', 'gloss'] },
+        note: { type: 'string' },
+      },
+    },
+    brandManager: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['variant', 'keep', 'risks', 'note'],
+      properties: {
+        variant: { type: ['string', 'null'] },
+        keep: { type: 'array', items: { type: 'string' } },
+        risks: { type: 'array', items: { type: 'string' } },
+        note: { type: 'string' },
+      },
+    },
+    artDirector: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['layout', 'casing', 'headline', 'note'],
+      properties: {
+        layout: { type: 'string' },
+        casing: { type: 'string', enum: ['sentence', 'title', 'upper'] },
+        headline: {
+          type: 'array',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['text', 'role'],
+            properties: { text: { type: 'string' }, role: { type: 'string', enum: ['lead', 'key', 'tail'] } },
+          },
+        },
+        note: { type: 'string' },
       },
     },
   },
@@ -1463,6 +1516,59 @@ export class OpenAIBrainProvider implements BrainProvider {
 
     const { parsed, usage } = await this.call<{ concepts: ConceptDraft[] }>(content, IDEAS_SCHEMA, 'campaign_concepts', 5_000);
     return { concepts: Array.isArray(parsed.concepts) ? parsed.concepts : [], usage };
+  }
+
+  async benchPlan(input: BenchBrief): Promise<BenchDraft> {
+    const shape = input.ratio > 1.2 ? 'a wide banner' : input.ratio < 0.7 ? 'a tall story' : input.ratio < 0.9 ? 'a 4:5 portrait post' : 'a square post';
+    const { parsed, usage } = await this.call<Omit<BenchDraft, 'usage'>>(
+      [
+        {
+          type: 'text',
+          text:
+            'You are the creative bench of a spirits company, planning one social post together before it is made: ' +
+            'a senior creative director, a brand manager who is the custodian of the brand, and an art director. ' +
+            'CIP will build the post from your plan: an image model paints only the background scene; the brand\'s ' +
+            'real bottle photograph is placed into it; the headline is typeset in the brand\'s own fonts; the logo ' +
+            'is placed from its file. So nothing you plan may need the image model to draw the bottle, a label, a ' +
+            'logo or any words.\n\n' +
+            'Creative director: one clear idea for the post, in a sentence. Then the scene, as a photographer would ' +
+            'brief it - the setting, the surface the bottle will stand on, a few props, the light and its direction, ' +
+            'the time of day - premium, cinematic and real, never cartoonish. Describe the background only: no ' +
+            'bottle, no branded glass, no packaging, no text, signs or logos, and no people unless the request asks ' +
+            'for them (then only adults, clearly over 25, never drinking to excess). light: the side the key light ' +
+            'comes from. surface: gloss when the surface would reflect the bottle (polished wood, marble, glass, ' +
+            'water), else matte. mood: a few words.\n\n' +
+            'Brand manager: which pack to show, from the packs listed, by its exact name - null for the standard ' +
+            'pack (or the one called Plain or Original); pick the one the request names or implies, and never a ' +
+            'flavour the request does not suggest. keep: every name the copy uses that must be written ' +
+            'exactly - the brand, the pack, occasions - in their correct official form. risks: anything in the ' +
+            'idea, scene or copy that breaks or comes near a rule below (empty when none). Hold the plan to the ' +
+            'rules: no health, success, status or performance claims, nothing that encourages heavy drinking, ' +
+            'drinking and driving, or anyone underage; British spelling ("whisky").\n\n' +
+            'Art director: choose the layout, by its exact name, whose shape best suits the headline and the idea. ' +
+            'Then the headline, line by line, each line with its part in that layout: lead (the opening words), key ' +
+            '(the words made to stand out) and tail (a closing aside), in that order, using only parts the layout ' +
+            'has. When the request gives the exact words for the post - in quotes, or after "headline", "text", ' +
+            '"copy" or "tagline" - use exactly those words, in that order, and only decide where the lines break. ' +
+            'Otherwise write it: at most ten words, in the brand\'s voice, short lines, no hashtags or emoji, and ' +
+            'no need to repeat the brand name, which the logo carries. Never reuse the words of the post a layout ' +
+            'was made for. A greeting for an occasion ("Happy New Year", "Happy Diwali") is the lead or the key, ' +
+            'never the tail. Write the words naturally; CIP sets the ' +
+            'capitals. casing: how the brand sets headlines - sentence unless the layout or occasion calls for ' +
+            'title or upper case.\n\n' +
+            'Each seat\'s note: one short sentence on what they decided and why.\n\n' +
+            `The post: ${shape}.\nBrand: ${input.brand}\n` +
+            `Packs: ${input.variants.map((v) => v ?? 'standard').join(', ') || 'standard'}\n\n` +
+            `Layouts:\n${input.layouts.map((l) => `- "${l.name}": ${l.description}`).join('\n') || '- none learned: choose "default"'}\n\n` +
+            `Rules:\n${input.rules.map((r) => `- ${r}`).join('\n') || '- none'}\n\n` +
+            `Request: ${input.request}`,
+        },
+      ],
+      BENCH_SCHEMA,
+      'bench_plan',
+      8_000,
+    );
+    return { ...parsed, usage };
   }
 
   async readEditBrief(text: string): Promise<EditBrief> {
