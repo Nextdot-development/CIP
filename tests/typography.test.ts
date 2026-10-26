@@ -28,6 +28,19 @@ describe('capitals', () => {
     assert.deepEqual(caseLines(['the night is young.', 'pour another'], 'sentence'), ['The night is young.', 'Pour another']);
   });
 
+  it('starts each new phrase with a capital, runs a broken one on, and keeps the names a writer capitalised', () => {
+    assert.deepEqual(
+      caseLines(['happy new year', "here's to new beginnings", 'celebrate responsibly'], 'sentence'),
+      ['Happy New Year', "Here's to new beginnings", 'Celebrate responsibly'],
+    );
+    assert.deepEqual(caseLines(['Rainy night,', 'good company,', 'one bottle to share'], 'sentence'), ['Rainy night,', 'good company,', 'one bottle to share']);
+    assert.deepEqual(caseLines(['raise a glass to', 'the year ahead'], 'sentence'), ['Raise a glass to', 'the year ahead']);
+    assert.deepEqual(caseLines(['Palace dusk', 'Rajasthan reigns'], 'sentence'), ['Palace dusk', 'Rajasthan reigns']);
+    assert.deepEqual(caseLines(['Sip The Golden Magic'], 'sentence'), ['Sip the golden magic']);
+    // Written with capitals: a line the writer began small runs on.
+    assert.deepEqual(caseLines(['An evening', 'fit for royalty'], 'sentence'), ['An evening', 'fit for royalty']);
+  });
+
   it('in title case, leaves the small words small but never the first or last', () => {
     assert.deepEqual(caseLines(['sweet moments and smooth sips of the night'], 'title'), ['Sweet Moments and Smooth Sips of the Night']);
     assert.deepEqual(caseLines(['the spirit we live by'], 'title'), ['The Spirit We Live By']);
@@ -85,7 +98,7 @@ describe('setting the headline', () => {
       lines: [{ text: 'happy new year', role: 'lead' }, { text: 'raise a glass', role: 'key' }, { text: 'with magic moments', role: 'tail' }],
       keep: ['Magic Moments'],
     });
-    assert.deepEqual(set.lines.map((l) => l.text), ['Happy New Year', 'raise a glass', 'with Magic Moments']);
+    assert.deepEqual(set.lines.map((l) => l.text), ['Happy New Year', 'Raise a glass', 'with Magic Moments']);
     const left = set.lines[0]!.box.x;
     // Wider than the designer's words if it must be, but never up to the bottle.
     const edge = (layout.bottleBox!.x - 0.03) * 1000;

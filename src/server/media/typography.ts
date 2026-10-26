@@ -101,6 +101,10 @@ const OCCASIONS = [
   'Independence Day', 'Republic Day', "Valentine's Day", 'Friendship Day', "Father's Day", "Mother's Day", "Women's Day",
   'World Heart Day', 'Breastfeeding Week',
 ];
+/** Words a phrase cannot end on: a line ending on one runs on into the next. */
+const RUNS_ON = new Set(['a', 'an', 'the', 'and', 'or', 'but', 'of', 'in', 'on', 'at', 'to', 'by', 'with', 'from', 'for', 'your', 'our', 'my', 'every', 'is', 'are']);
+/** Words that carry the line before on: a line opening on one continues it. */
+const CARRIES_ON = new Set(['with', 'and', 'or', 'but', 'by', 'for', 'to', 'of', 'in', 'on', 'at', 'from', 'that', 'while', 'as', 'till', 'until']);
 const MINOR = new Set(['a', 'an', 'the', 'and', 'but', 'or', 'nor', 'for', 'so', 'yet', 'of', 'in', 'on', 'at', 'to', 'by', 'with', 'from', 'as', 'per', 'via']);
 
 /**
@@ -118,7 +122,23 @@ export function caseLines(lines: string[], casing: Casing, keep: string[] = []):
   let sentenceStart = true;
   const out = lines.map((line, n) => {
     if (casing === 'upper') return line.toUpperCase();
+    // Each line is a new phrase unless it runs on from the one before: that
+    // ended on a comma or a dash, or on a word that cannot end one, or this
+    // one opens on a word that carries the last one on ("with", "and").
+    const before = n > 0 ? lines[n - 1]!.trim() : '';
+    const opens = line.trim().split(/\s+/)[0]?.toLowerCase() ?? '';
+    // A writer who used capitals has already decided; only words typed all in
+    // small letters are decided here.
+    const decided = lines.some((l) => /\p{Lu}/u.test(l)) && !lines.every((l) => l === l.toUpperCase());
+    if (n > 0 && decided && /^[^\p{L}]*\p{Ll}/u.test(line.trim())) sentenceStart = false;
+    else if (n > 0 && !/[,;:&–—-]$/.test(before) && !RUNS_ON.has(before.split(/\s+/).at(-1)!.toLowerCase()) && !CARRIES_ON.has(opens)) sentenceStart = true;
     const words = line.split(/(\s+)/);
+    // A line typed in capitals, or with a capital on every word, says nothing
+    // about which words are names; a capital mid-line in any other says it is one.
+    const lettered = words.filter((w) => /\p{L}{2}/u.test(w));
+    const shouted = lettered.length > 0 && lettered.every((w) => w === w.toUpperCase());
+    const titled = lettered.length >= 3 && lettered.every((w) => /^[^\p{L}]*\p{Lu}/u.test(w));
+    const plain = (token: string) => (shouted || titled || token === token.toUpperCase() ? token.toLowerCase() : token);
     return words.map((token, i) => {
       if (/^\s+$/.test(token) || token === '') return token;
       const bare = token.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}']+$/gu, '');
@@ -128,7 +148,7 @@ export function caseLines(lines: string[], casing: Casing, keep: string[] = []):
         const last = i === words.length - 1 && n === lines.length - 1;
         word = MINOR.has(bare.toLowerCase()) && !first && !last ? token.toLowerCase() : capital(token.toLowerCase());
       } else {
-        word = sentenceStart ? capital(token.toLowerCase()) : token.toLowerCase();
+        word = sentenceStart ? capital(plain(token)) : plain(token);
       }
       if (bare) sentenceStart = /[.!?]["')\]]*$/.test(token);
       if (bare.toLowerCase() === 'i') word = token.replace(/i/i, 'I');

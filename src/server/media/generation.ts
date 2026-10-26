@@ -124,6 +124,14 @@ export type ImageGenerationInput = {
    * Null or absent: nothing is placed.
    */
   stampLogoFor?: { brand: string; corner: LogoCorner } | null;
+  /**
+   * What the generated picture is made into, when it is only part of the
+   * result: the scene a composed post is built on. Replaces the crop and the
+   * logo above, which the post does itself. `composed` is kept with the
+   * generation, to say what went into it.
+   */
+  finish?: ((scene: Buffer) => Promise<{ bytes: Buffer; width: number; height: number }>) | null;
+  composed?: Record<string, unknown> | null;
 };
 
 export type VideoGenerationInput = {
@@ -208,6 +216,22 @@ export async function generateImage(
     // Cut to the shape that was asked for, before anything is stored. Storing
     // the generator's shape and cropping on the way out would mean the file
     // somebody downloads and the file CIP kept are different pictures.
+    if (input.finish) {
+      const made = await Promise.all(result.assets.map(async (asset) => {
+        const post = await input.finish!(asset.bytes);
+        return { ...asset, bytes: post.bytes, mimeType: 'image/png', width: post.width, height: post.height };
+      }));
+      await completeGeneration(scope, id, made, result.usage, result.model);
+      if (input.composed) {
+        await withCompanyScope(scope, (tx) => tx`
+          update media_generations
+             set output_metadata = coalesce(output_metadata, '{}'::jsonb) || ${tx.json({ composed: input.composed } as never)}
+           where id = ${id} and company_id = ${scope.companyId}
+        `);
+      }
+      return (await getGeneration(scope, id)).generation;
+    }
+
     const assets = input.deliverShape
       ? await Promise.all(
           result.assets.map(async (asset) => {

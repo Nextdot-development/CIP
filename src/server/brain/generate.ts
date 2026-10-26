@@ -3,6 +3,8 @@ import { companyProfile, WORDS } from './category';
 import type { Category, LogoCorner } from './category';
 import type { CompanyScope } from '../db';
 import { generateImage, generateVideo } from '../media/generation';
+import { canCompose, preparePost } from '../media/composePost';
+import type { PreparedPost } from '../media/composePost';
 import type { MediaGenerationDTO } from '../media/types';
 import { ANALYSABLE_IMAGE_TYPES, BRAIN_LIMITS } from './providers/types';
 import { linkBriefToGeneration, planGeneration, promptFromBrief } from './planner';
@@ -217,6 +219,45 @@ export async function generateWithBrain(
     };
   }
 
+  // A brand with its own bottles gets a composed post: the bench plans it, the
+  // generator paints the scene alone, and the real bottle, the headline in
+  // the brand's type and the approved logo are put into it.
+  const composing = await composedPost(scope, input, plan.brief.brand, shape);
+  if (composing) {
+    const make = (note: string | null, key: unknown) => generateImage(scope, {
+      prompt: note ? withNotes(composing.prompt, [note]) : composing.prompt,
+      provider: generator.choice ?? input.provider,
+      referenceFileIds: [],
+      aspectRatio: shape.aspectRatio,
+      imageSize: input.imageSize,
+      idempotencyKey: key,
+      finish: composing.finish,
+      composed: {
+        idea: composing.plan.idea,
+        layout: composing.plan.layout.name,
+        headline: composing.plan.headline,
+        variant: composing.plan.variant,
+        bottle: composing.bottle,
+        notes: composing.plan.notes,
+        risks: composing.plan.risks,
+        settled: composing.plan.settled,
+      },
+    });
+    const generation = await make(null, input.idempotencyKey);
+    await linkBriefToGeneration(scope, plan.briefId, generation.id);
+    if (generation.status !== 'completed') return { status: 'generated', generation, briefId: plan.briefId, plan: summary, qc: null };
+    const checked = await checkAndFix(scope, {
+      first: generation,
+      briefId: plan.briefId,
+      started,
+      onQc: input.onQc,
+      // A new scene with the fault named; the bottle, words and logo are the
+      // brand's own and are put in again as they were.
+      remake: (_from, broke) => make(fixNote(broke, null), undefined),
+    });
+    return { status: 'generated', generation: checked.generation, briefId: plan.briefId, plan: summary, qc: checked.qc };
+  }
+
   // Only images can be reference images, and only the ones a generator will
   // accept. A PDF that informed the brief is not something to attach to it.
   const attached = plan.references
@@ -325,6 +366,31 @@ export async function generateWithBrain(
     plan: summary,
     qc: checked.qc,
   };
+}
+
+/**
+ * The composed post for an image request, when the brand has what one needs.
+ * Not for a picture built on an earlier one, which carries that picture as
+ * its reference; and switched off with CIP_COMPOSE_POSTS=off.
+ */
+async function composedPost(
+  scope: CompanyScope,
+  input: BrainGenerateInput,
+  brand: string | null,
+  shape: ChosenShape,
+): Promise<PreparedPost | null> {
+  if (input.mediaType !== 'image' || input.basedOnGenerationId || process.env.CIP_COMPOSE_POSTS === 'off') return null;
+  if (!brand || !(await canCompose(scope, brand))) return null;
+  const made = shape.aspectRatio ?? '1:1';
+  const [w, h] = made.split(':').map(Number);
+  const ratio = shape.deliver?.ratio ?? (w && h ? w / h : 1);
+  return preparePost(scope, {
+    request: [input.requestText, input.clarification].filter(Boolean).join('. '),
+    brand,
+    ratio,
+    generatorShape: made,
+    market: input.market ?? null,
+  });
 }
 
 /** Times a picture is made again to fix what the checker found. */
