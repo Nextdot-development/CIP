@@ -22,6 +22,7 @@
     "calendar:health": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/load-health-days.ts",
     "video:render": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/render-video.ts",
     "rules:load": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/load-qc-rules.ts",
+    "assets:import": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/import-brand-assets.ts",
     "qc:eval": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/qc-eval.ts",
     "export:training": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/export-training.ts",
     "storage:relocate": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/relocate-storage.ts",
