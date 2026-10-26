@@ -23,6 +23,7 @@
     "video:render": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/render-video.ts",
     "rules:load": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/load-qc-rules.ts",
     "assets:import": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/import-brand-assets.ts",
+    "layouts:learn": "node --max-old-space-size=6000 --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/learn-layouts.ts",
     "qc:eval": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/qc-eval.ts",
     "export:training": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/export-training.ts",
     "storage:relocate": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/relocate-storage.ts",
@@ -60,6 +61,7 @@
   "dependencies": {
     "@google/genai": "^2.21.0",
     "@napi-rs/canvas": "^1.0.8",
+    "ag-psd": "^20.2.3",
     "ffmpeg-static": "^5.3.0",
     "mammoth": "^1.12.2",
     "next": "^16.3.4",
