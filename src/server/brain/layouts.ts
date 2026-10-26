@@ -338,7 +338,9 @@ export function fitLayout(spec: LayoutSpec, ratio: number, bottleAspect = 0.32, 
 
   const logoBox = s.logo
     ? (() => {
-        const w = s.logo.width;
+        // A logo taller than the house's own is kept to the same area, not
+        // the same width: a tall mark the width of a wide one dwarfs the post.
+        const w = s.logo.width * Math.min(1, Math.sqrt(0.8 / logoAspect));
         const h = (w * ratio) * logoAspect;
         const x = s.logo.corner.endsWith('right') ? 1 - s.logo.insetX - w : s.logo.insetX;
         return { x, y: s.logo.insetY, w, h };
