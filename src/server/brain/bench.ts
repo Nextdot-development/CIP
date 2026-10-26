@@ -182,7 +182,7 @@ function splitGiven(given: string, roles: Set<HeadlineLine['role']>): HeadlineLi
 export async function planPost(
   scope: CompanyScope,
   input: { request: string; brand: string; ratio: number; market?: string | null },
-): Promise<BenchPlan & { bottleFileId: string | null }> {
+): Promise<BenchPlan & { bottleFileId: string | null; rules: string[] }> {
   const [layouts, bottles, rules, brands] = await Promise.all([
     brandLayouts(scope, input.brand),
     brandAssets(scope, { brand: input.brand, kind: 'bottle' }),
@@ -202,5 +202,5 @@ export async function planPost(
   });
   const plan = settlePlan(draft, { request: input.request, brand: input.brand, variants, layouts: usable, brands });
   const [bottle] = await brandAssets(scope, { brand: input.brand, kind: 'bottle', variant: plan.variant });
-  return { ...plan, bottleFileId: bottle?.asset.cutout ? bottle.fileId : null };
+  return { ...plan, bottleFileId: bottle?.asset.cutout ? bottle.fileId : null, rules: rules.map((r) => r.rule) };
 }

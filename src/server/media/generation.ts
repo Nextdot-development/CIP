@@ -130,7 +130,7 @@ export type ImageGenerationInput = {
    * logo above, which the post does itself. `composed` is kept with the
    * generation, to say what went into it.
    */
-  finish?: ((scene: Buffer) => Promise<{ bytes: Buffer; width: number; height: number }>) | null;
+  finish?: ((scene: Buffer, regenerate: (note: string) => Promise<Buffer>) => Promise<{ bytes: Buffer; width: number; height: number; report?: Record<string, unknown> }>) | null;
   composed?: Record<string, unknown> | null;
 };
 
@@ -217,15 +217,21 @@ export async function generateImage(
     // the generator's shape and cropping on the way out would mean the file
     // somebody downloads and the file CIP kept are different pictures.
     if (input.finish) {
-      const made = await Promise.all(result.assets.map(async (asset) => {
-        const post = await input.finish!(asset.bytes);
+      // The scene painted again, with a note, when the post's own review
+      // finds the fault is in the scene. Same generator, same shape.
+      const regenerate = async (note: string) =>
+        (await provider.generate({ prompt: `${prompt}\n${note}`.slice(0, MEDIA_LIMITS.maxPromptChars), references: [], aspectRatio, imageSize })).assets[0]!.bytes;
+      let report: Record<string, unknown> | undefined;
+      const made = await Promise.all(result.assets.slice(0, 1).map(async (asset) => {
+        const post = await input.finish!(asset.bytes, regenerate);
+        report = post.report;
         return { ...asset, bytes: post.bytes, mimeType: 'image/png', width: post.width, height: post.height };
       }));
       await completeGeneration(scope, id, made, result.usage, result.model);
-      if (input.composed) {
+      if (input.composed || report) {
         await withCompanyScope(scope, (tx) => tx`
           update media_generations
-             set output_metadata = coalesce(output_metadata, '{}'::jsonb) || ${tx.json({ composed: input.composed } as never)}
+             set output_metadata = coalesce(output_metadata, '{}'::jsonb) || ${tx.json({ composed: { ...input.composed, ...report } } as never)}
            where id = ${id} and company_id = ${scope.companyId}
         `);
       }

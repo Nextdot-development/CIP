@@ -8,6 +8,9 @@ import { readFile } from '../drive/service';
 import { placeBottle } from './bottleComposite';
 import { imageGenerationProvider } from './providers';
 import { setHeadline } from './typography';
+import { reviewAndFix, type ReviewRound } from './postReview';
+import { brain } from '../brain/providers';
+import { fitForVision } from '../brain/fitImage';
 
 /**
  * A post made the way the brand's designers make one: a photographed scene, the
@@ -98,7 +101,43 @@ export type BuiltPost = {
   /** What was used, and what stood in for what the brand did not supply. */
   logo: string | null;
   substitutes: string[];
+  /** The tweaks it was built with, once any were needed. */
+  tweaks: PostTweaks;
 };
+
+/**
+ * What a post can be rebuilt with, short of painting its scene again: the
+ * bottle moved up or down and resized, the words given more width and a
+ * darker ground, the logo's corner shaded.
+ */
+export type PostTweaks = {
+  /** Down the post, as a share of its height; negative is up. */
+  bottleShift: number;
+  bottleScale: number;
+  textWidth: number;
+  /** Added to the shading behind the words. */
+  scrim: number;
+  /** The headline's size: a little smaller sits on fewer, fuller lines. */
+  textScale: number;
+  /** Shading behind the logo: 0 only when it needs it, 1 always, 2 stronger. */
+  logoShade: number;
+};
+export const NO_TWEAKS: PostTweaks = { bottleShift: 0, bottleScale: 1, textWidth: 1, scrim: 0, textScale: 1, logoShade: 0 };
+
+/** The layout with the tweaks applied: the bottle about its base, the words wider. */
+export function tweaked(layout: FittedLayout, t: PostTweaks): FittedLayout {
+  let bottleBox = layout.bottleBox;
+  if (bottleBox && (t.bottleShift || t.bottleScale !== 1)) {
+    const h = bottleBox.h * t.bottleScale;
+    const w = bottleBox.w * t.bottleScale;
+    const base = Math.min(0.995, bottleBox.y + bottleBox.h + t.bottleShift);
+    const cx = bottleBox.x + bottleBox.w / 2;
+    bottleBox = { x: cx - w / 2, y: Math.max(0.01, base - h), w, h: Math.min(h, base - 0.01) };
+  }
+  const text = layout.text && t.textWidth !== 1 ? { ...layout.text, width: layout.text.width * t.textWidth } : layout.text;
+  const textBox = layout.textBox && t.textWidth !== 1 ? { ...layout.textBox, w: layout.textBox.w * t.textWidth } : layout.textBox;
+  return { ...layout, bottleBox, text, textBox };
+}
 
 /**
  * The post, put together from its parts: the scene cropped to size, the words'
@@ -112,9 +151,11 @@ export async function buildPost(input: {
   plan: Pick<BenchPlan, 'headline' | 'casing' | 'keep' | 'scene'>;
   bottle: Buffer | null;
   logos: { name: string; bytes: Buffer; asset: Pick<BrandAsset, 'tone' | 'bbox' | 'width' | 'height'> }[];
+  tweaks?: PostTweaks;
 }): Promise<BuiltPost> {
   const { width: W, height: H } = postSize(input.ratio);
-  const layout = input.layout;
+  const tweaks = input.tweaks ?? NO_TWEAKS;
+  const layout = tweaked(input.layout, tweaks);
 
   // The scene, cropped from its centre to the post and scaled to size.
   const scene = await loadImage(input.scene);
@@ -133,7 +174,7 @@ export async function buildPost(input: {
     const { mean, spread } = toneOf(area.data);
     const lightInk = luminanceOf(layout.text.ink) > 0.5;
     const need = lightInk ? Math.max(mean - 0.3, 0) * 1.4 + Math.max(spread - 0.12, 0) * 1.6 : Math.max(0.6 - mean, 0) * 1.4;
-    const alpha = Math.min(0.6, need);
+    const alpha = Math.min(0.75, Math.min(0.6, need) + tweaks.scrim);
     if (alpha > 0.05) {
       const fromLeft = t.x + t.w / 2 < 0.5;
       const reach = fromLeft ? (t.x + t.w + 0.12) * W : (1 - t.x + 0.12) * W;
@@ -155,7 +196,12 @@ export async function buildPost(input: {
   }
 
   // The headline.
-  const set = await setHeadline({ image: bytes, layout, lines: input.plan.headline, casing: input.plan.casing, keep: input.plan.keep });
+  const set = await setHeadline({ image: bytes, layout, lines: input.plan.headline, casing: input.plan.casing, keep: input.plan.keep, scale: tweaks.textScale });
+  // A line of the plan broken down to a lone word means the block was too
+  // narrow for it: set again, wider, as far as the bottle allows.
+  const planned = new Set(input.plan.headline.map((l) => l.text.trim().toLowerCase()));
+  const lone = set.lines.some((l) => !l.text.includes(' ') && !planned.has(l.text.trim().toLowerCase()));
+  if (lone && tweaks.textWidth < 1.5) return buildPost({ ...input, tweaks: { ...tweaks, textWidth: tweaks.textWidth * 1.25, textScale: Math.max(0.85, tweaks.textScale * 0.95) } });
   bytes = set.bytes;
 
   // The logo: the version that stands out against where it lands.
@@ -177,15 +223,17 @@ export async function buildPost(input: {
     // one, say): the logo stays exactly as approved, and the corner behind it
     // is shaded softly, as a designer would, until it reads.
     const own = logoTone(pic);
-    if (Math.abs(own - under) < 0.3) {
+    const level = Math.max(tweaks.logoShade, Math.abs(own - under) < 0.3 ? 1 : 0);
+    if (level > 0) {
       const cx = box.x * W + w / 2;
       const cy = box.y * H + h / 2;
       const r = Math.max(w, h) * 1.3;
       const shade = own > 0.5 ? '0,0,0' : '255,255,255';
       const glow = c.createRadialGradient(cx, cy, 0, cx, cy, r);
-      glow.addColorStop(0, `rgba(${shade},0.5)`);
-      glow.addColorStop(0.35, `rgba(${shade},0.36)`);
-      glow.addColorStop(0.7, `rgba(${shade},0.12)`);
+      const k = level >= 2 ? 1.45 : 1;
+      glow.addColorStop(0, `rgba(${shade},${0.5 * k})`);
+      glow.addColorStop(0.35, `rgba(${shade},${0.36 * k})`);
+      glow.addColorStop(0.7, `rgba(${shade},${0.12 * k})`);
       glow.addColorStop(1, `rgba(${shade},0)`);
       c.fillStyle = glow;
       c.fillRect(cx - r, cy - r, r * 2, r * 2);
@@ -196,10 +244,10 @@ export async function buildPost(input: {
   }
 
   const substitutes = [...new Set(set.lines.filter((l) => l.substitute).map((l) => l.face))];
-  return { bytes, width: W, height: H, logo: logoName, substitutes };
+  return { bytes, width: W, height: H, logo: logoName, substitutes, tweaks };
 }
 
-export type ComposedPost = BuiltPost & {
+export type ComposedPost = FinishedPost & {
   plan: BenchPlan;
   prompt: string;
   bottle: string | null;
@@ -211,9 +259,15 @@ export type PreparedPost = {
   /** The scene, as the generator is to be asked for it. */
   prompt: string;
   bottle: string | null;
-  /** The post, from the scene the generator made. */
-  finish: (scene: Buffer) => Promise<BuiltPost>;
+  /**
+   * The post, from the scene the generator made: built, looked at by the
+   * Bench and fixed. `regenerate` paints the scene again with a note, when a
+   * fault is in the scene itself; `deadline` stops new work past it.
+   */
+  finish: (scene: Buffer, options?: { regenerate?: ((note: string) => Promise<Buffer>) | null; deadline?: number; review?: boolean }) => Promise<FinishedPost>;
 };
+
+export type FinishedPost = BuiltPost & { rounds: ReviewRound[]; unresolved: string[] };
 
 /** Whether a brand has what a composed post needs: a bottle cut out on transparency. */
 export async function canCompose(scope: CompanyScope, brand: string | null): Promise<boolean> {
@@ -249,11 +303,30 @@ export async function preparePost(
 
   // Only the logos in the same shape as the one the layout was fitted to.
   const sameShape = logos.filter((l) => Math.abs(aspectOf(l.asset) - logoAspect) < 0.15);
+  const build = (scene: Buffer, tweaks: PostTweaks) =>
+    buildPost({ scene, ratio: input.ratio, layout, plan, bottle: bottle?.body ?? null, logos: sameShape.length ? sameShape : logos, tweaks });
+  const headline = plan.headline.map((l) => l.text).join(' / ');
   return {
     plan,
     prompt,
     bottle: bottle?.file.name ?? null,
-    finish: (scene) => buildPost({ scene, ratio: input.ratio, layout, plan, bottle: bottle?.body ?? null, logos: sameShape.length ? sameShape : logos }),
+    finish: async (scene, options = {}) => {
+      if (options.review === false || process.env.CIP_BENCH_REVIEW === 'off') return { ...(await build(scene, NO_TWEAKS)), rounds: [], unresolved: [] };
+      const { post, rounds, unresolved } = await reviewAndFix({
+        scene,
+        build,
+        regenerate: options.regenerate ?? null,
+        deadline: options.deadline,
+        review: async (built) => {
+          const image = await fitForVision(built.bytes, 'image/png');
+          const b = bottle ? tweaked(layout, built.tweaks).bottleBox : null;
+          const pct = (v: number) => `${Math.round(v * 100)}%`;
+          const pack = b ? `from ${pct(b.x - 0.04)} to ${pct(b.x + b.w + 0.04)} across and ${pct(b.y)} to ${pct(b.y + b.h)} down` : null;
+          return brain().reviewPost({ image: { bytes: image.bytes, mimeType: image.mimeType }, brand: input.brand, idea: plan.idea, headline, pack, rules: plan.rules });
+        },
+      });
+      return { ...post, rounds, unresolved };
+    },
   };
 }
 
@@ -269,7 +342,9 @@ export async function composePost(
   const shape = generationShape(input.ratio, provider.aspectRatios);
   const prepared = await preparePost(scope, { ...input, generatorShape: shape.label });
   const generated = await provider.generate({ prompt: prepared.prompt, references: [], aspectRatio: shape.label, imageSize: input.quality ?? 'high' });
-  const built = await prepared.finish(generated.assets[0]!.bytes);
+  const built = await prepared.finish(generated.assets[0]!.bytes, {
+    regenerate: async (note) => (await provider.generate({ prompt: `${prepared.prompt}\n${note}`, references: [], aspectRatio: shape.label, imageSize: input.quality ?? 'high' })).assets[0]!.bytes,
+  });
   return { ...built, plan: prepared.plan, prompt: prepared.prompt, bottle: prepared.bottle };
 }
 

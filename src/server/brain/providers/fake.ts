@@ -29,6 +29,8 @@ import type {
   VideoPlan,
   VideoPlanInput,
   BenchBrief,
+  PostReview,
+  PostReviewInput,
   BenchDraft,
   EditBrief,
   ReviewVerdict,
@@ -631,6 +633,19 @@ export class FakeBrainProvider implements BrainProvider {
         brandManager: { variant: input.variants[0] ?? null, keep: [input.brand], risks: [], note: '' },
         artDirector: { layout: input.layouts[0]?.name ?? 'default', casing: 'sentence', headline: [{ text: 'raise a toast', role: 'lead' }], note: '' },
       }),
+      usage: { durationMs: 1 },
+    };
+  }
+
+  /** What the Bench says of the next posts, in turn; a clean review when none are left. */
+  postReviews: Omit<PostReview, 'usage'>[] = [];
+  lastPostReview: PostReviewInput | null = null;
+
+  async reviewPost(input: PostReviewInput): Promise<PostReview> {
+    this.lastPostReview = input;
+    this.check();
+    return {
+      ...(this.postReviews.shift() ?? { creativeDirector: '', brandManager: '', artDirector: '', faults: [], score: 8 }),
       usage: { durationMs: 1 },
     };
   }

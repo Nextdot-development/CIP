@@ -112,6 +112,21 @@ describe('setting the headline', () => {
     }
   });
 
+  it('sets a short closing line a little smaller rather than split it', async () => {
+    const fitted = fitLayout(spec, 1);
+    const narrow = { ...fitted, text: { ...fitted.text!, width: 0.25 }, bottleBox: { ...fitted.bottleBox!, x: 0.45 } };
+    const set = await setHeadline({ image: scene(), layout: narrow, lines: [{ text: 'cheers', role: 'lead' }, { text: 'share the moment', role: 'tail' }] });
+    assert.deepEqual(set.lines.map((l) => l.text), ['Cheers', 'Share the moment']);
+  });
+
+  it('never runs past the bottle, however wide the block was made', async () => {
+    const fitted = fitLayout(spec, 1);
+    const wide = { ...fitted, text: { ...fitted.text!, width: 0.9 } };
+    const set = await setHeadline({ image: scene(), layout: wide, lines: [{ text: 'celebrate with warmth and good company tonight', role: 'lead' }] });
+    const edge = (fitted.bottleBox!.x - 0.03) * 1000;
+    for (const l of set.lines) assert.ok(l.box.x + l.box.w <= edge + 1, `"${l.text}" runs into the bottle`);
+  });
+
   it('puts the box behind its own line, the words dark on it', async () => {
     const set = await setHeadline({ image: scene(), layout: fitLayout(spec, 1), lines: [{ text: 'cheers', role: 'lead' }, { text: 'tonight', role: 'key' }] });
     const { createCanvas: cc, loadImage } = await import('@napi-rs/canvas');

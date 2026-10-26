@@ -584,7 +584,57 @@ export interface BrainProvider {
    * its learned layouts described in words, and its rules - nothing else.
    */
   benchPlan(input: BenchBrief): Promise<BenchDraft>;
+
+  /**
+   * The Bench looks at a post CIP put together and says what to fix, from a
+   * closed list CIP knows how to fix. Implementations send the picture, the
+   * brand, the idea and headline it was meant to carry, and the rules.
+   */
+  reviewPost(input: PostReviewInput): Promise<PostReview>;
 }
+
+/**
+ * What the Bench can find wrong with a finished post, each something CIP
+ * knows how to put right: move or resize the bottle, give the words more room
+ * or a calmer ground, shade behind the logo, or paint the scene again.
+ */
+export const POST_FAULTS = [
+  'bottle_floating',      // not standing on a surface: in the air, or below the surface's edge
+  'bottle_too_big',
+  'bottle_too_small',
+  'bottle_blocked',       // something in the scene stands in front of it or through it
+  'words_hard_to_read',
+  'words_cramped',        // broken into short, awkward lines
+  'logo_hard_to_read',
+  'scene_has_text',       // letters, signs or a logo painted into the scene
+  'scene_has_bottle',     // a bottle or pack painted into the scene
+  'scene_flawed',         // warped objects, impossible light, anything that reads as fake
+  'scene_off_brief',      // not the place, mood or occasion the plan asked for
+  'scene_breaks_rule',    // people who look young, excess, driving, religious imagery, ...
+  'copy_breaks_rule',
+] as const;
+export type PostFault = (typeof POST_FAULTS)[number];
+
+export type PostReviewInput = {
+  image: { bytes: Buffer; mimeType: string };
+  brand: string;
+  idea: string;
+  headline: string;
+  /** Where the brand's own pack was placed, in words: never a fault of the scene. */
+  pack: string | null;
+  rules: string[];
+};
+
+export type PostReview = {
+  creativeDirector: string;
+  brandManager: string;
+  artDirector: string;
+  /** Faults worth fixing; a matter of taste is a note, not one of these. */
+  faults: { fault: PostFault; detail: string; direction: 'up' | 'down' | null }[];
+  /** Out of 10, as the bench would rate it for the brand's own feed. */
+  score: number;
+  usage: BrainUsage;
+};
 
 /** What the Bench is given to plan a post. */
 export type BenchBrief = {

@@ -104,6 +104,16 @@ async function trimmed(img: Image) {
     }
   }
   if (x1 < 0) return { canvas: c, width: img.width, height: img.height };
+  // The foot is the last row that is solidly glass: a soft shadow baked in
+  // under the pack is faint, and standing on it leaves the bottle hovering.
+  const solid = (y: number) => {
+    let n = 0;
+    for (let x = x0; x <= x1; x++) if (data[(y * img.width + x) * 4 + 3]! > 160) n += 1;
+    return n;
+  };
+  let widest = 0;
+  for (let y = y0; y <= y1; y += Math.max(1, Math.floor((y1 - y0) / 200))) widest = Math.max(widest, solid(y));
+  while (y1 > y0 && solid(y1) < widest * 0.3) y1 -= 1;
   const tw = x1 - x0 + 1;
   const th = y1 - y0 + 1;
   const t = createCanvas(tw, th);

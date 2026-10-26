@@ -47,6 +47,21 @@ describe('placing the real bottle in a scene', () => {
     assert.deepEqual(placed.box, { x: 550, y: 250, w: 100, h: 500 });
   });
 
+  it('stands it on its glass, not on a soft shadow baked in under it', async () => {
+    const shadowed = (() => {
+      const c = createCanvas(400, 1200);
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#7a3c10';
+      ctx.fillRect(100, 100, 200, 1000);
+      ctx.fillStyle = 'rgba(0,0,0,0.3)';
+      ctx.fillRect(60, 1100, 280, 60); // the pack shot's own shadow, below the foot
+      return c.toBuffer('image/png');
+    })();
+    const placed = await placeBottle({ scene: scene(), bottle: shadowed, place: { cx: 0.6, base: 0.75, height: 0.5 } });
+    assert.equal(placed.box.y + placed.box.h, 750, 'the glass ends where it stands');
+    assert.equal(placed.box.h, 500);
+  });
+
   it('keeps the label as designed: lit, never recoloured', async () => {
     const placed = await placeBottle({ scene: scene(), bottle: bottle(), place: { cx: 0.6, base: 0.75, height: 0.5 } });
     // The label's middle (it spans 500-650 down): yellow still, and no more than a little darker.

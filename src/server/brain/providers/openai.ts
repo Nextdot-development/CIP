@@ -7,6 +7,7 @@ import {
   BrainFailed,
   CREATIVE_FORMATS,
   MARKET_SIGNAL_KINDS,
+  POST_FAULTS,
   TASK_TYPES,
   normaliseFormat,
   normaliseTaskType,
@@ -54,6 +55,8 @@ import type {
   VideoPlan,
   VideoPlanInput,
   BenchBrief,
+  PostReview,
+  PostReviewInput,
   BenchDraft,
   EditBrief,
   ReviewVerdict,
@@ -655,6 +658,31 @@ const BENCH_SCHEMA = {
         note: { type: 'string' },
       },
     },
+  },
+} as const;
+
+const POST_REVIEW_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['creativeDirector', 'brandManager', 'artDirector', 'faults', 'score'],
+  properties: {
+    creativeDirector: { type: 'string' },
+    brandManager: { type: 'string' },
+    artDirector: { type: 'string' },
+    faults: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['fault', 'detail', 'direction'],
+        properties: {
+          fault: { type: 'string', enum: [...POST_FAULTS] },
+          detail: { type: 'string' },
+          direction: { type: ['string', 'null'], enum: ['up', 'down', null] },
+        },
+      },
+    },
+    score: { type: 'number' },
   },
 } as const;
 
@@ -1569,6 +1597,55 @@ export class OpenAIBrainProvider implements BrainProvider {
       8_000,
     );
     return { ...parsed, usage };
+  }
+
+  async reviewPost(input: PostReviewInput): Promise<PostReview> {
+    const { parsed, usage } = await this.call<Omit<PostReview, 'usage'>>(
+      [
+        {
+          type: 'text',
+          text:
+            'You are the creative bench of a spirits company - a senior creative director, the brand manager who ' +
+            'is the custodian of the brand, and an art director - looking at a finished social post before it goes ' +
+            'out. It was built from parts: a painted background scene, the brand\'s real bottle photograph placed ' +
+            'into it, the headline typeset in the brand\'s fonts, and the approved logo. The bottle, its label and ' +
+            'the logo are the brand\'s own files: never fault their design.\n\n' +
+            'Look hard, as you would at a junior\'s work, and list only real faults, each as one of these:\n' +
+            '- bottle_floating: the bottle does not stand on a surface - it hangs in the air above one (direction ' +
+            '"down": move it down) or its base sits below or past the surface\'s front edge (direction "up").\n' +
+            '- bottle_too_big / bottle_too_small: wrong for the frame and the scene\'s scale.\n' +
+            '- bottle_blocked: a prop or part of the scene stands in front of or through the bottle.\n' +
+            '- words_hard_to_read: the headline does not stand clear of what is behind it.\n' +
+            '- words_cramped: the headline is broken into short, awkward lines a designer would not set.\n' +
+            '- logo_hard_to_read: the logo is lost against its corner.\n' +
+            '- scene_has_text: letters, numbers, signs or any logo painted into the background.\n' +
+            '- scene_has_bottle: another bottle, can or pack painted into the background.\n' +
+            '- scene_flawed: warped or melted objects, impossible light or shadows, anything that reads as fake.\n' +
+            '- scene_off_brief: not the place, mood or occasion of the idea below.\n' +
+            '- scene_breaks_rule / copy_breaks_rule: the picture or the headline breaks a rule below.\n' +
+            'direction is only for bottle_floating; null otherwise. A matter of taste is not a fault: mention it in ' +
+            'your seat\'s note instead. An empty list is the right answer for a post that is ready.\n\n' +
+            'Each seat\'s note: one sentence on the post from that seat. score: 0-10, as you would rate it for the ' +
+            'brand\'s own feed.\n\n' +
+            (input.pack ? `The brand's pack was placed ${input.pack}: everything there - the bottle, and its gift box when it has one - is the brand's own photograph, not part of the scene.\n` : '') +
+            `Brand: ${input.brand}\nIdea: ${input.idea}\nHeadline: ${input.headline}\n\n` +
+            `Rules:\n${input.rules.map((r) => `- ${r}`).join('\n') || '- none'}`,
+        },
+        { type: 'image_url', image_url: { url: dataUri(input.image.mimeType, input.image.bytes), detail: 'high' } },
+      ],
+      POST_REVIEW_SCHEMA,
+      'post_review',
+      8_000,
+    );
+    const known = new Set<string>(POST_FAULTS);
+    return {
+      creativeDirector: String(parsed.creativeDirector ?? '').trim(),
+      brandManager: String(parsed.brandManager ?? '').trim(),
+      artDirector: String(parsed.artDirector ?? '').trim(),
+      faults: (Array.isArray(parsed.faults) ? parsed.faults : []).filter((f) => known.has(f.fault)).slice(0, 12),
+      score: Math.max(0, Math.min(10, Number(parsed.score) || 0)),
+      usage,
+    };
   }
 
   async readEditBrief(text: string): Promise<EditBrief> {

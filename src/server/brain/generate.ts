@@ -231,7 +231,11 @@ export async function generateWithBrain(
       aspectRatio: shape.aspectRatio,
       imageSize: input.imageSize,
       idempotencyKey: key,
-      finish: composing.finish,
+      // Reviewed by the Bench and fixed; no new scene is started late in the request.
+      finish: async (scene, regenerate) => {
+        const post = await composing.finish(scene, { regenerate, deadline: started + composeBudgetMs() });
+        return { ...post, report: { review: post.rounds, unresolved: post.unresolved, tweaks: post.tweaks } };
+      },
       composed: {
         idea: composing.plan.idea,
         layout: composing.plan.layout.name,
@@ -391,6 +395,15 @@ async function composedPost(
     generatorShape: made,
     market: input.market ?? null,
   });
+}
+
+/**
+ * How long into a request the Bench may still start a review or a new scene.
+ * A new scene is a minute and a half; the checker still has to follow.
+ */
+function composeBudgetMs(): number {
+  const value = Number(process.env.CIP_COMPOSE_BUDGET_MS);
+  return Number.isFinite(value) && value > 0 ? value : 120_000;
 }
 
 /** Times a picture is made again to fix what the checker found. */

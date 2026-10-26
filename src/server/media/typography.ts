@@ -236,6 +236,8 @@ export async function setHeadline(input: {
   casing?: Casing;
   keep?: string[];
   colours?: { ink?: string; accent?: string; boxInk?: string };
+  /** Every line's size, scaled: a headline set a little smaller to sit on fewer lines. */
+  scale?: number;
 }): Promise<SetHeadline> {
   const img = await loadImage(input.image);
   const W = img.width;
@@ -255,11 +257,14 @@ export async function setHeadline(input: {
     text.lines.find((l) => l.role === role) ?? text.lines.find((l) => l.role === 'lead') ?? text.lines[0]!;
 
   // The block's width is what the designer's words took; a headline of other
-  // words may take a little more, up to the bottle or the margin, but no more.
+  // words may take a little more - never past the bottle beside it, or the
+  // margin, whatever width it was given.
   const x0 = text.x * W;
   const bottle = input.layout.bottleBox;
-  const edge = bottle && bottle.x > text.x ? bottle.x - 0.03 : 0.97;
-  const maxWidth = Math.max(text.width, Math.min(edge - text.x, text.width * 1.4)) * W;
+  const block = input.layout.textBox;
+  const beside = bottle && bottle.x > text.x && (!block || bottle.y < block.y + block.h * 1.6);
+  const edge = beside ? bottle.x - 0.03 : 0.97;
+  const maxWidth = Math.max(0.15, Math.min(edge - text.x, text.width * 1.4)) * W;
   const background = ctx.getImageData(0, 0, W, H);
 
   // Fit: the lines as the planner wrote them, a little smaller if need be;
@@ -270,12 +275,15 @@ export async function setHeadline(input: {
     input.lines.flatMap((line, i) => {
       const style = styleFor(line.role);
       const face = faceFor(style);
-      let px = Math.max(8, style.size * H * scale);
+      let px = Math.max(8, style.size * H * scale * (input.scale ?? 1));
       const words = style.upper || casing === 'upper' ? cased[i]!.toUpperCase() : cased[i]!;
       setFont(ctx, face.family, px, style);
-      // A boxed line is one phrase in one box: made smaller before it is split.
+      // A boxed line is one phrase in one box, and a part of the headline
+      // that is one short line - the key words, the tail - reads as one:
+      // either is made smaller before it is split.
       const over = maxWidth / ctx.measureText(words).width;
-      if (style.box && over < 1 && over >= 0.7) {
+      const alone = input.lines.filter((l) => l.role === line.role).length === 1 && words.split(/\s+/).length <= 4;
+      if ((style.box || alone) && over < 1 && over >= (style.box ? 0.7 : 0.75)) {
         px *= over * 0.99;
         return [{ text: words, role: line.role, style, face, px }];
       }
