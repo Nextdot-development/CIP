@@ -269,7 +269,8 @@ export function adaptLayout(spec: LayoutSpec, ratio: number): LayoutSpec {
         ...spec.text,
         lines: spec.text.lines.map((l) => ({ ...l, size: byHeight(l.size) * (ratio < 0.7 ? 1.15 : 1) })),
         x: byWidth(spec.text.x),
-        width: Math.min(ratio > 1.4 ? 0.36 : 0.62, byWidth(spec.text.width) * (ratio < 0.7 ? 1.35 : 1)),
+        // A story stacks the bottle below the words, so they may run the full width.
+        width: ratio < 0.7 ? 1 - 2 * byWidth(spec.text.x) : Math.min(ratio > 1.4 ? 0.36 : 0.62, byWidth(spec.text.width)),
         y: ratio < 0.7 ? STORY_SAFE.top + 0.04 : ratio > 1.4 ? Math.max(0.12, spec.text.y) : spec.text.y * (spec.ratio / Math.max(ratio, 0.01)) ** 0.25,
       }
     : null;
@@ -331,8 +332,29 @@ const GAP = 0.03;
  * `bottleAspect` is the bottle's own width over height; `logoAspect` the
  * logo's height over width.
  */
-export function fitLayout(spec: LayoutSpec, ratio: number, bottleAspect = 0.32, logoAspect = 0.8): FittedLayout {
-  const s = adaptLayout(spec, ratio);
+export function fitLayout(
+  spec: LayoutSpec,
+  ratio: number,
+  bottleAspect = 0.32,
+  logoAspect = 0.8,
+  /**
+   * The headline this post will carry: its longest line's width as a share of
+   * the post's width at the layout's sizes, and its number of lines. Other
+   * words than the designer's take other room, and the bottle makes way for
+   * them - as far as a headline should spread, no further.
+   */
+  words?: { width: number; lines: number } | null,
+): FittedLayout {
+  const adapted = adaptLayout(spec, ratio);
+  const s = words && adapted.text
+    ? {
+        ...adapted,
+        text: {
+          ...adapted.text,
+          width: Math.max(adapted.text.width, Math.min(words.width * 1.03, ratio < 0.7 ? 1 - 2 * adapted.text.x : ratio > 1.4 ? 0.45 : 0.55)),
+        },
+      }
+    : adapted;
   const margin = GAP * Math.min(1, ratio); // the short side's share, as a share of the height
   const marginX = GAP * Math.min(1, ratio) / ratio;
 
@@ -352,12 +374,18 @@ export function fitLayout(spec: LayoutSpec, ratio: number, bottleAspect = 0.32, 
         x: s.text.x,
         y: s.text.y,
         w: s.text.width,
-        h: s.text.lines.reduce((n, l, i) => n + l.size * (i === s.text!.lines.length - 1 ? 1 : s.text!.leading), 0),
+        h: (() => {
+          const own = s.text.lines.reduce((n, l, i) => n + l.size * (i === s.text!.lines.length - 1 ? 1 : s.text!.leading), 0);
+          // More lines than the designer set take more height, at their average size.
+          const extra = words ? Math.max(0, words.lines - s.text.lines.length) : 0;
+          return own + extra * (own / s.text.lines.length) * s.text.leading;
+        })(),
       }
     : null;
 
   let bottle = s.bottle ?? {
-    cx: textBox && s.text?.align !== 'right' ? Math.max(0.6, textBox.x + textBox.w + 0.2) : 0.5,
+    // Beside the words; in a story, below them.
+    cx: ratio < 0.7 ? 0.55 : textBox && s.text?.align !== 'right' ? Math.min(0.75, Math.max(0.6, textBox.x + textBox.w + 0.2)) : 0.5,
     base: ratio < 0.7 ? 1 - STORY_SAFE.bottom : 0.88,
     height: ratio < 0.7 ? 0.45 : 0.55,
   };
@@ -366,8 +394,9 @@ export function fitLayout(spec: LayoutSpec, ratio: number, bottleAspect = 0.32, 
   const overlap = (a: { x: number; y: number; w: number; h: number }, b: { x: number; y: number; w: number; h: number }, pad: number) =>
     a.x < b.x + b.w + pad && b.x < a.x + a.w + pad && a.y < b.y + b.h + pad && b.y < a.y + a.h + pad;
 
-  // Inside the margins, top and bottom.
+  // Inside the margins, on every side.
   bottle = { ...bottle, base: Math.min(bottle.base, 1 - margin), height: Math.min(bottle.height, bottle.base - margin) };
+  bottle = { ...bottle, cx: Math.min(Math.max(bottle.cx, marginX + widthOf(bottle.height) / 2), 1 - marginX - widthOf(bottle.height) / 2) };
 
   // Clear of the words: across first, as far as the right margin allows; then
   // smaller, keeping its foot where it stands.

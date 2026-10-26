@@ -101,3 +101,25 @@ describe('fitting a layout to a post and a bottle', () => {
     assert.ok(story.insetY >= 0.07);
   });
 });
+
+describe('fitting a layout to the words it will carry', () => {
+  const spec = learnLayout(post as never, /bottle/i)!;
+  it('moves the bottle across for a headline wider than the designer\'s, and never onto it', () => {
+    const plain = fitLayout(spec, 1);
+    const wide = fitLayout(spec, 1, 0.32, 0.8, { width: 0.52, lines: 3 });
+    assert.ok(wide.text!.width >= 0.52, 'the words are not given their room');
+    assert.ok(wide.bottleBox!.x >= wide.textBox!.x + wide.textBox!.w, 'the bottle is on the words');
+    assert.ok(wide.bottleBox!.x >= plain.bottleBox!.x);
+  });
+
+  it('lets the words of a story run the full width, the bottle below them', () => {
+    const story = fitLayout(spec, 9 / 16, 0.32, 0.8, { width: 0.8, lines: 3 });
+    assert.ok(story.text!.width >= 0.8);
+    assert.ok(story.bottleBox!.y >= story.textBox!.y + story.textBox!.h, 'the bottle is not below the words');
+  });
+
+  it('spreads a headline no wider than a headline should', () => {
+    const fit = fitLayout(spec, 1, 0.32, 0.8, { width: 0.9, lines: 2 });
+    assert.ok(fit.text!.width <= 0.55 + 1e-9);
+  });
+});

@@ -125,7 +125,10 @@ export function settlePlan(
     .map((l) => ({ text: l.text.replace(/\s+/g, ' ').trim(), role: roles.has(l.role) ? l.role : 'lead' }))
     .filter((l) => l.text);
   const given = givenWords(context.request);
-  if (given && plain(headline.map((l) => l.text).join(' ')) !== plain(given)) {
+  // The person's words, as they gave them - broken where the bench broke them
+  // only when no line is left as one stray word.
+  const stray = headline.length > 1 && headline.some((l) => !/\s/.test(l.text));
+  if (given && (stray || plain(headline.map((l) => l.text).join(' ')) !== plain(given))) {
     headline = splitGiven(given, roles);
     settled.push('Kept the exact words given for the post.');
   }

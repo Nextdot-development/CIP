@@ -3,14 +3,14 @@ import { createCanvas, loadImage } from '@napi-rs/canvas';
 import type { CompanyScope } from '../db';
 import { planPost, type BenchPlan } from '../brain/bench';
 import { brandAssets, type BrandAsset } from '../brain/brandAssets';
-import { fitLayout, type FittedLayout } from '../brain/layouts';
+import { adaptLayout, fitLayout, type FittedLayout } from '../brain/layouts';
 import { readFile } from '../drive/service';
 import { placeBottle } from './bottleComposite';
 import { imageGenerationProvider } from './providers';
-import { setHeadline } from './typography';
+import { measureHeadline, setHeadline } from './typography';
 import { reviewAndFix, type ReviewRound } from './postReview';
 import { brain } from '../brain/providers';
-import { fitForVision } from '../brain/fitImage';
+import { readPalette } from '../brain/palette';
 
 /**
  * A post made the way the brand's designers make one: a photographed scene, the
@@ -58,14 +58,57 @@ export function inGenerated(box: Box, postRatio: number, genRatio: number): Box 
 const pct = (v: number) => `${Math.round(Math.min(1, Math.max(0, v)) * 100)}%`;
 const across = (x: number) => (x < 0.38 ? 'left' : x > 0.62 ? 'right' : 'centre');
 
-/** The brief for the scene: the bench's picture of it, and the places to keep clear. */
-export function scenePrompt(plan: Pick<BenchPlan, 'scene'>, layout: FittedLayout, postRatio: number, genRatio: number): string {
+/** A colour in the words a photographer uses: "deep amber", "navy blue", "ivory". */
+export function colourName(hex: string): string {
+  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})/i.exec(hex);
+  if (!m) return '';
+  const [r, g, b] = [m[1], m[2], m[3]].map((v) => parseInt(v!, 16) / 255) as [number, number, number];
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const light = (max + min) / 2;
+  const sat = max === min ? 0 : (max - min) / (1 - Math.abs(2 * light - 1));
+  if (sat < 0.15) return light > 0.85 ? 'white' : light > 0.65 ? 'ivory grey' : light > 0.3 ? 'grey' : 'black';
+  const d = max - min;
+  const hue = 60 * (max === r ? ((g - b) / d + 6) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4);
+  const name =
+    hue < 15 || hue >= 345 ? 'red' : hue < 40 ? (light < 0.35 ? 'brown' : 'amber') : hue < 55 ? 'gold' : hue < 70 ? 'yellow'
+    : hue < 160 ? 'green' : hue < 200 ? 'teal' : hue < 250 ? 'blue' : hue < 290 ? 'purple' : 'magenta';
+  const tone = light < 0.25 ? 'deep ' : light > 0.75 ? 'pale ' : '';
+  return name === 'blue' && light < 0.3 ? 'navy blue' : `${tone}${name}`;
+}
+
+/** The brief for the scene: the bench's picture of it, the craft, and the places to keep clear. */
+export function scenePrompt(
+  plan: Pick<BenchPlan, 'scene'>,
+  layout: FittedLayout,
+  postRatio: number,
+  genRatio: number,
+  packColours: string[] = [],
+): string {
   const lines: string[] = [];
   lines.push(
-    'A photograph for a premium spirits advertisement: the background plate only, shot on a full-frame camera. ' +
+    'A photograph for a premium spirits advertisement, made by a top still-life photographer: the background ' +
+    'plate only, into which the product will be placed afterwards. ' +
     `${plan.scene.description.replace(/\s+/g, ' ').trim()}`,
   );
-  lines.push(`Mood: ${plan.scene.mood}. ${plan.scene.light === 'front' ? 'Soft frontal key light.' : `Key light from the ${plan.scene.light}.`}`);
+  lines.push(
+    `Mood: ${plan.scene.mood}. ${plan.scene.light === 'front' ? 'Soft frontal key light' : `Key light from the ${plan.scene.light}`}, ` +
+    'motivated by a light source in the scene, with a gentle rim of light across the product\'s spot so a bottle ' +
+    'there would separate from the background.',
+  );
+  lines.push(
+    'Camera: full-frame, 85mm lens at f/2.8, at the height of the surface looking very slightly down, level ' +
+    'horizon, no tilt. The surface in the foreground is sharp; the background falls away into soft, creamy bokeh. ' +
+    'Rich, cinematic colour grade with deep but detailed shadows; no haze, no HDR look, no oversharpening.',
+  );
+  const named = [...new Set(packColours.map(colourName).filter(Boolean))];
+  if (named.length) {
+    lines.push(`The product's own colours are ${named.join(', ')}: choose tones for the scene that flatter them and let the product stand out, never matching it exactly.`);
+  }
+  lines.push(
+    'Balance: props and light spread so the frame feels balanced around the product\'s spot, with the quiet side ' +
+    'for the words left open. Few objects, each deliberate; nothing cluttered or random.',
+  );
   lines.push('Composition - these places must be kept as described:');
   if (layout.bottleBox) {
     const b = inGenerated(layout.bottleBox, postRatio, genRatio);
@@ -297,9 +340,15 @@ export async function preparePost(
   const bottleAspect = bottleAsset ? (bottleAsset.bbox[2] * bottleAsset.width) / (bottleAsset.bbox[3] * bottleAsset.height) : 0.32;
   const logo = logos[0];
   const logoAspect = logo ? aspectOf(logo.asset) : 0.8;
-  const layout = fitLayout(plan.layout.spec, input.ratio, bottleAspect, logoAspect);
+  // Fitted to these words: a longer headline than the designer's pushes the
+  // bottle across, or below the words in a story, rather than being squeezed.
+  const adapted = adaptLayout(plan.layout.spec, input.ratio);
+  const words = adapted.text ? measureHeadline(adapted.text, plan.headline, input.ratio, plan.casing, plan.keep) : null;
+  const layout = fitLayout(plan.layout.spec, input.ratio, bottleAspect, logoAspect, words);
   const [gw, gh] = input.generatorShape.split(':').map(Number);
-  const prompt = scenePrompt(plan, layout, input.ratio, gw && gh ? gw / gh : input.ratio);
+  // The pack's own colours, measured from its photograph, for a scene that flatters them.
+  const packColours = bottle ? (await readPalette(bottle.body, 'image/png')).filter((c) => c.share >= 0.08).slice(0, 3).map((c) => c.hex) : [];
+  const prompt = scenePrompt(plan, layout, input.ratio, gw && gh ? gw / gh : input.ratio, packColours);
 
   // Only the logos in the same shape as the one the layout was fitted to.
   const sameShape = logos.filter((l) => Math.abs(aspectOf(l.asset) - logoAspect) < 0.15);
@@ -318,7 +367,7 @@ export async function preparePost(
         regenerate: options.regenerate ?? null,
         deadline: options.deadline,
         review: async (built) => {
-          const image = await fitForVision(built.bytes, 'image/png');
+          const image = await forReview(built.bytes);
           const b = bottle ? tweaked(layout, built.tweaks).bottleBox : null;
           const pct = (v: number) => `${Math.round(v * 100)}%`;
           const pack = b ? `from ${pct(b.x - 0.04)} to ${pct(b.x + b.w + 0.04)} across and ${pct(b.y)} to ${pct(b.y + b.h)} down` : null;
@@ -390,4 +439,13 @@ function luminanceOf(hex: string): number {
   if (!m) return 1;
   const [r, g, b] = [m[1], m[2], m[3]].map((v) => parseInt(v!, 16) / 255);
   return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!;
+}
+
+/** The post as the Bench looks at it: a JPEG 1280 on its long side, quick to send and plenty to judge. */
+async function forReview(png: Buffer): Promise<{ bytes: Buffer; mimeType: string }> {
+  const img = await loadImage(png);
+  const scale = Math.min(1, 1280 / Math.max(img.width, img.height));
+  const c = createCanvas(Math.round(img.width * scale), Math.round(img.height * scale));
+  c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+  return { bytes: c.toBuffer('image/jpeg', 88), mimeType: 'image/jpeg' };
 }

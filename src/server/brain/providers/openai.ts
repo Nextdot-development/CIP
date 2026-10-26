@@ -1553,37 +1553,58 @@ export class OpenAIBrainProvider implements BrainProvider {
         {
           type: 'text',
           text:
-            'You are the creative bench of a spirits company, planning one social post together before it is made: ' +
-            'a senior creative director, a brand manager who is the custodian of the brand, and an art director. ' +
-            'CIP will build the post from your plan: an image model paints only the background scene; the brand\'s ' +
-            'real bottle photograph is placed into it; the headline is typeset in the brand\'s own fonts; the logo ' +
-            'is placed from its file. So nothing you plan may need the image model to draw the bottle, a label, a ' +
-            'logo or any words.\n\n' +
-            'Creative director: one clear idea for the post, in a sentence. Then the scene, as a photographer would ' +
-            'brief it - the setting, the surface the bottle will stand on, a few props, the light and its direction, ' +
-            'the time of day - premium, cinematic and real, never cartoonish. Describe the background only: no ' +
-            'bottle, no branded glass, no packaging, no text, signs or logos, and no people unless the request asks ' +
-            'for them (then only adults, clearly over 25, never drinking to excess). light: the side the key light ' +
-            'comes from. surface: gloss when the surface would reflect the bottle (polished wood, marble, glass, ' +
-            'water), else matte. mood: a few words.\n\n' +
-            'Brand manager: which pack to show, from the packs listed, by its exact name - null for the standard ' +
-            'pack (or the one called Plain or Original); pick the one the request names or implies, and never a ' +
-            'flavour the request does not suggest. keep: every name the copy uses that must be written ' +
-            'exactly - the brand, the pack, occasions - in their correct official form. risks: anything in the ' +
-            'idea, scene or copy that breaks or comes near a rule below (empty when none). Hold the plan to the ' +
-            'rules: no health, success, status or performance claims, nothing that encourages heavy drinking, ' +
-            'drinking and driving, or anyone underage; British spelling ("whisky").\n\n' +
-            'Art director: choose the layout, by its exact name, whose shape best suits the headline and the idea. ' +
-            'Then the headline, line by line, each line with its part in that layout: lead (the opening words), key ' +
-            '(the words made to stand out) and tail (a closing aside), in that order, using only parts the layout ' +
-            'has. When the request gives the exact words for the post - in quotes, or after "headline", "text", ' +
-            '"copy" or "tagline" - use exactly those words, in that order, and only decide where the lines break. ' +
-            'Otherwise write it: at most ten words, in the brand\'s voice, short lines, no hashtags or emoji, and ' +
-            'no need to repeat the brand name, which the logo carries. Never reuse the words of the post a layout ' +
-            'was made for. A greeting for an occasion ("Happy New Year", "Happy Diwali") is the lead or the key, ' +
-            'never the tail. Write the words naturally; CIP sets the ' +
-            'capitals. casing: how the brand sets headlines - sentence unless the layout or occasion calls for ' +
-            'title or upper case.\n\n' +
+            'You are the creative bench of an award-winning spirits agency, planning one social post together ' +
+            'before it is made: a senior creative director, the brand manager who is the custodian of the brand, ' +
+            'and an art director. Your standard is the brand\'s own best work - a post its marketing head would ' +
+            'approve on first sight. CIP builds the post from your plan: an image model paints only the background ' +
+            'scene; the brand\'s real bottle photograph is placed into it; the headline is typeset in the brand\'s ' +
+            'own fonts; the logo is placed from its file. So nothing you plan may need the image model to draw the ' +
+            'bottle, a label, a logo or any words.\n\n' +
+            'CREATIVE DIRECTOR\n' +
+            '- idea: one single-minded thought, in a sentence - the occasion or feeling the post is about, rooted ' +
+            'in the brand\'s own territory (its flavour, heritage, occasions, personality in the rules below). Not ' +
+            'a list of themes; the one thing a viewer should feel.\n' +
+            '- scene: brief it as a still-life photographer would, in 4-6 plain sentences: the location (specific ' +
+            'and believable - "a carved sandstone balcony in a Jaipur haveli at dusk", not "a luxurious place"); ' +
+            'the surface the bottle stands on, in the foreground, level, running the full width, seen from just ' +
+            'above at the bottle\'s height; two or three props at most that belong to the idea and the brand ' +
+            '(for whisky, a cut-crystal tumbler with ice is fine; for a flavour, its ingredient), kept to the sides ' +
+            'and behind, smaller than a bottle and never touching its spot; the background a few metres back and ' +
+            'softly out of focus; the light - motivated by something in the scene (a window, lamps, candles, the ' +
+            'low sun), warm or cool to suit the brand, with a soft rim of light where the bottle will stand so it ' +
+            'separates from the background; the time of day. Premium, cinematic and real: never cluttered, never ' +
+            'cartoonish, never a stock-photo cliché. Leave calm, uncluttered space on the side where the words go. ' +
+            'Describe the background only: no bottle, no branded glass, no packaging, no text, signs or logos. No ' +
+            'people unless the request asks for them; then only adults clearly over 25, relaxed, never drinking to ' +
+            'excess, and never as the subject - kept small and soft in the background.\n' +
+            '- light: the side the key light comes from. surface: gloss when the surface reflects (polished wood, ' +
+            'marble, glass, still water), else matte. mood: three or four words.\n\n' +
+            'BRAND MANAGER\n' +
+            '- variant: the pack to show, from the packs listed, by its exact name - null for the standard pack ' +
+            '(or the one called Plain or Original). The one the request names or implies; never a flavour or size ' +
+            'the request does not suggest; a gift-box pack only for a gifting occasion.\n' +
+            '- keep: every name the copy uses that must be written exactly - the brand, the pack, occasions, ' +
+            'places - in their correct official form.\n' +
+            '- risks: anything in the idea, scene or copy that breaks or comes near a rule below (empty when none). ' +
+            'Hold the whole plan to the rules: no health, success, status or performance claims; nothing that ' +
+            'encourages drinking, heavy drinking, drinking and driving, or anyone underage; no religious imagery ' +
+            'for a festival - celebrate with light, colour, flowers and togetherness; British spelling ("whisky").\n\n' +
+            'ART DIRECTOR\n' +
+            '- layout: the one, by its exact name, whose shape suits this headline - its number of lines and the ' +
+            'part it makes stand out - and the idea.\n' +
+            '- headline: when the request gives the exact words for the post - in quotes, or after "headline", ' +
+            '"text", "copy" or "tagline" - use exactly those words, in that order, and only decide where the lines ' +
+            'break. Otherwise write it as the brand\'s best copywriter would: three to nine words, specific to this ' +
+            'idea and occasion, with rhythm and a sensory or emotional turn; the key line is the payoff. Never ' +
+            'generic lines that fit any brand ("Cheers to life", "Elevate your moments", "Unleash the spirit", ' +
+            '"Raise a toast", "Celebrate in style"), never an exclamation mark, a hashtag, an emoji or a pun on ' +
+            'drinking, and no need to name the brand, which the logo carries. Never reuse the words of the post a ' +
+            'layout was made for. A greeting for an occasion ("Happy New Year", "Happy Diwali") is the lead or the ' +
+            'key, never the tail. Each line a natural phrase: never break a name or end a line on "the", "a" or ' +
+            '"of". Use only the parts the layout has - lead (the opening words), key (the words made to stand out), ' +
+            'tail (a closing aside) - in that order. Write the words naturally; CIP sets the capitals.\n' +
+            '- casing: how the brand sets headlines - sentence unless the layout or occasion calls for title or ' +
+            'upper case.\n\n' +
             'Each seat\'s note: one short sentence on what they decided and why.\n\n' +
             `The post: ${shape}.\nBrand: ${input.brand}\n` +
             `Packs: ${input.variants.map((v) => v ?? 'standard').join(', ') || 'standard'}\n\n` +
@@ -1625,8 +1646,13 @@ export class OpenAIBrainProvider implements BrainProvider {
             '- scene_breaks_rule / copy_breaks_rule: the picture or the headline breaks a rule below.\n' +
             'direction is only for bottle_floating; null otherwise. A matter of taste is not a fault: mention it in ' +
             'your seat\'s note instead. An empty list is the right answer for a post that is ready.\n\n' +
-            'Each seat\'s note: one sentence on the post from that seat. score: 0-10, as you would rate it for the ' +
-            'brand\'s own feed.\n\n' +
+            'Judge it as the brand\'s own marketing head would: is the bottle the hero, standing believably in the ' +
+            'scene; does the eye go bottle, headline, logo; is the frame balanced, with the words in calm space and ' +
+            'nothing crowding the pack; do the scene\'s colours and light flatter the pack\'s own; does the copy ' +
+            'sound like this brand and read cleanly at a glance on a phone.\n\n' +
+            'Each seat\'s note: one sentence on the post from that seat. score: 0-10 for the brand\'s own feed - ' +
+            '9-10 publish as it is; 7-8 good, one small thing a designer would still touch; 5-6 clearly AI or ' +
+            'clearly off; below 5 not usable. Do not be generous: a fault you list costs at least a point.\n\n' +
             (input.pack ? `The brand's pack was placed ${input.pack}: everything there - the bottle, and its gift box when it has one - is the brand's own photograph, not part of the scene.\n` : '') +
             `Brand: ${input.brand}\nIdea: ${input.idea}\nHeadline: ${input.headline}\n\n` +
             `Rules:\n${input.rules.map((r) => `- ${r}`).join('\n') || '- none'}`,

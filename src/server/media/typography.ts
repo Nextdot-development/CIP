@@ -3,7 +3,7 @@ import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { createCanvas, GlobalFonts, loadImage } from '@napi-rs/canvas';
 import type { SKRSContext2D } from '@napi-rs/canvas';
-import type { FittedLayout, LayoutLine } from '../brain/layouts';
+import type { FittedLayout, LayoutLine, LayoutSpec } from '../brain/layouts';
 
 /**
  * The headline, set the way the brand's designers set it - not drawn by an
@@ -229,6 +229,32 @@ export type SetHeadline = {
  * and the whole block made a little smaller only when it will not otherwise
  * fit. Words over a ground too bright for them get a soft shadow.
  */
+/**
+ * How wide a headline is at the layout's sizes, unbroken: its longest line as
+ * a share of the post's width, and its number of lines. What the layout is
+ * fitted to, so the bottle makes way for these words rather than the
+ * designer's.
+ */
+export function measureHeadline(
+  text: NonNullable<LayoutSpec['text']>,
+  lines: HeadlineLine[],
+  ratio: number,
+  casing: Casing = 'sentence',
+  keep: string[] = [],
+): { width: number; lines: number } {
+  const H = 1000;
+  const ctx = createCanvas(10, 10).getContext('2d');
+  const cased = caseLines(lines.map((l) => l.text), casing, keep);
+  let widest = 0;
+  lines.forEach((line, i) => {
+    const style = text.lines.find((l) => l.role === line.role) ?? text.lines[0]!;
+    setFont(ctx, faceFor(style).family, style.size * H, style);
+    const words = style.upper || casing === 'upper' ? cased[i]!.toUpperCase() : cased[i]!;
+    widest = Math.max(widest, ctx.measureText(words).width + (style.box ? style.size * H * 0.4 : 0));
+  });
+  return { width: widest / (H * ratio), lines: lines.length };
+}
+
 export async function setHeadline(input: {
   image: Buffer;
   layout: FittedLayout;
@@ -262,7 +288,9 @@ export async function setHeadline(input: {
   const x0 = text.x * W;
   const bottle = input.layout.bottleBox;
   const block = input.layout.textBox;
-  const beside = bottle && bottle.x > text.x && (!block || bottle.y < block.y + block.h * 1.6);
+  // Beside the words unless it stands wholly below them: a tall bottle whose
+  // top is level with the lower lines is still in their way.
+  const beside = bottle && bottle.x > text.x && (!block || bottle.y < block.y + block.h + 0.08);
   const edge = beside ? bottle.x - 0.03 : 0.97;
   const maxWidth = Math.max(0.15, Math.min(edge - text.x, text.width * 1.4)) * W;
   const background = ctx.getImageData(0, 0, W, H);

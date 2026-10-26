@@ -9,7 +9,7 @@ import { createCanvas, loadImage } from '@napi-rs/canvas';
  */
 
 process.env.DATABASE_URL ??= 'postgres://unused@localhost:5432/unused';
-const { buildPost, generationShape, inGenerated, postSize, scenePrompt } = await import('../src/server/media/composePost');
+const { buildPost, colourName, generationShape, inGenerated, postSize, scenePrompt } = await import('../src/server/media/composePost');
 const { DEFAULT_LAYOUT } = await import('../src/server/brain/bench');
 const { fitLayout } = await import('../src/server/brain/layouts');
 
@@ -56,6 +56,20 @@ describe('the scene brief', () => {
     assert.match(prompt, /is for words: calm, uncluttered, out of focus and evenly dark/);
     assert.match(prompt, /top right corner plain/);
     assert.match(prompt, /no bottles, packaging or labels anywhere, and no text/);
+  });
+});
+
+describe('the craft in the scene brief', () => {
+  it('names the pack\'s colours as a photographer would, and asks for a scene that flatters them', () => {
+    assert.equal(colourName('#5a2d0c'), 'deep brown');
+    assert.equal(colourName('#d08a2a'), 'amber');
+    assert.equal(colourName('#c9a227'), 'gold');
+    assert.equal(colourName('#1b2a4a'), 'navy blue');
+    assert.equal(colourName('#f5f5f2'), 'white');
+    const prompt = scenePrompt(plan, fitLayout(DEFAULT_LAYOUT, 1), 1, 1, ['#5a2d0c', '#c9a227']);
+    assert.match(prompt, /product's own colours are deep brown, gold/);
+    assert.match(prompt, /85mm lens/);
+    assert.match(prompt, /Balance:/);
   });
 });
 

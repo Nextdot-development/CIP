@@ -124,7 +124,8 @@ export async function reviewAndFix(input: {
   for (let n = 0; n < maxReviews && Date.now() < deadline; n++) {
     let review: PostReview;
     try {
-      review = await input.review(post);
+      // Tried twice: a busy provider is the usual reason, and the post is worth a second look.
+      review = await input.review(post).catch(() => input.review(post));
     } catch {
       break; // A review that fails leaves the post as it is: it was already made.
     }

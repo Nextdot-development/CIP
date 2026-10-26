@@ -52,9 +52,12 @@ describe('the Bench', () => {
     const rewritten = settlePlan(draft({ headline: [{ text: 'Sip the golden magic', role: 'lead' }] }), { ...context, request });
     assert.deepEqual(rewritten.headline, [{ text: 'Squeeze the nectar,', role: 'lead' }, { text: 'sip the magic', role: 'key' }]);
     // Broken differently is fine: the words are the same.
-    const broken = settlePlan(draft({ headline: [{ text: 'Squeeze the nectar,', role: 'lead' }, { text: 'sip the', role: 'key' }, { text: 'magic', role: 'key' }] }), { ...context, request });
-    assert.equal(broken.headline.length, 3);
+    const broken = settlePlan(draft({ headline: [{ text: 'Squeeze the nectar,', role: 'lead' }, { text: 'sip the magic', role: 'key' }] }), { ...context, request });
+    assert.equal(broken.headline.length, 2);
     assert.deepEqual(broken.settled, []);
+    // Unless a word is left alone on a line: then broken at their own comma.
+    const stray = settlePlan(draft({ headline: [{ text: 'Squeeze the nectar,', role: 'lead' }, { text: 'sip the', role: 'key' }, { text: 'magic', role: 'key' }] }), { ...context, request });
+    assert.deepEqual(stray.headline, [{ text: 'Squeeze the nectar,', role: 'lead' }, { text: 'sip the magic', role: 'key' }]);
   });
 
   it('holds the copy to house spelling and a headline\'s length', () => {
@@ -92,5 +95,13 @@ describe('the Bench', () => {
     const words = describeLayout(squeeze.name, squeeze.spec);
     assert.match(words, /2 lines - lead, key \(in the accent colour\); left-aligned on the left, top/);
     assert.match(words, /bottle right, tall; logo top-right/);
+  });
+});
+
+describe('the person\'s words, broken well', () => {
+  it('never leaves one of their words alone on a line', () => {
+    const request = 'Sangam post, text: "Where great stories meet"';
+    const plan = settlePlan(draft({ headline: [{ text: 'Where great', role: 'lead' }, { text: 'stories', role: 'key' }, { text: 'meet', role: 'key' }] }), { ...context, request });
+    assert.deepEqual(plan.headline, [{ text: 'Where great stories meet', role: 'lead' }]);
   });
 });

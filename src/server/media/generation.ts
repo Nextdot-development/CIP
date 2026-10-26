@@ -132,6 +132,12 @@ export type ImageGenerationInput = {
    */
   finish?: ((scene: Buffer, regenerate: (note: string) => Promise<Buffer>) => Promise<{ bytes: Buffer; width: number; height: number; report?: Record<string, unknown> }>) | null;
   composed?: Record<string, unknown> | null;
+  /**
+   * What the generator is asked for, when it is not what the person asked:
+   * a composed post's scene brief. The record keeps the person's own words,
+   * which is what the page shows them.
+   */
+  generatorPrompt?: string | null;
 };
 
 export type VideoGenerationInput = {
@@ -156,6 +162,7 @@ export async function generateImage(
 ): Promise<MediaGenerationDTO> {
   const provider = imageGenerationProvider(validateProviderChoice(input.provider));
   const prompt = validatePrompt(input.prompt);
+  const sent = input.generatorPrompt ? validatePrompt(input.generatorPrompt) : prompt;
 
   // Refuse before writing a record or calling anything: a provider with no key
   // cannot produce an image, and saying so now is better than a failed
@@ -210,7 +217,7 @@ export async function generateImage(
 
   try {
     const result = await provider.generate({
-      prompt, references: allReferences, aspectRatio, imageSize,
+      prompt: sent, references: allReferences, aspectRatio, imageSize,
     });
 
     // Cut to the shape that was asked for, before anything is stored. Storing
@@ -220,7 +227,7 @@ export async function generateImage(
       // The scene painted again, with a note, when the post's own review
       // finds the fault is in the scene. Same generator, same shape.
       const regenerate = async (note: string) =>
-        (await provider.generate({ prompt: `${prompt}\n${note}`.slice(0, MEDIA_LIMITS.maxPromptChars), references: [], aspectRatio, imageSize })).assets[0]!.bytes;
+        (await provider.generate({ prompt: `${sent}\n${note}`.slice(0, MEDIA_LIMITS.maxPromptChars), references: [], aspectRatio, imageSize })).assets[0]!.bytes;
       let report: Record<string, unknown> | undefined;
       const made = await Promise.all(result.assets.slice(0, 1).map(async (asset) => {
         const post = await input.finish!(asset.bytes, regenerate);

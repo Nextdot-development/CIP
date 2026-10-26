@@ -225,7 +225,9 @@ export async function generateWithBrain(
   const composing = await composedPost(scope, input, plan.brief.brand, shape);
   if (composing) {
     const make = (note: string | null, key: unknown) => generateImage(scope, {
-      prompt: note ? withNotes(composing.prompt, [note]) : composing.prompt,
+      // The person's request on the record; the scene brief to the generator.
+      prompt: input.requestText,
+      generatorPrompt: note ? withNotes(composing.prompt, [note]) : composing.prompt,
       provider: generator.choice ?? input.provider,
       referenceFileIds: [],
       aspectRatio: shape.aspectRatio,
