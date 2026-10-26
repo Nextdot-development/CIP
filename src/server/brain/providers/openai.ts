@@ -1285,7 +1285,9 @@ export class OpenAIBrainProvider implements BrainProvider {
           'a note. allowed: an approved choice - never report it as a fault and never require ' +
           'it; it exists so that what it permits is not flagged. conditional and contextual: apply ' +
           'only when its condition, market, format or product plainly holds for this creative; ' +
-          'otherwise it is not a finding. human_review: report it as a warning for a person to ' +
+          'otherwise it is not a finding. A creative whose hero is the alcoholic pack or the drink ' +
+          'is an advert for the drink itself, never a brand extension or surrogate, so a rule ' +
+          'that applies only to surrogate creatives does not apply to it. human_review: report it as a warning for a person to ' +
           'decide, never as critical. A rule may list what it allows and what it forbids; the ' +
           'lists are the boundary.\n\n' +
           // Radico's QC document v1.1, section 39: where something "is" is
@@ -1328,6 +1330,14 @@ export class OpenAIBrainProvider implements BrainProvider {
           (input.market ? `, in ${input.market}` : '') +
           '.\n\n' +
           (input.sequence ? videoSheetNote(input.sequence) : '') +
+          (input.madeFrom
+            ? 'This post was put together from the brand\'s own files: the bottle is the approved pack ' +
+              'photograph and the logo the approved logo file, both placed unchanged. Never report their ' +
+              'design, colours, label or shape as altered, distorted or generated - judge only where they ' +
+              'sit, how large they are, and whether they can be read. The headline was set to read exactly: ' +
+              `"${input.madeFrom.headline}" (its capitals may be set differently, and " / " is a line break). ` +
+              'Report its spelling only where the picture does not show these words.\n\n'
+            : '') +
           (input.fromDocument
             ? 'This is one page of a document, so first say what is on it.\n' +
               '- "creative": an advert, post, banner, packshot, or anything laid out to ' +

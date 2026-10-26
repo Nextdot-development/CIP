@@ -7,6 +7,7 @@ import { checkFrameKeyFor, driveStorage } from '../drive/storage';
 import { renderPdfPages } from '../drive/extraction/pdfRender';
 import { readAsset } from '../media/generation';
 import { readBrandDna } from './brandDna';
+import { standingPatterns } from './brandPatterns';
 import { companyBrands } from './brands';
 import { marketsCovering } from './markets';
 import { productShots } from './retrieval';
@@ -54,7 +55,7 @@ import type {
  * whenever the prompts or the way findings are judged change, so a kept answer
  * from before is not served as if it were new.
  */
-const CHECKER_VERSION = 2;
+const CHECKER_VERSION = 3;
 
 export class CheckRejected extends Error {
   constructor(message: string) {
@@ -377,6 +378,48 @@ export function isLegalLine(rule: { category?: string | null; rule: string; rule
   if (rule.ruleType === 'prohibited' || rule.category === 'audience') return false;
   if (rule.category === 'disclaimer') return true;
   return /\b(health|statutory) warnings?\b|\bdisclaimers?\b|legal line|drink responsibly|not for sale to persons|not recommended for pregnant|\b(18|21|25) ?\+/i.test(rule.rule);
+}
+
+/** A rule that applies only to a surrogate creative - soda, water, music under the brand's name. */
+const SURROGATE_ONLY = /\b(surrogate|brand[- ]extension)\b/i;
+
+/** A rule about the pack's or the logo's own design being changed. */
+function aboutPackOrLogoDesign(rule: string): boolean {
+  const names = /\b(logo|pack|packaging|label|bottle)\b/i.test(rule);
+  const changed = /\b(distort|alter|recolou?r|stretch|rotat|incorrectly generated|generated wrongly|warp|modif)/i.test(rule);
+  const kept = /\b(stays?|keeps?) (as approved|its approved form|its colour|consistent)\b|same approved pack/i.test(rule);
+  return names && (changed || kept);
+}
+
+/**
+ * The rules a creative is judged against, given what it is.
+ *
+ * A picture CIP made is a picture of the drink, always: a rule for surrogate
+ * creatives cannot apply, and was being read as "remove the bottle" - from the
+ * post whose whole point it is. Nor does it carry statutory lines, which are
+ * added at layout. A post CIP composed from the brand's own files places the
+ * approved pack and logo unchanged: a rule against altering them cannot be
+ * broken by it, and was only ever a model second-guessing a photograph.
+ */
+export function rulesFor<R extends { category?: string | null; rule: string; ruleType?: string | null }>(
+  rules: R[],
+  made: { generated: boolean; composed: boolean },
+): R[] {
+  if (!made.generated) return rules;
+  return rules.filter((r) =>
+    !isLegalLine(r) &&
+    !SURROGATE_ONLY.test(r.rule) &&
+    !(made.composed && aboutPackOrLogoDesign(r.rule)));
+}
+
+/** The headline a composed post was set with, or null for any other picture. */
+async function composedHeadline(scope: CompanyScope, generationId: string): Promise<{ headline: string } | null> {
+  const [row] = await withCompanyScope(scope, (tx) => tx<{ headline: { text: string }[] | null }[]>`
+    select output_metadata->'composed'->'headline' as headline from media_generations
+     where id = ${generationId} and company_id = ${scope.companyId}
+  `).catch(() => []);
+  const lines = Array.isArray(row?.headline) ? row.headline.map((l) => String(l.text ?? '').trim()).filter(Boolean) : [];
+  return lines.length ? { headline: lines.join(' / ') } : null;
 }
 
 /** A finding that survived grounding: what it cites, and every rule it breaks. */
@@ -1204,6 +1247,9 @@ export async function runCheck(
     throw new BrainFailed('NOT_CONFIGURED', 'permanent', 'The Brain is not configured.');
   }
 
+  // The roster does not depend on the creative: read while it is fetched and decoded.
+  const rosterRead = companyBrands(scope);
+  void rosterRead.catch(() => null);
   const subject = await resolveSubject(scope, input);
   // Only a reviewer's own choice skips the look. What the file is tagged with
   // is the weakest answer of the three and is used last - see below.
@@ -1264,7 +1310,7 @@ export async function runCheck(
   }
 
   // Wanted by most of what follows, and the same answer every time.
-  const roster = await companyBrands(scope);
+  const roster = await rosterRead;
   const houseBrands = roster.map((b) => b.name);
   const fittedSubject = fitForVision(subject.bytes, subject.mimeType);
 
@@ -1333,21 +1379,23 @@ export async function runCheck(
   // while the film's frames are being read.
   const references = packReferences(scope, brand);
   void references.catch(() => []);
-  const [dna, applicable] = await Promise.all([
+  const [dna, applicable, madeFrom] = await Promise.all([
+    // Read wide, then narrowed to the brand's standing patterns: what it
+    // plainly and consistently does, not everything it was ever seen doing.
     readBrandDna(scope, {
       brand,
       market,
-      limit: MAX_FACTS,
+      limit: MAX_FACTS * 3,
       minEvidence: BRAIN_LIMITS.factMinEvidence,
-    }),
+    }).then((all) => standingPatterns(all, brand, { forChecking: true }).slice(0, MAX_FACTS)),
     // What the category requires, read exactly as the planner reads it.
     // Only the rules for what this is: subtitles and the end screen are a
     // film's, and a picture judged against them can only fail by misreading.
     rulesForBrief(scope, { brand, market, format: subject.sequence ? 'video' : 'image' }),
+    // A post CIP put together from the brand's own files, and the words it set.
+    subject.generationId ? composedHeadline(scope, subject.generationId) : Promise.resolve(null),
   ]);
-  // A picture CIP made carries no statutory lines: they are added at layout.
-  // Checking it for them would only send the fix loop off to draw them.
-  const rules = subject.generationId ? applicable.filter((r) => !isLegalLine(r)) : applicable;
+  const rules = rulesFor(applicable, { generated: Boolean(subject.generationId), composed: Boolean(madeFrom) });
 
   const facts = dna
     .filter((f) => f.section !== 'video')
@@ -1519,6 +1567,7 @@ export async function runCheck(
       fromDocument: subject.fromDocument,
       sequence: video,
       closeUps,
+      madeFrom,
     });
   } catch (error) {
     const failure =

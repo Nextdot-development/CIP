@@ -1074,6 +1074,13 @@ export type CheckInput = {
    * warning are on it, and on the sheet it is a thumbnail.
    */
   closeUps?: { bytes: Buffer; mimeType: string; label: string }[];
+  /**
+   * Set for a post CIP put together from the brand's own files: the pack and
+   * the logo are the approved files placed unchanged, and the headline is the
+   * one given here, set in the brand's type. Their design cannot be at fault;
+   * where they sit, how big, and whether they read, can.
+   */
+  madeFrom?: { headline: string } | null;
 };
 
 /** Frames of one video, side by side in order, and when each was taken. */

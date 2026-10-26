@@ -5,6 +5,7 @@ import { brain } from './providers';
 import { BRAIN_LIMITS, BrainFailed, defaultTaskType } from './providers/types';
 import type { GenerationBrief } from './providers/types';
 import { knownSubjects, readBrandDna } from './brandDna';
+import { standingPatterns } from './brandPatterns';
 import { applicableLessons, craftPassages, productShots, ratedExamples, similarAssets, similarPosts } from './retrieval';
 import { companyMarkets, marketFromEvidence, marketInRequest } from './markets';
 import { brandInRequest, brandNames } from './brands';
@@ -238,6 +239,15 @@ export async function planGeneration(
       // brief should open with how this brand cuts and paces, not with how it
       // crops a poster; both still reach the model, in the order that matters.
       prefer: input.mediaType === 'video' ? 'video' : 'visual',
+    }).then((all) => {
+      // The brand's look as it plainly is, not every contradiction it was
+      // seen in: "all caps" and "Title case" both in a brief pull a picture
+      // both ways. Only the look: what else it knows - its campaigns, its
+      // products - is knowledge, not a pattern, and several campaigns are
+      // what lets the Brain ask which one is meant. The order read is kept.
+      const visual = all.filter((f) => f.section === 'visual');
+      const standing = new Set(standingPatterns(visual, brand).map((f) => f.id));
+      return all.filter((f) => f.section !== 'visual' || standing.has(f.id));
     }),
     // The brand is carried into retrieval, not only into the facts. A
     // sibling's packshot shown to a generator does not argue with the brief —
