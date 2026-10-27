@@ -2,6 +2,7 @@ import 'server-only';
 import { recordUsage } from '../usage';
 import { WORDS } from '../categoryWords';
 import { marketPrompt } from './prompts';
+import { DESIGN_ANSWERS } from '../factTidy';
 import {
   BRAIN_LIMITS,
   BrainFailed,
@@ -180,6 +181,35 @@ const PDF_PAGE_SCHEMA = {
   },
 } as const;
 
+/** One answer from a fixed list, or null when it cannot be seen. */
+function choice<const T extends readonly string[]>(values: T) {
+  return { type: ['string', 'null'], enum: [...values, null] } as const;
+}
+
+/**
+ * The questions every image is asked about its layout, each with the only
+ * answers it may give. The same lists are what Brand DNA stores, so evidence
+ * from two files adds up whenever they agree.
+ */
+const DESIGN_CHOICES = {
+  logoPlacement: choice(DESIGN_ANSWERS.placement),
+  logoScale: choice(DESIGN_ANSWERS.scale),
+  productPlacement: choice(DESIGN_ANSWERS.placement),
+  productScale: choice(DESIGN_ANSWERS.scale),
+  headlinePlacement: choice(DESIGN_ANSWERS.placement),
+  headlineCase: choice(DESIGN_ANSWERS.case),
+  headlineAlignment: choice(DESIGN_ANSWERS.alignment),
+  headlineType: choice(DESIGN_ANSWERS.typeStyle),
+  backgroundKind: choice(DESIGN_ANSWERS.backgroundKind),
+  backgroundTone: choice(DESIGN_ANSWERS.tone),
+  lightingTone: choice(DESIGN_ANSWERS.lighting),
+  imageStyle: choice(DESIGN_ANSWERS.imageStyle),
+  people: choice(DESIGN_ANSWERS.people),
+  fonts: { type: 'array', items: { type: 'string' } },
+  paletteHex: { type: 'array', items: { type: 'string' } },
+  safeArea: { type: ['string', 'null'] },
+} as const;
+
 const ASSET_SCHEMA = {
   type: 'object',
   additionalProperties: false,
@@ -223,23 +253,15 @@ const ASSET_SCHEMA = {
          * "brand mark position" and nothing could ever be compared across two
          * assets. These names never change, so they can be.
          */
+        //
+        // And the answers are chosen, not phrased. Free wording split one
+        // placement into "top-right", "top-right corner" and "upper right",
+        // each counted alone, so forty posts never added up to a rule.
         design: {
           type: 'object',
           additionalProperties: false,
-          required: [
-            'logoPlacement', 'logoScale', 'productPlacement', 'headlinePlacement',
-            'headlineCase', 'fonts', 'paletteHex', 'safeArea',
-          ],
-          properties: {
-            logoPlacement: { type: ['string', 'null'] },
-            logoScale: { type: ['string', 'null'] },
-            productPlacement: { type: ['string', 'null'] },
-            headlinePlacement: { type: ['string', 'null'] },
-            headlineCase: { type: ['string', 'null'] },
-            fonts: { type: 'array', items: { type: 'string' } },
-            paletteHex: { type: 'array', items: { type: 'string' } },
-            safeArea: { type: ['string', 'null'] },
-          },
+          required: Object.keys(DESIGN_CHOICES) as (keyof typeof DESIGN_CHOICES)[],
+          properties: DESIGN_CHOICES,
         },
       },
     },
@@ -840,10 +862,12 @@ export class OpenAIBrainProvider implements BrainProvider {
       {
         type: 'text',
         text:
-          'Fill in `design` from the layout itself, not from what would be usual. ' +
-          'Placements are stated as a position on the canvas - "top-left", "lower third ' +
-          'centred", "bottom-right corner" - and a scale is how much of the width it ' +
-          'takes: "small", "about a quarter", "dominant". Leave paletteHex empty: the ' +
+          'Fill in `design` from the layout itself, not from what would be usual, ' +
+          'choosing each answer from its list. A placement is the cell of a three-by-' +
+          'three grid the element mostly sits in. A scale is how much of the width it ' +
+          'takes: "small" under a fifth, "medium" up to about half, "large" more. ' +
+          'headlineType is the letterform of the main headline; imageStyle is what the ' +
+          'picture mostly is. Leave paletteHex empty: the ' +
           'hex values are measured from the pixels afterwards and anything you put there ' +
           'is discarded. Name the colours in `colours` instead, as a reader would say ' +
           'them. fonts describes what the type actually is ' +

@@ -117,12 +117,14 @@ export async function resolveContradictions(
       attribute: string;
       ids: string[];
       evidence: number[];
+      confirmed: boolean[];
     }[]>`
       select brand,
              section,
              lower(btrim(attribute)) as attribute,
              array_agg(id order by evidence_count desc, updated_at desc) as ids,
-             array_agg(evidence_count order by evidence_count desc, updated_at desc) as evidence
+             array_agg(evidence_count order by evidence_count desc, updated_at desc) as evidence,
+             array_agg(kind = 'preference' order by evidence_count desc, updated_at desc) as confirmed
         from brand_dna_facts
        where company_id = ${scope.companyId}
          and status = 'active'
@@ -136,6 +138,13 @@ export async function resolveContradictions(
     const toContest: string[] = [];
 
     for (const clash of clashes) {
+      // A value a person confirmed is the answer, however many files show
+      // another. Two confirmed values are both kept: that is their call.
+      if (clash.confirmed.some(Boolean)) {
+        toSupersede.push(...clash.ids.filter((_, i) => !clash.confirmed[i]));
+        continue;
+      }
+
       const [best, ...rest] = clash.evidence;
       const runnerUp = rest[0] ?? 0;
 

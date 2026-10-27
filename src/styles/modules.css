@@ -447,3 +447,30 @@ a.gtag:hover { color: var(--ink-900); border-color: var(--ink-400); }
 .video-downloads-row { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
 .video-quality { display: flex; gap: 6px; flex-wrap: wrap; }
 .video-quality .btn.is-chosen { box-shadow: inset 0 0 0 2px var(--brand); color: var(--brand); font-weight: 700; }
+
+/* ---------- Rulebook: what a brand plainly does ---------- */
+.rulebook { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 18px; margin-bottom: 22px; }
+.rulebook-head h2 { font-family: var(--font-display); font-size: 20px; margin: 2px 0 4px; }
+.rulebook-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; margin-top: 14px; }
+.rulebook-chapter { border: 1px solid var(--line-soft); border-radius: var(--r-md); padding: 12px 14px; }
+.rulebook-chapter h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--brand); margin: 0 0 8px; }
+.rulebook-chapter ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.rulebook-chapter li { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 4px 6px; margin: 0 -6px; border-radius: var(--r-xs); }
+.rulebook-chapter li.is-confirmed { background: var(--brand-tint); }
+.rulebook-rule { display: flex; flex-direction: column; min-width: 0; }
+.rulebook-rule .muted { font-size: 12px; }
+.rulebook-rule b { overflow-wrap: anywhere; }
+.rulebook-meta { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--nav-fg); white-space: nowrap; }
+.rulebook-missing { margin: 14px 0 0; padding: 10px 12px; border-radius: var(--r-sm); background: var(--brand-tint); }
+.rulebook-meta { margin-top: 2px; }
+.rulebook-actions { display: flex; gap: 4px; flex-shrink: 0; }
+.rulebook-icon {
+  display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: var(--r-xs);
+  border: 1px solid var(--line); background: transparent; color: var(--nav-fg); cursor: pointer;
+}
+.rulebook-icon:hover:not(:disabled) { border-color: var(--line-strong); color: var(--nav-fg-strong); }
+.rulebook-icon:focus-visible, .rulebook-link:focus-visible { outline: none; box-shadow: var(--sh-focus); }
+.rulebook-icon:disabled, .rulebook-link:disabled { opacity: .5; cursor: default; }
+.rulebook-note { margin: 12px 0 0; padding: 8px 12px; border-radius: var(--r-sm); background: var(--nav-hover); }
+.rulebook-error { color: #f08a7a; }
+.rulebook-link { background: none; border: 0; padding: 0; color: var(--brand); font: inherit; text-decoration: underline; cursor: pointer; }

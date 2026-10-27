@@ -9,6 +9,7 @@ import { brain } from './providers';
 import { BrainFailed, BRAIN_LIMITS } from './providers/types';
 import type { AssetAnalysis, PdfPageAnalysis, PdfPost } from './providers/types';
 import { similaritySupported } from './capabilities';
+import { tidyFact } from './factTidy';
 
 /**
  * Reading a PDF by looking at it.
@@ -502,7 +503,13 @@ async function storePage(
     // Facts, with the page they were seen on. Two pages showing the same
     // pattern are two pieces of evidence, which is exactly right: a colour
     // that recurs across a deck is better evidenced than one seen once.
-    for (const fact of analysis.facts) {
+    const [file] = await tx<{ brand: string | null }[]>`
+      select brand from drive_files where id = ${input.fileId}
+    `;
+    const facts = analysis.facts
+      .map((fact) => tidyFact({ ...fact, brand: fact.brand ?? file?.brand ?? null }))
+      .filter((fact) => fact !== null);
+    for (const fact of facts) {
       const factRows = await tx<{ id: string }[]>`
         insert into brand_dna_facts
           (company_id, section, attribute, value, brand, kind, confidence, evidence_count)

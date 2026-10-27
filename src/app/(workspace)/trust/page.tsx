@@ -8,6 +8,7 @@ import { ffmpegAvailable } from '@/server/brain/media';
 import { activeBrand } from '@/server/brain/activeBrand';
 import { productBrain } from '@/server/brain/productBrain';
 import { sharedTraits } from '@/server/brain/relations';
+import { brandRulebook } from '@/server/brain/rulebook';
 import { withCompanyScope } from '@/server/db';
 import { TrustSection } from '@/sections/TrustSection';
 
@@ -52,7 +53,7 @@ export default async function TrustPage() {
     return rows[0]!;
   });
 
-  const [overview, graph, facts, lessons, feedback, ffmpeg, product, traits] = await Promise.all([
+  const [overview, graph, facts, lessons, feedback, ffmpeg, product, traits, rulebook] = await Promise.all([
     knowledgeOverview(scope),
     knowledgeGraph(scope),
     // "What it learned" follows the brand in the sidebar, like the graph above it.
@@ -62,6 +63,7 @@ export default async function TrustPage() {
     ffmpegAvailable(),
     productBrain(scope, active),
     sharedTraits(scope, 40),
+    brandRulebook(scope, active),
   ]);
 
   return (
@@ -69,6 +71,7 @@ export default async function TrustPage() {
       overview={overview}
       graph={graph}
       product={product}
+      rulebook={rulebook}
       company={{ brands: brands.length, assets: counts.assets, traits }}
       brain={{
         provider: brainStatus(),

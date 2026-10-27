@@ -125,11 +125,14 @@ export function standingPatterns(
       byValue.set(key, entry);
     }
     const ranked = [...byValue.values()].sort((a, b) => b.evidence - a.evidence);
-    const [top, next] = ranked;
+    // What a person confirmed is the pattern, whatever the counts say.
+    const confirmed = ranked.find((entry) => entry.facts.some((f) => f.kind === 'preference'));
+    const [top, next] = confirmed ? [confirmed, undefined] : ranked;
     if (!top) continue;
     // Two ways of doing it, neither plainly the brand's: no pattern at all.
     if (next && top.evidence < next.evidence * CLEAR_LEAD) continue;
-    const lead = top.facts.sort((a, b) => b.evidenceCount - a.evidenceCount)[0]!;
+    const lead = top.facts.sort((a, b) =>
+      Number(b.kind === 'preference') - Number(a.kind === 'preference') || b.evidenceCount - a.evidenceCount)[0]!;
     kept.push({ ...lead, evidenceCount: top.evidence });
   }
   // The best-attested first, as they were.

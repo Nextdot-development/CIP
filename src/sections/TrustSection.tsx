@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { KnowledgeGraphSection } from './KnowledgeGraphSection';
 import { BrainSection } from './BrainSection';
 import { BrandBrainGraph } from './BrandBrainGraph';
+import { Rulebook } from './Rulebook';
 import { Card, EmptyState, Pill } from '../components/ui/Bits';
 import { Icon } from '../components/ui/Icon';
 import { useWorkspace } from '@/context/workspace';
@@ -14,6 +15,7 @@ import type { BrainOverviewDTO } from '@/types/brain';
 import type { KnowledgeOverview } from '@/server/brain/overview';
 import type { ProductBrainDTO } from '@/server/brain/productBrain';
 import type { SharedTrait } from '@/server/brain/relations';
+import type { RulebookDTO } from '@/server/brain/rulebook';
 
 /**
  * The Brand Brain - everything CIP knows, and where each piece of it came from.
@@ -37,12 +39,14 @@ export function TrustSection({
   graph,
   brain,
   product,
+  rulebook,
   company,
 }: {
   overview: KnowledgeOverview;
   graph: KnowledgeGraphDTO;
   brain: BrainOverviewDTO;
   product: ProductBrainDTO;
+  rulebook: RulebookDTO;
   company: CompanyBrainDTO;
 }) {
   const workspace = useWorkspace();
@@ -118,6 +122,8 @@ export function TrustSection({
               </a>
             </div>
           </header>
+
+          <Rulebook rulebook={rulebook} />
 
           <div className="graphcard">
             <BrandBrainGraph brain={product} />

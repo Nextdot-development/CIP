@@ -17,6 +17,7 @@ import {
 } from './providers/types';
 import type { AssetAnalysis, AssetFact, BrandRoster } from './providers/types';
 import { needsVisualPass, understandPdfVisually } from './pdfVisual';
+import { tidyFact } from './factTidy';
 import { profilePdf } from '../drive/extraction/pdfRender';
 import {
   extractAudio,
@@ -273,6 +274,14 @@ export function designFacts(structured: Record<string, unknown>, brand: string |
   single('productPlacement', 'product placement');
   single('headlinePlacement', 'headline placement');
   single('headlineCase', 'headline case');
+  single('productScale', 'product scale');
+  single('headlineAlignment', 'headline alignment');
+  single('headlineType', 'headline type');
+  single('backgroundKind', 'background kind');
+  single('backgroundTone', 'background tone');
+  single('lightingTone', 'lighting tone');
+  single('imageStyle', 'image style');
+  single('people', 'people');
   single('safeArea', 'safe area');
   many('fonts', 'font', 3);
   many('paletteHex', 'palette', 6);
@@ -734,10 +743,19 @@ async function store(
     // a fact only becomes something the Brain states once enough assets agree.
     // What the model observed freely, plus the layout read into fixed names.
     // The second is what makes a rule out of a repeated observation.
+    //
+    // Each is said the one way facts are stored, or dropped when it is not
+    // about a brand; and one with no brand, read off a file that belongs to a
+    // brand, is that brand's.
+    const [file] = await tx<{ brand: string | null }[]>`
+      select brand from drive_files where id = ${claim.fileId}
+    `;
     const everyFact = [
       ...analysis.facts,
       ...designFacts(analysis.structured, analysis.facts[0]?.brand ?? null),
-    ];
+    ]
+      .map((fact) => tidyFact({ ...fact, brand: fact.brand ?? file?.brand ?? null }))
+      .filter((fact) => fact !== null);
 
     for (const fact of everyFact) {
       const factRows = await tx<{ id: string }[]>`

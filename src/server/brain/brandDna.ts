@@ -5,6 +5,7 @@ import { adminSql } from '../db-admin';
 import { BRAIN_LIMITS } from './providers/types';
 import { recomputeRelations } from './relations';
 import { resolveContradictions } from './contradictions';
+import { tidyBrandDna } from './brandDnaTidy';
 
 /**
  * What a company's assets add up to.
@@ -91,10 +92,12 @@ export async function recomputeBrandDna(scope: CompanyScope): Promise<{
          and f.evidence_count is distinct from coalesce(e.n, 0)
     `;
 
-    // Confidence follows evidence, everywhere, in one statement.
+    // Confidence follows evidence, everywhere, in one statement - except
+    // where a person confirmed the fact, which no count can outweigh.
     await tx`
       update brand_dna_facts
-         set confidence = least(0.95, round((evidence_count::numeric / (evidence_count + 3)), 3)),
+         set confidence = case when kind = 'preference' then 0.95
+                               else least(0.95, round((evidence_count::numeric / (evidence_count + 3)), 3)) end,
              updated_at = now()
     `;
 
@@ -359,6 +362,70 @@ export async function knownSubjects(scope: CompanyScope): Promise<{
   };
 }
 
+export type FactVerdict = 'right' | 'wrong' | 'clear';
+
+/**
+ * A person's word on one fact, which counting never overturns.
+ *
+ * Right makes it a confirmed preference: it leads every brief, wins over any
+ * rival value however many files show the rival, and is what checks hold a
+ * post to. Wrong rejects it - as a disputed check flag already could - so it
+ * never reaches a brief or a check again. Clear takes either back, and the
+ * fact is judged on its evidence like any other.
+ */
+export async function judgeFact(
+  scope: CompanyScope,
+  factId: string,
+  verdict: FactVerdict,
+): Promise<BrandFactDTO | null> {
+  if (!isUuid(factId)) return null;
+  if (scope.role === 'viewer') throw new FactJudgementRejected('Viewers cannot change what CIP knows.');
+
+  const updated = await withCompanyScope(scope, async (tx) => {
+    const rows = verdict === 'right'
+      ? await tx<{ id: string }[]>`
+          update brand_dna_facts set kind = 'preference', status = 'active', confidence = 0.95, updated_at = now()
+           where id = ${factId} and status not in ('merged', 'set_aside') returning id`
+      : verdict === 'wrong'
+        ? await tx<{ id: string }[]>`
+            update brand_dna_facts set status = 'rejected', updated_at = now()
+             where id = ${factId} and status not in ('merged', 'set_aside') returning id`
+        : await tx<{ id: string }[]>`
+            update brand_dna_facts
+               set kind = case when kind = 'preference'
+                               then case when evidence_count >= ${BRAIN_LIMITS.factMinEvidence} then 'derived' else 'observed' end
+                               else kind end,
+                   status = case when status = 'rejected' then 'active' else status end,
+                   confidence = least(0.95, round((evidence_count::numeric / (evidence_count + 3)), 3)),
+                   updated_at = now()
+             where id = ${factId} and status not in ('merged', 'set_aside') returning id`;
+    return rows.length > 0;
+  });
+  if (!updated) return null;
+
+  // What a person decided can retire a rival at once, rather than at the next
+  // recompute.
+  await resolveContradictions(scope).catch(() => {});
+
+  const rows = await withCompanyScope(scope, async (tx) =>
+    tx<{ id: string; section: BrandSection; attribute: string; value: string; kind: BrandFactDTO['kind'];
+      confidence: string; evidence_count: number; updated_at: Date; brand: string | null }[]>`
+      select id, section, attribute, value, kind, confidence, evidence_count, updated_at, brand
+        from brand_dna_facts where id = ${factId}
+    `,
+  );
+  const row = rows[0];
+  return row
+    ? {
+        id: row.id, section: row.section, attribute: row.attribute, value: row.value, kind: row.kind,
+        confidence: Number(row.confidence), evidenceCount: row.evidence_count,
+        updatedAt: row.updated_at.toISOString(), markets: [], brand: row.brand,
+      }
+    : null;
+}
+
+export class FactJudgementRejected extends Error {}
+
 /** Recomputes for every company. Called by the worker after understanding runs. */
 export async function recomputeEverywhere(): Promise<number> {
   const sql = adminSql();
@@ -376,6 +443,9 @@ export async function recomputeEverywhere(): Promise<number> {
       userId: '00000000-0000-0000-0000-000000000000',
       role: 'owner',
     };
+    // Said one way and given to the right brand before it is counted, so
+    // evidence split across spellings adds up.
+    await tidyBrandDna(scope).catch(() => {});
     const result = await recomputeBrandDna(scope);
     if (result.facts > 0) touched += 1;
 

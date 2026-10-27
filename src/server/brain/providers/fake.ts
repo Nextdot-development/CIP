@@ -197,11 +197,19 @@ export class FakeBrainProvider implements BrainProvider {
         // Derived from the bytes like everything else here, so the same image
         // always lays out the same way and a test can assert on it.
         design: {
-          logoPlacement: pick(digest, 12, ['top-left', 'top-right', 'bottom-centre', 'centred']),
-          logoScale: pick(digest, 14, ['small', 'about a quarter', 'dominant']),
-          productPlacement: pick(digest, 16, ['centred', 'right third', 'left third']),
-          headlinePlacement: pick(digest, 18, ['upper third', 'lower third', 'centred']),
+          logoPlacement: pick(digest, 12, ['top left', 'top right', 'bottom centre', 'centre']),
+          logoScale: pick(digest, 14, ['small', 'medium', 'large']),
+          productPlacement: pick(digest, 16, ['centre', 'middle right', 'middle left']),
+          productScale: pick(digest, 15, ['small', 'medium', 'large']),
+          headlinePlacement: pick(digest, 18, ['top centre', 'bottom centre', 'centre']),
           headlineCase: pick(digest, 20, ['all caps', 'title case', 'sentence case']),
+          headlineAlignment: pick(digest, 19, ['left', 'centre']),
+          headlineType: pick(digest, 21, ['serif', 'sans serif', 'script']),
+          backgroundKind: pick(digest, 23, ['plain colour', 'texture', 'gradient']),
+          backgroundTone: pick(digest, 24, ['dark', 'light']),
+          lightingTone: pick(digest, 25, ['warm', 'neutral']),
+          imageStyle: pick(digest, 26, ['product shot', 'lifestyle photo']),
+          people: 'none',
           fonts: [pick(digest, 22, ['geometric sans', 'high-contrast serif', 'script'])],
           paletteHex: [colour],
           safeArea: null,

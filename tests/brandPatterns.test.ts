@@ -18,6 +18,12 @@ const fact = (attribute: string, value: string, evidenceCount: number, brand: st
 const said = (facts: Fact[]) => facts.map((f) => `${f.attribute}: ${f.value}`);
 
 describe('the brand\'s standing patterns', () => {
+  it('takes what a person confirmed over what the files mostly show', () => {
+    const confirmed = { ...fact('logo placement', 'bottom right', 3, 'Whytehall'), kind: 'preference' as const };
+    const kept = standingPatterns([fact('logo placement', 'top right', 20, 'Whytehall'), confirmed], 'Whytehall');
+    assert.deepEqual(said(kept), ['logo placement: bottom right']);
+  });
+
   it('keeps what the brand plainly does, counting the same thing said several ways as one', () => {
     const kept = standingPatterns([
       fact('logo placement', 'top-right', 41), fact('logo placement', 'top-right corner', 18), fact('logo placement', 'top-left', 4),
