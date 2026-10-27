@@ -80,81 +80,64 @@ function normaliseValue(raw: string): string | null {
 }
 
 /**
- * Words that carry no information about which brand this is.
+ * Attributes about how one picture was made, never about what a brand is.
  *
- * Function words, and the vocabulary a vision model uses to describe
- * anything at all - "appears", "visible", "centered". Rarity weighting would
- * give most of them almost nothing anyway; they are dropped outright because
- * they are numerous, and a hundred worthless terms per brand drown the
- * handful of real ones in the length each brand is measured by.
- *
- * Words about spirits - bottle, label, whisky, gold - are deliberately NOT
- * here. Whether "whisky" distinguishes anything is a question about this
- * company's roster rather than about English, and the rarity weighting
- * answers it with that company's own numbers.
+ * Every brand's posts have a font, a logo placement and a palette, and the
+ * Brain read them off every file. Split into words, "serif, high contrast"
+ * and "upper third centred" related every brand to every other through
+ * "high", "contrast" and "third", and the portfolio drew as a hairball of
+ * lines and unnamed dots. Two brands set in the same kind of type are not
+ * thereby alike.
  */
-const NOT_A_TERM = new Set([
-  'the', 'and', 'for', 'with', 'that', 'this', 'than', 'into', 'over', 'from',
-  'under', 'above', 'below', 'also', 'such', 'very', 'more', 'most', 'some',
-  'each', 'both', 'when', 'where', 'which', 'while', 'their', 'there', 'here',
-  'been', 'being', 'have', 'has', 'had', 'are', 'was', 'were', 'will',
-  'would', 'could', 'should', 'its', 'his', 'her', 'not', 'but', 'all', 'any',
-  'one', 'two', 'three', 'other', 'another', 'same', 'own',
-  'text', 'word', 'words', 'image', 'picture', 'photo', 'shows', 'showing',
-  'shown', 'seen', 'looks', 'appears', 'appearing', 'contains', 'containing',
-  'including', 'placed', 'placement', 'presented', 'presentation', 'visible',
-  'large', 'small', 'main', 'left', 'right', 'centre', 'center', 'centered',
-  'centred', 'top', 'bottom', 'middle', 'front', 'back', 'side', 'sides',
-  'area', 'areas', 'part', 'parts', 'element', 'elements', 'style', 'styling',
-  'design', 'overall', 'general', 'clear', 'clearly', 'slight', 'slightly',
-  // Added after reading what the first real run produced. Every one of these
-  // linked two brands by nothing: "Magic Moments and Morpheus both: displayed,
-  // wears, rather". They are frequent enough to collide by accident and rare
-  // enough that the rarity weighting cannot catch them.
-  'brand', 'brands', 'rather', 'displayed', 'display', 'wears', 'wearing',
-  'reads', 'reading', 'smaller', 'larger', 'bigger', 'matching', 'outer',
-  'inner', 'across', 'along', 'around', 'near', 'next', 'colour', 'color',
-  'colours', 'colors', 'tone', 'tones', 'look', 'feel', 'features',
-  'featuring', 'used', 'uses', 'using', 'set', 'sets', 'type', 'types',
-  'panel', 'panels', 'boxes', 'holding', 'placed-on', 'sits', 'sitting',
-  'composition', 'layout', 'arrangement', 'framing', 'crop', 'cropped',
-  'outline', 'highlight', 'highlights', 'shadow', 'shadows', 'reflection',
-]);
+const ABOUT_THE_PICTURE =
+  /\b(font|typeface|typograph\w*|palette|colou?rs?|colou?rpalette|hex|placement|position|scale|size|case|alignment|safe area|composition|layout|background|backdrop|lighting|people|image style|image quality|resolution|file type|orientation|aspect|format|frame|shot|transitions?|end card|overlay|illustration|graphic|decorative|photographic|setting|number of|objects?|subject|content type|call to action|cta|dimensions?|duration)\b/;
 
 /**
- * The comparable terms in one described attribute.
- *
- * The attribute name is deliberately not one of them. It is the model's own
- * phrasing of what it was looking at, freshly invented each time - the same
- * observation came back as "alcohol strength text", "alcohol strength
- * visible" and "alcohol by volume" - so keying on it meant that across 1231
- * traits on a real roster, not one single trait was held by two brands.
- *
- * The value is kept whole AND broken into words. Whole, because "non-chill
- * filtered" is one thing and three brands said exactly that. In words,
- * because two brands describing the same gold serif wordmark will not phrase
- * the sentence identically, and "gold" and "serif" survive where the whole
- * sentence does not.
+ * Attributes about what is printed on the pack or the post. Their wording is
+ * one file's, so they relate brands only through what they name: a label
+ * reading "Indian single malt whisky" says the brand is a whisky.
  */
-function termsIn(rawValue: string): string[] {
+const ABOUT_THE_PRINT =
+  /\b(label|text|copy|wordmark|crest|emblem|cap|neck|seal|border|volume|alcohol|abv|present|visible|logo|headline|descriptor|product|bottle|name|edition|tagline)\b/;
+
+/** Every word and pair of words in a value, to find the named terms in it. */
+function phrasesIn(value: string): string[] {
+  const words = value.split(/[\s/&,-]+/).filter(Boolean);
+  const phrases = [...words];
+  for (let i = 0; i + 1 < words.length; i += 1) phrases.push(`${words[i]} ${words[i + 1]}`);
+  for (let i = 0; i + 2 < words.length; i += 1) phrases.push(`${words[i]} ${words[i + 1]} ${words[i + 2]}`);
+  return phrases;
+}
+
+/**
+ * The terms one described attribute relates brands by.
+ *
+ * What a brand is - its category, flavour, tier - wherever it was named,
+ * even in a label's text. And an attribute that describes the brand itself,
+ * its tone or its occasion, as a whole: two brands described in exactly the
+ * same words share that, where a word they both happened to use is a
+ * coincidence. How a picture was laid out relates nothing.
+ */
+export function termsFor(kind: string, rawValue: string): string[] {
+  const attribute = kind.toLowerCase().replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[_-]+/g, ' ');
+  if (NOT_A_RELATION.has(attribute) || ABOUT_THE_PICTURE.test(attribute)) return [];
   const value = normaliseValue(rawValue);
-  if (!value) return [];
+  if (!value || /^#?[0-9a-f]{6}$/.test(value)) return [];
 
-  const terms = new Set<string>([value]);
-  for (const word of value.split(' ')) {
-    if (word.length < 3 || NOT_A_TERM.has(word)) continue;
-
-    // Adverbs describe how something was done, never what a brand is.
-    // "predominantly", "prominently", "clearly" all surfaced as things two
-    // brands supposedly had in common, which is true and says nothing. A
-    // suffix rule rather than a list, because there are hundreds of them and
-    // a vision model will reach for a different one tomorrow.
-    if (word.length > 5 && word.endsWith('ly')) continue;
-
-    terms.add(word);
-  }
+  const terms = new Set(phrasesIn(value).filter((phrase) => dimensionOf('', phrase) !== null));
+  if (!ABOUT_THE_PRINT.test(attribute)) terms.add(value);
   return [...terms];
 }
+
+/** How many of a brand's facts must name a trait before the brand holds it. */
+const MIN_TRAIT_FACTS = 2;
+
+/**
+ * Which way of reading facts into traits drew the map. Part of the
+ * fingerprint, so a change to the reading redraws every company's map rather
+ * than waiting for its facts to move.
+ */
+const READING = 'identity-v2';
 
 /** A trait a brand holds, and how many of its facts said so. */
 type Held = { kind: string; value: string; count: number };
@@ -224,7 +207,7 @@ export async function recomputeRelations(
     // only: a fact belonging to no brand belongs to all of them and would
     // relate every brand to every other.
     const factRows = await tx<{ brand: string; kind: string; value: string; n: number }[]>`
-      select brand, attribute as kind, value, count(*)::int as n
+      select brand, attribute as kind, value, sum(greatest(evidence_count, 1))::int as n
         from brand_dna_facts
        where company_id = ${scope.companyId}
          and status = 'active'
@@ -257,7 +240,7 @@ export async function recomputeRelations(
       const terms: { key: string; value: string }[] =
         cleanKind === 'market'
           ? [{ key: `market:${rawValue.toLowerCase().trim()}`, value: rawValue.toLowerCase().trim() }]
-          : termsIn(rawValue).map((term) => ({ key: term, value: term }));
+          : termsFor(cleanKind, rawValue).map((term) => ({ key: term, value: term }));
 
       const forBrand = traits.get(brand) ?? new Map<string, Held>();
       for (const term of terms) {
@@ -273,6 +256,15 @@ export async function recomputeRelations(
     };
 
     for (const row of factRows) add(row.brand, row.kind, row.value, row.n);
+
+    // Said once is one file's word for it: Magic Moments was "whisky" in one
+    // caption and vodka in a hundred and eighteen. A trait needs two facts
+    // behind it - a market is stated, not described, and needs only one.
+    for (const forBrand of traits.values()) {
+      for (const [key, held] of forBrand) {
+        if (held.count < MIN_TRAIT_FACTS) forBrand.delete(key);
+      }
+    }
     for (const row of marketRows) add(row.brand, 'market', row.value, row.n);
 
     // One statement per thousand traits rather than one per trait. Row by row
@@ -408,6 +400,7 @@ export async function recomputeRelations(
 async function fingerprintOf(tx: TransactionSql, companyId: string): Promise<string> {
   const [row] = await tx<{ fingerprint: string }[]>`
     select concat_ws(':',
+      ${READING}::text,
       (select count(*) from brand_dna_facts
         where company_id = ${companyId} and status = 'active' and brand is not null),
       (select coalesce(max(updated_at)::text, '') from brand_dna_facts where company_id = ${companyId}),

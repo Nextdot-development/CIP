@@ -77,17 +77,21 @@ async function roster(scope: Scope, ...names: string[]): Promise<void> {
   }
 }
 
-/** Gives a brand a fact, the way understanding does. */
+/**
+ * Gives a brand a fact, the way understanding does - seen in two files unless
+ * said otherwise, since one file's word for something is not a trait.
+ */
 async function fact(
   scope: Scope,
   brand: string,
   attribute: string,
   value: string,
+  files = 2,
 ): Promise<void> {
   await adminSql`
     insert into brand_dna_facts
       (company_id, section, attribute, value, brand, kind, confidence, evidence_count)
-    values (${scope.companyId}, 'visual', ${attribute}, ${value}, ${brand}, 'observed', 0.6, 1)
+    values (${scope.companyId}, 'visual', ${attribute}, ${value}, ${brand}, 'observed', 0.6, ${files})
     on conflict do nothing
   `;
 }
@@ -175,6 +179,34 @@ describe('brands that share something are related', () => {
 
     const forA = await relations.relationsOf(mm, 'A');
     assert.ok(forA.some((r) => r.other === 'B'), 'a genuinely shared trait was ignored');
+  });
+
+  it('does not relate brands by how their pictures were laid out', async () => {
+    await roster(mm, 'A', 'B', 'C');
+    // Every brand's posts have a font, a logo placement and a palette. Split
+    // into words they related everything to everything: "high", "contrast".
+    for (const brand of ['A', 'B']) {
+      await fact(mm, brand, 'font', 'serif, high contrast, all caps');
+      await fact(mm, brand, 'logo placement', 'top right');
+      await fact(mm, brand, 'headline case', 'all caps');
+      await fact(mm, brand, 'palette', '#0d84e9');
+    }
+    await fact(mm, 'C', 'flavour', 'jamun');
+
+    await relations.recomputeRelations(mm);
+    assert.equal((await relations.relationsOf(mm)).length, 0, 'two brands were related by their layout');
+    assert.equal((await relations.sharedTraits(mm, 40)).length, 0);
+  });
+
+  it('does not take one file\'s word for what a brand is', async () => {
+    await roster(mm, 'A', 'B', 'C');
+    await fact(mm, 'A', 'label text', 'indian whisky');
+    // One caption called a vodka brand a whisky.
+    await fact(mm, 'B', 'caption', 'pairs well with whisky', 1);
+    await fact(mm, 'C', 'flavour', 'jamun');
+
+    await relations.recomputeRelations(mm);
+    assert.ok(!(await relations.sharedTraits(mm, 40)).some((h) => h.value === 'whisky'));
   });
 
   it('ignores a fact that belongs to no brand', async () => {

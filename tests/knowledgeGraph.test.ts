@@ -360,7 +360,7 @@ describe('two graphs, drawn one at a time', () => {
       await adminSql`
         insert into brand_dna_facts
           (company_id, section, attribute, value, brand, kind, confidence, evidence_count)
-        values (${mm.companyId}, 'visual', 'label text', ${value}, ${brand}, 'observed', 0.6, 1)
+        values (${mm.companyId}, 'visual', 'label text', ${value}, ${brand}, 'observed', 0.6, 2)
         on conflict do nothing
       `;
     }
