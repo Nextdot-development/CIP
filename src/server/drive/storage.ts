@@ -74,6 +74,9 @@ const EXTENSION = '(\\.[a-z0-9]{1,10})?';
 const SAFE_KEY = new RegExp(
   `^companies\\/${UUID}\\/(${UUID}` +
     `|media\\/${UUID}\\/${UUID}` +
+    // The scene a composed post stands on, kept so its words can be set again.
+    // One fixed word after the generation's id, nothing a caller chose.
+    `|media\\/${UUID}\\/scene` +
     // A PDF read visually keeps each rendered page, grouped under the file it
     // came from so a file's pages can be found without consulting the database.
     // Both segments are ids we generated, so the shape stays as strict as the

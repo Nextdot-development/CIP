@@ -33,6 +33,12 @@ export type MediaGenerationDTO = {
   /** True once there are bytes to fetch through the asset route. */
   hasAsset: boolean;
   assetCount: number;
+  /**
+   * The headline of a post put together from the brand's own files, line by
+   * line - set when its words can be changed without making it again. Null
+   * for any other picture, whose words are part of the picture.
+   */
+  headline: { text: string; role: 'lead' | 'key' | 'tail' }[] | null;
   createdAt: string;
   startedAt: string | null;
   completedAt: string | null;

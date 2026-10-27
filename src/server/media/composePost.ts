@@ -3,11 +3,11 @@ import { createCanvas, loadImage } from '@napi-rs/canvas';
 import type { CompanyScope } from '../db';
 import { planPost, type BenchPlan } from '../brain/bench';
 import { brandAssets, type BrandAsset } from '../brain/brandAssets';
-import { adaptLayout, fitLayout, type FittedLayout } from '../brain/layouts';
+import { adaptLayout, fitLayout, type FittedLayout, type LayoutSpec } from '../brain/layouts';
 import { readFile } from '../drive/service';
 import { placeBottle } from './bottleComposite';
 import { imageGenerationProvider } from './providers';
-import { measureHeadline, setHeadline } from './typography';
+import { measureHeadline, setHeadline, type Casing, type HeadlineLine } from './typography';
 import { reviewAndFix, type ReviewRound } from './postReview';
 import { brain } from '../brain/providers';
 import { readPalette } from '../brain/palette';
@@ -191,7 +191,7 @@ export async function buildPost(input: {
   scene: Buffer;
   ratio: number;
   layout: FittedLayout;
-  plan: Pick<BenchPlan, 'headline' | 'casing' | 'keep' | 'scene'>;
+  plan: Pick<BenchPlan, 'headline' | 'casing' | 'keep'> & { scene: Pick<BenchPlan['scene'], 'surface'> };
   bottle: Buffer | null;
   logos: { name: string; bytes: Buffer; asset: Pick<BrandAsset, 'tone' | 'bbox' | 'width' | 'height'> }[];
   tweaks?: PostTweaks;
@@ -310,7 +310,74 @@ export type PreparedPost = {
   finish: (scene: Buffer, options?: { regenerate?: ((note: string) => Promise<Buffer>) | null; deadline?: number; review?: boolean }) => Promise<FinishedPost>;
 };
 
-export type FinishedPost = BuiltPost & { rounds: ReviewRound[]; unresolved: string[] };
+/**
+ * Everything a composed post is put together from, short of its scene - which
+ * is kept beside it. With the two, the post can be set again with other words,
+ * in a second and for nothing: no scene to paint, no model to ask.
+ */
+export type PostRecipe = {
+  brand: string;
+  variant: string | null;
+  bottleFileId: string | null;
+  layoutName: string;
+  spec: LayoutSpec;
+  ratio: number;
+  casing: Casing;
+  keep: string[];
+  surface: 'matte' | 'gloss';
+  /** What the Bench's review settled on: the bottle's place and size, the words' ground. */
+  tweaks: PostTweaks;
+};
+
+export type FinishedPost = BuiltPost & {
+  rounds: ReviewRound[];
+  unresolved: string[];
+  /** The scene the post stands on - a second one, when the review had it painted again. */
+  scene: Buffer;
+  recipe: PostRecipe;
+};
+
+/**
+ * The pieces of a post, fitted to its words: the bottle, the logos that read
+ * on it, the layout fitted to both - and the post built from a scene with them.
+ */
+async function assemble(
+  scope: CompanyScope,
+  r: Pick<PostRecipe, 'brand' | 'variant' | 'bottleFileId' | 'spec' | 'ratio' | 'casing' | 'keep' | 'surface'> & { headline: HeadlineLine[] },
+) {
+  const [bottle, logos, bottles] = await Promise.all([
+    r.bottleFileId ? brandFile(scope, r.bottleFileId) : Promise.resolve(null),
+    logosFor(scope, r.brand, r.variant),
+    brandAssets(scope, { brand: r.brand, kind: 'bottle', variant: r.variant }),
+  ]);
+  const bottleAsset = bottles.find((b) => b.fileId === r.bottleFileId)?.asset ?? null;
+  const bottleAspect = bottleAsset ? (bottleAsset.bbox[2] * bottleAsset.width) / (bottleAsset.bbox[3] * bottleAsset.height) : 0.32;
+  const logoAspect = logos[0] ? aspectOf(logos[0].asset) : 0.8;
+  // Fitted to these words: a longer headline than the designer's pushes the
+  // bottle across, or below the words in a story, rather than being squeezed.
+  const adapted = adaptLayout(r.spec, r.ratio);
+  const words = adapted.text ? measureHeadline(adapted.text, r.headline, r.ratio, r.casing, r.keep) : null;
+  const layout = fitLayout(r.spec, r.ratio, bottleAspect, logoAspect, words);
+  // Only the logos in the same shape as the one the layout was fitted to.
+  const sameShape = logos.filter((l) => Math.abs(aspectOf(l.asset) - logoAspect) < 0.15);
+  const plan = { headline: r.headline, casing: r.casing, keep: r.keep, scene: { surface: r.surface } };
+  return {
+    bottle,
+    layout,
+    build: (scene: Buffer, tweaks: PostTweaks) =>
+      buildPost({ scene, ratio: r.ratio, layout, plan, bottle: bottle?.body ?? null, logos: sameShape.length ? sameShape : logos, tweaks }),
+  };
+}
+
+/**
+ * A composed post set again with other words, on the scene it was made on:
+ * the bottle, logo and layout as they were, fitted to the new headline. The
+ * review's fixes to the bottle are kept; the words start fresh.
+ */
+export async function rebuildPost(scope: CompanyScope, recipe: PostRecipe, scene: Buffer, headline: HeadlineLine[]): Promise<BuiltPost> {
+  const { build } = await assemble(scope, { ...recipe, headline });
+  return build(scene, { ...recipe.tweaks, textWidth: 1, textScale: 1 });
+}
 
 /** Whether a brand has what a composed post needs: a bottle cut out on transparency. */
 export async function canCompose(scope: CompanyScope, brand: string | null): Promise<boolean> {
@@ -329,39 +396,32 @@ export async function preparePost(
   input: { request: string; brand: string; ratio: number; generatorShape: string; market?: string | null },
 ): Promise<PreparedPost> {
   const plan = await planPost(scope, input);
-
-  // The pieces, read before the layout is fitted: their shapes decide it.
-  const [bottle, logos, bottles] = await Promise.all([
-    plan.bottleFileId ? readFile(scope, plan.bottleFileId) : Promise.resolve(null),
-    logosFor(scope, input.brand, plan.variant),
-    brandAssets(scope, { brand: input.brand, kind: 'bottle', variant: plan.variant }),
-  ]);
-  const bottleAsset = bottles.find((b) => b.fileId === plan.bottleFileId)?.asset ?? null;
-  const bottleAspect = bottleAsset ? (bottleAsset.bbox[2] * bottleAsset.width) / (bottleAsset.bbox[3] * bottleAsset.height) : 0.32;
-  const logo = logos[0];
-  const logoAspect = logo ? aspectOf(logo.asset) : 0.8;
-  // Fitted to these words: a longer headline than the designer's pushes the
-  // bottle across, or below the words in a story, rather than being squeezed.
-  const adapted = adaptLayout(plan.layout.spec, input.ratio);
-  const words = adapted.text ? measureHeadline(adapted.text, plan.headline, input.ratio, plan.casing, plan.keep) : null;
-  const layout = fitLayout(plan.layout.spec, input.ratio, bottleAspect, logoAspect, words);
+  const recipe: Omit<PostRecipe, 'tweaks'> = {
+    brand: input.brand,
+    variant: plan.variant,
+    bottleFileId: plan.bottleFileId,
+    layoutName: plan.layout.name,
+    spec: plan.layout.spec,
+    ratio: input.ratio,
+    casing: plan.casing,
+    keep: plan.keep,
+    surface: plan.scene.surface,
+  };
+  const { bottle, layout, build } = await assemble(scope, { ...recipe, headline: plan.headline });
   const [gw, gh] = input.generatorShape.split(':').map(Number);
   // The pack's own colours, measured from its photograph, for a scene that flatters them.
   const packColours = bottle ? (await readPalette(bottle.body, 'image/png')).filter((c) => c.share >= 0.08).slice(0, 3).map((c) => c.hex) : [];
   const prompt = scenePrompt(plan, layout, input.ratio, gw && gh ? gw / gh : input.ratio, packColours);
-
-  // Only the logos in the same shape as the one the layout was fitted to.
-  const sameShape = logos.filter((l) => Math.abs(aspectOf(l.asset) - logoAspect) < 0.15);
-  const build = (scene: Buffer, tweaks: PostTweaks) =>
-    buildPost({ scene, ratio: input.ratio, layout, plan, bottle: bottle?.body ?? null, logos: sameShape.length ? sameShape : logos, tweaks });
   const headline = plan.headline.map((l) => l.text).join(' / ');
   return {
     plan,
     prompt,
     bottle: bottle?.file.name ?? null,
     finish: async (scene, options = {}) => {
-      if (options.review === false || process.env.CIP_BENCH_REVIEW === 'off') return { ...(await build(scene, NO_TWEAKS)), rounds: [], unresolved: [] };
-      const { post, rounds, unresolved } = await reviewAndFix({
+      if (options.review === false || process.env.CIP_BENCH_REVIEW === 'off') {
+        return { ...(await build(scene, NO_TWEAKS)), rounds: [], unresolved: [], scene, recipe: { ...recipe, tweaks: NO_TWEAKS } };
+      }
+      const { post, rounds, unresolved, scene: stood } = await reviewAndFix({
         scene,
         build,
         regenerate: options.regenerate ?? null,
@@ -374,7 +434,7 @@ export async function preparePost(
           return brain().reviewPost({ image: { bytes: image.bytes, mimeType: image.mimeType }, brand: input.brand, idea: plan.idea, headline, pack, rules: plan.rules });
         },
       });
-      return { ...post, rounds, unresolved };
+      return { ...post, rounds, unresolved, scene: stood, recipe: { ...recipe, tweaks: post.tweaks } };
     },
   };
 }
@@ -404,7 +464,7 @@ async function logosFor(scope: CompanyScope, brand: string, variant: string | nu
   const all = await brandAssets(scope, { brand, kind: 'logo', variant });
   const own = variant ? all.filter((l) => l.asset.variant?.toLowerCase() === variant.toLowerCase()) : all.filter((l) => !l.asset.variant);
   const chosen = (own.length ? own : all).slice(0, 4);
-  return Promise.all(chosen.map(async (l) => ({ name: l.name, asset: l.asset, bytes: (await readFile(scope, l.fileId)).body })));
+  return Promise.all(chosen.map(async (l) => ({ name: l.name, asset: l.asset, bytes: (await brandFile(scope, l.fileId)).body })));
 }
 
 /** How light a logo's own ink is, its transparent ground left out. */
@@ -448,4 +508,25 @@ async function forReview(png: Buffer): Promise<{ bytes: Buffer; mimeType: string
   const c = createCanvas(Math.round(img.width * scale), Math.round(img.height * scale));
   c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
   return { bytes: c.toBuffer('image/jpeg', 88), mimeType: 'image/jpeg' };
+}
+
+/**
+ * A brand file's bytes, kept in memory once read. A bottle or a logo in the
+ * library is the approved file and does not change under its id, and the
+ * same few are read for every post of a brand - and again, from storage, for
+ * every change of a post's words.
+ */
+const brandFiles = new Map<string, Promise<Awaited<ReturnType<typeof readFile>>>>();
+const BRAND_FILES_KEPT = 40;
+
+function brandFile(scope: CompanyScope, fileId: string): ReturnType<typeof readFile> {
+  const key = `${scope.companyId}:${fileId}`;
+  const known = brandFiles.get(key);
+  if (known) return known;
+  const read = readFile(scope, fileId);
+  brandFiles.set(key, read);
+  // A failed read is not kept: the next one tries again.
+  read.catch(() => brandFiles.delete(key));
+  if (brandFiles.size > BRAND_FILES_KEPT) brandFiles.delete(brandFiles.keys().next().value!);
+  return read;
 }

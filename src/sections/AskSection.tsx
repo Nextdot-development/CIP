@@ -937,6 +937,105 @@ function QcOutcome({ qc }: { qc: GenerationQc }) {
   );
 }
 
+type HeadlineLine = NonNullable<MediaGenerationDTO['headline']>[number];
+
+const LINE_PARTS: { role: HeadlineLine['role']; label: string }[] = [
+  { role: 'lead', label: 'Main' },
+  { role: 'key', label: 'Highlight' },
+  { role: 'tail', label: 'Closing' },
+];
+
+/**
+ * The headline of a composed post, line by line, to set again on the same
+ * scene. Saved as a new version beside this one, in a second or two.
+ */
+function TextEditor({ generation, lines: initial, onDone }: {
+  generation: MediaGenerationDTO;
+  lines: HeadlineLine[];
+  onDone: () => void;
+}) {
+  const { note } = useToast();
+  const [lines, setLines] = useState<HeadlineLine[]>(initial);
+  const [saving, setSaving] = useState(false);
+  const set = (i: number, change: Partial<HeadlineLine>) =>
+    setLines((all) => all.map((l, n) => (n === i ? { ...l, ...change } : l)));
+  const filled = lines.filter((l) => l.text.trim());
+
+  const save = async () => {
+    setSaving(true);
+    const res = await fetch(`/api/media/generations/${generation.id}/text`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ lines: filled }),
+    });
+    setSaving(false);
+    if (!res.ok) {
+      const body = (await res.json().catch(() => null)) as { message?: string } | null;
+      note(body?.message ?? 'The text could not be changed.');
+      return;
+    }
+    note('New version made with your text');
+    onDone();
+  };
+
+  return (
+    <div className="stack" style={{ marginTop: 12, gap: 8 }}>
+      <span className="tiny muted">
+        Same picture, bottle and logo - only the words change. Capitals are set for you.
+      </span>
+      {lines.map((line, i) => (
+        <div key={i} className="row" style={{ gap: 8 }}>
+          <select
+            className="field-input"
+            style={{ width: 120 }}
+            value={line.role}
+            onChange={(e) => set(i, { role: e.target.value as HeadlineLine['role'] })}
+            aria-label={`Line ${i + 1} style`}
+          >
+            {LINE_PARTS.map((p) => <option key={p.role} value={p.role}>{p.label}</option>)}
+          </select>
+          <input
+            className="field-input grow"
+            value={line.text}
+            maxLength={80}
+            onChange={(e) => set(i, { text: e.target.value })}
+            aria-label={`Line ${i + 1}`}
+          />
+          {lines.length > 1 && (
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={() => setLines((all) => all.filter((_, n) => n !== i))}
+              aria-label={`Remove line ${i + 1}`}
+            >
+              <Icon name="x" size={14} />
+            </button>
+          )}
+        </div>
+      ))}
+      <div className="row" style={{ gap: 8 }}>
+        {lines.length < 4 && (
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={() => setLines((all) => [...all, { text: '', role: 'lead' }])}
+          >
+            Add a line
+          </button>
+        )}
+        <button
+          type="button"
+          className="btn btn-primary btn-sm"
+          onClick={() => void save()}
+          disabled={saving || filled.length === 0}
+        >
+          {saving ? 'Setting the text…' : 'Save as new version'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /** One result, with the 0-10 rating that teaches the next one. */
 function Result({
   generation, compact = false, onRated, onBuildOn,
@@ -952,6 +1051,7 @@ function Result({
   const [comment, setComment] = useState('');
   const [sent, setSent] = useState(false);
   const [open, setOpen] = useState(!compact);
+  const [editing, setEditing] = useState(false);
   const commentRef = useRef<HTMLInputElement | null>(null);
 
   const rate = async () => {
@@ -1032,7 +1132,30 @@ function Result({
                 <Icon name="sparkle" size={15} /> Build on this
               </button>
             )}
+
+            {/* The words of a post put together from the brand's own files can
+                be set again on the same scene - no new picture, nothing spent. */}
+            {generation.headline && (
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => setEditing((v) => !v)}
+                aria-expanded={editing}
+              >
+                <Icon name="pencil" size={15} /> Change text
+              </button>
+            )}
           </div>
+          {editing && generation.headline && (
+            <TextEditor
+              generation={generation}
+              lines={generation.headline}
+              onDone={() => {
+                setEditing(false);
+                onRated();
+              }}
+            />
+          )}
           {generation.type === 'image' && (
             <GenerationCheck generationId={generation.id} live={!compact} />
           )}

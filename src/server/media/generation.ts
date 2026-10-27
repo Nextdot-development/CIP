@@ -6,7 +6,7 @@ import { allowedImageChoices, imageGenerationProvider, videoGenerationProvider }
 import type { ImageProviderChoice } from './providers/types';
 import { MEDIA_LIMITS, ProviderFailed } from './providers/types';
 import type { GeneratedAsset, ProviderUsage, ReferenceImage } from './providers/types';
-import { extensionFor, mediaStorageKey, putMediaAsset } from './storage';
+import { extensionFor, getMediaAsset, mediaStorageKey, putMediaAsset } from './storage';
 import {
   MediaConflict,
   MediaNotFound,
@@ -56,6 +56,7 @@ type GenerationRow = {
   input_metadata: { aspectRatio?: string | null } | null;
   storage_path: string | null;
   asset_count: number;
+  headline_lines: { text: string; role: 'lead' | 'key' | 'tail' }[] | null;
   created_at: Date;
   started_at: Date | null;
   completed_at: Date | null;
@@ -79,6 +80,7 @@ function toDTO(row: GenerationRow): MediaGenerationDTO {
     // Whether bytes exist, never where they are.
     hasAsset: row.storage_path !== null,
     assetCount: Number(row.asset_count ?? 0),
+    headline: Array.isArray(row.headline_lines) && row.headline_lines.length ? row.headline_lines : null,
     createdAt: row.created_at.toISOString(),
     startedAt: row.started_at?.toISOString() ?? null,
     completedAt: row.completed_at?.toISOString() ?? null,
@@ -91,7 +93,10 @@ const SELECT_COLUMNS = `
   g.error_code, g.error_message, g.input_metadata,
   g.storage_path, g.created_at, g.started_at, g.completed_at,
   (select count(*) from media_generation_assets a
-    where a.generation_id = g.id and a.company_id = g.company_id)::int as asset_count
+    where a.generation_id = g.id and a.company_id = g.company_id)::int as asset_count,
+  case when g.output_metadata->'composed' ? 'recipe'
+        and coalesce((g.output_metadata->'composed'->>'scene')::boolean, false)
+       then g.output_metadata->'composed'->'headline' end as headline_lines
 `;
 
 export type ImageGenerationInput = {
@@ -130,7 +135,11 @@ export type ImageGenerationInput = {
    * logo above, which the post does itself. `composed` is kept with the
    * generation, to say what went into it.
    */
-  finish?: ((scene: Buffer, regenerate: (note: string) => Promise<Buffer>) => Promise<{ bytes: Buffer; width: number; height: number; report?: Record<string, unknown> }>) | null;
+  finish?: ((scene: Buffer, regenerate: (note: string) => Promise<Buffer>) => Promise<{
+    bytes: Buffer; width: number; height: number; report?: Record<string, unknown>;
+    /** The scene the post stands on, kept so its words can be set again. */
+    scene?: Buffer;
+  }>) | null;
   composed?: Record<string, unknown> | null;
   /**
    * What the generator is asked for, when it is not what the person asked:
@@ -229,16 +238,21 @@ export async function generateImage(
       const regenerate = async (note: string) =>
         (await provider.generate({ prompt: `${sent}\n${note}`.slice(0, MEDIA_LIMITS.maxPromptChars), references: [], aspectRatio, imageSize })).assets[0]!.bytes;
       let report: Record<string, unknown> | undefined;
+      let scene: Buffer | undefined;
       const made = await Promise.all(result.assets.slice(0, 1).map(async (asset) => {
         const post = await input.finish!(asset.bytes, regenerate);
         report = post.report;
+        scene = post.scene;
         return { ...asset, bytes: post.bytes, mimeType: 'image/png', width: post.width, height: post.height };
       }));
       await completeGeneration(scope, id, made, result.usage, result.model);
+      // Kept beside the post. Without it the post is still the post; it just
+      // cannot have its words changed without painting a new scene.
+      const kept = scene ? await keepScene(scope, id, scene) : false;
       if (input.composed || report) {
         await withCompanyScope(scope, (tx) => tx`
           update media_generations
-             set output_metadata = coalesce(output_metadata, '{}'::jsonb) || ${tx.json({ composed: { ...input.composed, ...report } } as never)}
+             set output_metadata = coalesce(output_metadata, '{}'::jsonb) || ${tx.json({ composed: { ...input.composed, ...report, scene: kept } } as never)}
            where id = ${id} and company_id = ${scope.companyId}
         `);
       }
@@ -557,7 +571,7 @@ async function findByIdempotencyKey(
  * than an object. Everything then reads back as undefined — which is exactly
  * what happened to aspectRatio here until a test asked for a field back.
  */
-async function insertGeneration(
+export async function insertGeneration(
   scope: CompanyScope,
   values: {
     type: MediaType;
@@ -889,4 +903,23 @@ export function validateProviderChoice(value: unknown): ImageProviderChoice | nu
 
 function isUuid(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+}
+
+/**
+ * Keeps the scene a composed post stands on, beside the post, so its words
+ * can be set again later without painting a new one. False when it could not
+ * be kept: the post is still the post.
+ */
+export async function keepScene(scope: CompanyScope, generationId: string, scene: Buffer): Promise<boolean> {
+  try {
+    await putMediaAsset(mediaStorageKey(scope.companyId, generationId, 'scene', 'png'), scene, 'image/png');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The scene a composed post was kept with. The generation must already be known to be this company's. */
+export async function sceneOf(scope: CompanyScope, generationId: string): Promise<Buffer> {
+  return getMediaAsset(mediaStorageKey(scope.companyId, generationId, 'scene', 'png'));
 }

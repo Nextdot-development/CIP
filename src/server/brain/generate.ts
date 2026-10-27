@@ -236,7 +236,8 @@ export async function generateWithBrain(
       // Reviewed by the Bench and fixed; no new scene is started late in the request.
       finish: async (scene, regenerate) => {
         const post = await composing.finish(scene, { regenerate, deadline: started + composeBudgetMs() });
-        return { ...post, report: { review: post.rounds, unresolved: post.unresolved, tweaks: post.tweaks } };
+        // The recipe and the scene go with it, so its words can be changed later without a new scene.
+        return { ...post, report: { review: post.rounds, unresolved: post.unresolved, tweaks: post.tweaks, recipe: post.recipe }, scene: post.scene };
       },
       composed: {
         idea: composing.plan.idea,

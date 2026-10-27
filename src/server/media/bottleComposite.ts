@@ -59,7 +59,12 @@ export async function placeBottle(input: {
   const scene = await loadImage(input.scene);
   const W = scene.width;
   const H = scene.height;
-  const cut = await trimmed(await loadImage(input.bottle));
+  // A packshot is often three thousand pixels tall and lands a thousand tall:
+  // scaled down evenly first - the same pack, never redrawn - so the work below
+  // is done on what will be seen rather than on nine times as many pixels.
+  const source = await loadImage(input.bottle);
+  const enough = Math.min(1, (input.place.height * H * 1.25) / source.height);
+  const cut = await trimmed(enough < 1 ? scaledCopy(source, enough) : source);
 
   // Scaled evenly to the height asked for, standing on its line.
   const h = Math.max(8, Math.round(input.place.height * H));
@@ -91,7 +96,16 @@ export async function placeBottle(input: {
 }
 
 /** The cut-out without its transparent margins, so its height is the bottle's. */
-async function trimmed(img: Image) {
+/** An even, smaller copy: every proportion kept, high-quality resampling. */
+function scaledCopy(img: Image, scale: number): Canvas {
+  const c = createCanvas(Math.max(1, Math.round(img.width * scale)), Math.max(1, Math.round(img.height * scale)));
+  const ctx = c.getContext('2d');
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(img, 0, 0, c.width, c.height);
+  return c;
+}
+
+async function trimmed(img: Image | Canvas) {
   const c = createCanvas(img.width, img.height);
   const cx = c.getContext('2d');
   cx.drawImage(img, 0, 0);

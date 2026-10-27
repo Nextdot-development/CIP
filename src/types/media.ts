@@ -36,6 +36,8 @@ export type MediaGenerationDTO = {
   aspectRatio: string | null;
   hasAsset: boolean;
   assetCount: number;
+  /** A post put together from the brand's own files: its headline, whose words can be changed. */
+  headline?: { text: string; role: 'lead' | 'key' | 'tail' }[] | null;
   createdAt: string;
   startedAt: string | null;
   completedAt: string | null;

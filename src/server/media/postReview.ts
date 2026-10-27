@@ -112,7 +112,7 @@ export async function reviewAndFix(input: {
   maxReviews?: number;
   /** No new review or new scene is started after this (ms since the epoch). */
   deadline?: number;
-}): Promise<{ post: BuiltPost; rounds: ReviewRound[]; unresolved: string[] }> {
+}): Promise<{ post: BuiltPost; rounds: ReviewRound[]; unresolved: string[]; scene: Buffer }> {
   const maxReviews = input.maxReviews ?? 3;
   const deadline = input.deadline ?? Infinity;
   let scene = input.scene;
@@ -156,5 +156,5 @@ export async function reviewAndFix(input: {
     // A new scene has its surface somewhere new: the bottle starts from the layout again.
     post = await input.build(scene, fresh ? { ...plan.tweaks, bottleShift: 0 } : plan.tweaks);
   }
-  return { post, rounds, unresolved };
+  return { post, rounds, unresolved, scene };
 }
