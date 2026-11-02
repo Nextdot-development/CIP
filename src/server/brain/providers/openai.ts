@@ -1620,7 +1620,8 @@ export class OpenAIBrainProvider implements BrainProvider {
             '- keep: every name the copy uses that must be written exactly - the brand, the pack, occasions, ' +
             'places - in their correct official form.\n' +
             '- risks: anything in the idea, scene or copy that breaks or comes near a rule below (empty when none). ' +
-            'Hold the whole plan to the rules: no health, success, status or performance claims; nothing that ' +
+            'Statutory lines - health warnings, "Drink Responsibly", age marks - are set later by the design team: ' +
+            'they are never part of this plan, its scene or its copy. Hold the whole plan to the rules: no health, success, status or performance claims; nothing that ' +
             'encourages drinking, heavy drinking, drinking and driving, or anyone underage; no religious imagery ' +
             'for a festival - celebrate with light, colour, flowers and togetherness; British spelling ("whisky").\n\n' +
             'ART DIRECTOR\n' +
@@ -1628,8 +1629,10 @@ export class OpenAIBrainProvider implements BrainProvider {
             'part it makes stand out - and the idea.\n' +
             '- headline: when the request gives the exact words for the post - in quotes, or after "headline", ' +
             '"text", "copy" or "tagline" - use exactly those words, in that order, and only decide where the lines ' +
-            'break. Otherwise write it as the brand\'s best copywriter would: three to nine words, specific to this ' +
-            'idea and occasion, with rhythm and a sensory or emotional turn; the key line is the payoff. Never ' +
+            'break. Otherwise write it as the brand\'s best copywriter would: as short as the brand\'s own ' +
+            `headlines below - at most ${input.maxWords ?? 7} words in all, and fewer is better - specific to this ` +
+            'idea and occasion, with rhythm and a sensory or emotional turn; the key line is the payoff, usually ' +
+            'one to three words. A headline is a line, not a sentence of description. Never ' +
             'generic lines that fit any brand ("Cheers to life", "Elevate your moments", "Unleash the spirit", ' +
             '"Raise a toast", "Celebrate in style"), never an exclamation mark, a hashtag, an emoji or a pun on ' +
             'drinking, and no need to name the brand, which the logo carries. Never reuse the words of the post a ' +
@@ -1643,6 +1646,9 @@ export class OpenAIBrainProvider implements BrainProvider {
             `The post: ${shape}.\nBrand: ${input.brand}\n` +
             `Packs: ${input.variants.map((v) => v ?? 'standard').join(', ') || 'standard'}\n\n` +
             `Layouts:\n${input.layouts.map((l) => `- "${l.name}": ${l.description}`).join('\n') || '- none learned: choose "default"'}\n\n` +
+            (input.pastHeadlines?.length
+              ? `The brand's own headlines, for length and voice only - never to be reused:\n${input.pastHeadlines.map((h) => `- "${h}"`).join('\n')}\n\n`
+              : '') +
             `Rules:\n${input.rules.map((r) => `- ${r}`).join('\n') || '- none'}\n\n` +
             `Request: ${input.request}`,
         },
@@ -1664,7 +1670,10 @@ export class OpenAIBrainProvider implements BrainProvider {
             'is the custodian of the brand, and an art director - looking at a finished social post before it goes ' +
             'out. It was built from parts: a painted background scene, the brand\'s real bottle photograph placed ' +
             'into it, the headline typeset in the brand\'s fonts, and the approved logo. The bottle, its label and ' +
-            'the logo are the brand\'s own files: never fault their design.\n\n' +
+            'the logo are the brand\'s own files: never fault their design. Statutory lines - health warnings, ' +
+            '"Drink Responsibly", age marks, legal disclaimers - are set later by the design team in their approved ' +
+            'wording: never ask for them, and never fault a post for lacking them. If one is painted into the scene, ' +
+            'that is scene_has_text.\n\n' +
             'Look hard, as you would at a junior\'s work, and list only real faults, each as one of these:\n' +
             '- bottle_floating: the bottle does not stand on a surface - it hangs in the air above one (direction ' +
             '"down": move it down) or its base sits below or past the surface\'s front edge (direction "up").\n' +

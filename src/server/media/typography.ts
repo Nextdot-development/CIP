@@ -117,7 +117,8 @@ const MINOR = new Set(['a', 'an', 'the', 'and', 'but', 'or', 'nor', 'for', 'so',
  * Whatever the rule, `keep` (the brand's names: "8PM", "Magic Moments") and
  * the occasions are written exactly as they are written, and "I" is a capital.
  */
-export function caseLines(lines: string[], casing: Casing, keep: string[] = []): string[] {
+export function caseLines(given: string[], casing: Casing, keep: string[] = []): string[] {
+  const lines = given.map(printable);
   if (casing === 'as-written') return lines;
   let sentenceStart = true;
   const out = lines.map((line, n) => {
@@ -165,6 +166,28 @@ export function caseLines(lines: string[], casing: Casing, keep: string[] = []):
     }
     return fixed;
   });
+}
+
+/**
+ * Words as the brand's typefaces can set them.
+ *
+ * A model writes "honey‑gold" with a non-breaking hyphen and "well‑kept" with
+ * another, and no face here has those characters: each was set as an empty
+ * box in the middle of the headline. Every such character is written as the
+ * one a face has - a plain hyphen, a plain space - and what no face has at
+ * all, an emoji or an invisible joiner, is left out.
+ */
+export function printable(text: string): string {
+  return text
+    .replace(/[‐‑⁃−]/g, '-')
+    .replace(/‒/g, '–')
+    .replace(/―/g, '—')
+    .replace(/[  -   　]/g, ' ')
+    .replace(/[­​-‍⁠﻿]/g, '')
+    .replace(/[′‵]/g, '’')
+    .replace(/\p{Extended_Pictographic}️?/gu, '')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function capital(word: string): string {

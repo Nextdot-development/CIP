@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
  */
 
 process.env.DATABASE_URL ??= 'postgres://unused@localhost:5432/unused';
-const { DEFAULT_LAYOUT, describeLayout, givenWords, settlePlan } = await import('../src/server/brain/bench');
+const { DEFAULT_LAYOUT, describeLayout, givenWords, headlineLimit, pastHeadlines, settlePlan } = await import('../src/server/brain/bench');
 type Draft = Parameters<typeof settlePlan>[0];
 
 const squeeze = {
@@ -43,7 +43,9 @@ describe('the Bench', () => {
 
   it('uses only the parts the layout has', () => {
     const plan = settlePlan(draft({ headline: [{ text: 'cheers', role: 'lead' }, { text: 'to the year ahead', role: 'tail' }] }), context);
-    assert.deepEqual(plan.headline.map((l) => l.role), ['lead', 'lead']);
+    // No tail in this layout; its closing words are set in the part it makes
+    // stand out, which it does have.
+    assert.deepEqual(plan.headline.map((l) => l.role), ['lead', 'key']);
   });
 
   it('keeps the words a person gave, word for word', () => {
@@ -103,5 +105,42 @@ describe('the person\'s words, broken well', () => {
     const request = 'Sangam post, text: "Where great stories meet"';
     const plan = settlePlan(draft({ headline: [{ text: 'Where great', role: 'lead' }, { text: 'stories', role: 'key' }, { text: 'meet', role: 'key' }] }), { ...context, request });
     assert.deepEqual(plan.headline, [{ text: 'Where great stories meet', role: 'lead' }]);
+  });
+});
+
+describe('headlines as long as the brand\'s own', () => {
+  it('reads the brand\'s headlines off its layouts and the quoted lines of its posts', () => {
+    const lines = pastHeadlines(
+      ['Squeeze the nectar, sip the magic', 'A fountain of temptation'],
+      [
+        "The right-side headline reads 'A Richer way to Unwind' with 'Unwind' in large yellow letters",
+        'Rich Notes For Rich Night',
+        'Large text in the upper-left reads the brand name',
+        "The curved white headline reads 'Looks like it's 8PM'",
+        'Open Bottle. Open Memories. — Caption: Every memory tells a story worth revisiting.',
+      ],
+    );
+    assert.deepEqual(lines, [
+      'Squeeze the nectar, sip the magic', 'A fountain of temptation', 'A Richer way to Unwind',
+      'Rich Notes For Rich Night', 'Open Bottle. Open Memories.',
+    ]);
+  });
+
+  it('allows as many words as three in four of them keep within', () => {
+    assert.equal(headlineLimit(['The gold standard', 'Shared pours', 'A fountain of temptation', 'Rich Notes For Rich Night', 'Squeeze the nectar, sip the magic', 'Catch the fire. Taste the heat']), 6);
+    assert.equal(headlineLimit(['Shared pours', 'Gold']), 7, 'too few to read from');
+    assert.equal(headlineLimit(['Gold', 'Rich', 'Warm', 'Bold']), 4, 'never under four');
+  });
+
+  it('shortens a long headline to that length, and sets the closing words in the part made to stand out', () => {
+    const long = draft({ headline: [
+      { text: 'Evening, turned honey-gold', role: 'lead' },
+      { text: 'soft as a well-kept secret', role: 'lead' },
+      { text: 'for small, warm gatherings', role: 'lead' },
+    ] });
+    assert.deepEqual(settlePlan(long, { ...context, maxWords: 6 }).headline.map((l) => l.text), ['Evening, turned honey-gold']);
+
+    const two = settlePlan(draft({ headline: [{ text: 'Evening, turned', role: 'lead' }, { text: 'honey-gold', role: 'lead' }] }), { ...context, maxWords: 6 });
+    assert.deepEqual(two.headline, [{ text: 'Evening, turned', role: 'lead' }, { text: 'honey-gold', role: 'key' }]);
   });
 });

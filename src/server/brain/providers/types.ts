@@ -647,6 +647,10 @@ export type BenchBrief = {
   rules: string[];
   /** Width over height of the post. */
   ratio: number;
+  /** Headlines from the brand's own posts, the length and voice to write to. */
+  pastHeadlines?: string[];
+  /** The most words a headline for this brand runs to, read off those posts. */
+  maxWords?: number;
 };
 
 /** The Bench's plan, as its three seats wrote it. CIP settles it against what exists afterwards. */

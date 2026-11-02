@@ -8,7 +8,7 @@ import { createCanvas } from '@napi-rs/canvas';
  */
 
 process.env.DATABASE_URL ??= 'postgres://unused@localhost:5432/unused';
-const { balancedLines, caseLines, faceFor, setHeadline } = await import('../src/server/media/typography');
+const { balancedLines, caseLines, faceFor, printable, setHeadline } = await import('../src/server/media/typography');
 const { fitLayout } = await import('../src/server/brain/layouts');
 type Spec = Parameters<typeof fitLayout>[0];
 
@@ -145,5 +145,15 @@ describe('setting the headline', () => {
   it('says which faces stood in for the brand\'s own', async () => {
     const set = await setHeadline({ image: scene(), layout: fitLayout(spec, 1), lines: [{ text: 'cheers', role: 'lead' }, { text: 'tonight', role: 'tail' }] });
     assert.deepEqual(set.lines.map((l) => l.substitute), [false, true]);
+  });
+});
+
+describe('words as the faces can set them', () => {
+  it('writes a hyphen or space no face has as one it has, and leaves out what none has', () => {
+    // A model wrote these; each was set as an empty box mid-headline.
+    assert.equal(printable('Evening, turned honey\u2011gold'), 'Evening, turned honey-gold');
+    assert.equal(printable('a well\u2010kept\u00a0secret'), 'a well-kept secret');
+    assert.equal(printable('cheers\u200b to\u202fyou \u{1F942}'), 'cheers to you');
+    assert.deepEqual(caseLines(['soft as a well\u2011kept secret'], 'sentence'), ['Soft as a well-kept secret']);
   });
 });

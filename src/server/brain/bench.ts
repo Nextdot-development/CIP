@@ -1,12 +1,12 @@
 import 'server-only';
-import type { CompanyScope } from '../db';
+import { withCompanyScope, type CompanyScope } from '../db';
 import { brandAssets } from './brandAssets';
 import { brandNames } from './brands';
-import { rulesForBrief } from './checker';
+import { rulesFor, rulesForBrief } from './checker';
 import { brandLayouts, type BrandLayout, type LayoutSpec } from './layouts';
 import { brain } from './providers';
 import type { BenchDraft } from './providers/types';
-import type { Casing, HeadlineLine } from '../media/typography';
+import { printable, type Casing, type HeadlineLine } from '../media/typography';
 
 /**
  * The Bench: a post planned the way a senior creative director, the brand's
@@ -82,6 +82,44 @@ export function givenWords(request: string): string | null {
   return labelled ? labelled[1]!.trim().replace(/[.;]$/, '') : null;
 }
 
+/**
+ * Headlines from the brand's own posts: its layouts, each named for the words
+ * its post carried, and the lines the Brain read quoted off its posts.
+ *
+ * A fact reads "The right-side headline reads 'A Richer way to Unwind' with
+ * 'Unwind' in large yellow letters": the quoted words are the headline, the
+ * rest is a description of it. A value with no quotes is the words themselves
+ * only when it is short and not a sentence about a picture.
+ */
+export function pastHeadlines(layoutNames: string[], said: string[]): string[] {
+  const lines: string[] = [];
+  for (const value of said) {
+    // Double quotes first; a single quote only where it is not an apostrophe.
+    const quoted = /["“]([^"”]{3,60})["”]/.exec(value)?.[1]
+      ?? /(?<![\p{L}])['‘]([^'‘’]{3,60})['’](?![\p{L}])/u.exec(value)?.[1];
+    if (quoted) lines.push(quoted);
+    else if (!/\b(reads?|appears?|displayed|shown|set in|printed|contains|headline|text|type|letters)\b/i.test(value)) lines.push(value);
+  }
+  const words = (s: string) => s.trim().split(/\s+/).length;
+  return [...new Map([...layoutNames, ...lines]
+    .map((l) => printable(l).replace(/\s*[—–-]\s*Caption:.*$/i, ''))
+    .filter((l) => words(l) >= 2 && words(l) <= 12 && /\p{L}/u.test(l))
+    .map((l) => [plain(l), l] as const)).values()].slice(0, 12);
+}
+
+/**
+ * The most words a headline for this brand runs to: the length three in
+ * four of its own headlines keep within. Never under four - a headline needs
+ * room for its payoff - nor over eight. A brand with too few to read from
+ * gets seven.
+ */
+export function headlineLimit(examples: string[]): number {
+  if (examples.length < 3) return 7;
+  const counts = examples.map((e) => e.trim().split(/\s+/).length).sort((a, b) => a - b);
+  const upper = counts[Math.min(counts.length - 1, Math.floor(counts.length * 0.75))]!;
+  return Math.max(4, Math.min(8, upper));
+}
+
 /** The pack a brand calls its standard one, when it names it. */
 const STANDARD = /^(plain|original|classic|regular|standard)$/i;
 
@@ -93,7 +131,11 @@ const plain = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
  */
 export function settlePlan(
   draft: Omit<BenchDraft, 'usage'>,
-  context: { request: string; brand: string; variants: (string | null)[]; layouts: Pick<BrandLayout, 'name' | 'spec'>[]; brands?: string[] },
+  context: {
+    request: string; brand: string; variants: (string | null)[]; layouts: Pick<BrandLayout, 'name' | 'spec'>[]; brands?: string[];
+    /** The most words the brand's own headlines run to. */
+    maxWords?: number;
+  },
 ): BenchPlan {
   const settled: string[] = [];
   const cd = draft.creativeDirector;
@@ -133,13 +175,27 @@ export function settlePlan(
     settled.push('Kept the exact words given for the post.');
   }
   if (!given) {
-    while (headline.length > 1 && (headline.length > 4 || headline.reduce((n, l) => n + l.text.split(' ').length, 0) > 12)) {
+    // As long as the brand's own headlines run, and no longer: an aside goes
+    // first, then the closing lines, so what is left still opens as written.
+    const most = context.maxWords ?? 12;
+    while (headline.length > 1 && (headline.length > 4 || headline.reduce((n, l) => n + l.text.split(' ').length, 0) > most)) {
       const cut = headline.findLastIndex((l) => l.role === 'tail');
       headline.splice(cut >= 0 ? cut : headline.length - 1, 1);
-      settled.push('Shortened the headline to fit a post.');
+      settled.push('Shortened the headline to the length of the brand\'s own.');
+    }
+    // A layout with a part made to stand out - the brand's script, its accent
+    // colour - has one. Set without it, every word fell to the plain face.
+    if (roles.has('key') && headline.length > 1 && !headline.some((l) => l.role === 'key')) {
+      const last = headline.at(-1)!;
+      if (last.text.split(' ').length <= 4) {
+        headline[headline.length - 1] = { ...last, role: 'key' };
+        settled.push('Set the closing words as the part the layout makes stand out.');
+      }
     }
   }
-  headline = headline.map((l) => ({ ...l, text: l.text.replace(/\bwhiskey\b/gi, (w) => (w[0] === 'W' ? 'Whisky' : 'whisky')) }));
+  headline = headline
+    .map((l) => ({ ...l, text: printable(l.text).replace(/\bwhiskey\b/gi, (w) => (w[0] === 'W' ? 'Whisky' : 'whisky')) }))
+    .filter((l) => l.text);
   if (headline.length === 0) headline = [{ text: context.brand, role: 'lead' }];
 
   // An old post's words, reused, are not a new post.
@@ -186,12 +242,29 @@ export async function planPost(
   scope: CompanyScope,
   input: { request: string; brand: string; ratio: number; market?: string | null },
 ): Promise<BenchPlan & { bottleFileId: string | null; rules: string[] }> {
-  const [layouts, bottles, rules, brands] = await Promise.all([
+  const [layouts, bottles, everyRule, brands, saidHeadlines] = await Promise.all([
     brandLayouts(scope, input.brand),
     brandAssets(scope, { brand: input.brand, kind: 'bottle' }),
     rulesForBrief(scope, { brand: input.brand, market: input.market ?? null, format: 'image' }),
     brandNames(scope),
+    withCompanyScope(scope, (tx) => tx<{ value: string }[]>`
+      select value from brand_dna_facts
+       where brand = ${input.brand} and status = 'active'
+         and lower(attribute) ~ '^(headline|static headline|headline text|headline copy)$'
+       order by evidence_count desc
+       limit 40
+    `).catch(() => []),
   ]);
+  // How this brand writes headlines: its own posts, not every brand's.
+  const examples = pastHeadlines(
+    layouts.filter((l) => l.brand === input.brand).map((l) => l.name),
+    saidHeadlines.map((r) => r.value),
+  );
+  const maxWords = headlineLimit(examples);
+  // The rules this post can meet. Not the statutory lines: the design team
+  // sets those in their approved wording. Asked for them, the reviewer had
+  // the scene painted again with a health warning in it - another country's.
+  const rules = rulesFor(everyRule, { generated: true, composed: true });
   const variants = [...new Map(bottles.filter((b) => b.asset.cutout).map((b) => [b.asset.variant?.toLowerCase() ?? '', b.asset.variant])).values()];
   const usable = layouts.filter((l) => l.spec.text);
 
@@ -202,8 +275,10 @@ export async function planPost(
     layouts: usable.map((l) => ({ name: l.name, description: describeLayout(l.name, l.spec) })),
     rules: rules.map((r) => r.rule),
     ratio: input.ratio,
+    pastHeadlines: examples,
+    maxWords,
   });
-  const plan = settlePlan(draft, { request: input.request, brand: input.brand, variants, layouts: usable, brands });
+  const plan = settlePlan(draft, { request: input.request, brand: input.brand, variants, layouts: usable, brands, maxWords });
   const [bottle] = await brandAssets(scope, { brand: input.brand, kind: 'bottle', variant: plan.variant });
   return { ...plan, bottleFileId: bottle?.asset.cutout ? bottle.fileId : null, rules: rules.map((r) => r.rule) };
 }

@@ -131,7 +131,8 @@ export function scenePrompt(
     lines.push(`- The ${layout.logo.corner.replace('-', ' ')} corner plain and quiet, for a logo.`);
   }
   lines.push(
-    'There are no bottles, packaging or labels anywhere, and no text, letters, numbers, signs, logos or watermarks. ' +
+    'There are no bottles, packaging or labels anywhere, and no text, letters, numbers, signs, logos or watermarks - ' +
+    'no health warning, "Drink Responsibly" line, age mark, disclaimer or dark strip of small print along any edge. ' +
     'Natural colour, real materials, believable light, nothing cartoonish or illustrated.',
   );
   return lines.join('\n');

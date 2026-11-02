@@ -126,3 +126,23 @@ describe('reviewing and fixing', () => {
     assert.equal(out.rounds.length, 0);
   });
 });
+
+describe('a scene is never painted with words in it', () => {
+  it('does not paint the scene again to add a warning, and says so', () => {
+    const fix = fixesFor([
+      { fault: 'scene_breaks_rule', detail: 'Required legal copy is missing: add the Drink Responsibly line at the bottom.', direction: null },
+    ], NO_TWEAKS, false);
+    assert.equal(fix.rescene, null);
+    assert.ok(fix.unresolved.some((u) => /Drink Responsibly/.test(u)));
+  });
+
+  it('still paints it again to take text out, and says no text either way', () => {
+    const fix = fixesFor([
+      { fault: 'scene_has_text', detail: 'A sign on the back wall shows text.', direction: null },
+      { fault: 'scene_flawed', detail: 'The table edge warps.', direction: null },
+    ], NO_TWEAKS, false);
+    assert.match(fix.rescene ?? '', /sign on the back wall/);
+    assert.match(fix.rescene ?? '', /table edge warps/);
+    assert.match(fix.rescene ?? '', /no text, lettering, warning or disclaimer/);
+  });
+});

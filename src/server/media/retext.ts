@@ -3,7 +3,7 @@ import { withCompanyScope } from '../db';
 import type { CompanyScope } from '../db';
 import { rebuildPost, type PostRecipe } from './composePost';
 import { completeGeneration, failGeneration, getGeneration, insertGeneration, keepScene, sceneOf } from './generation';
-import type { HeadlineLine } from './typography';
+import { printable, type HeadlineLine } from './typography';
 import { MediaRejected, type MediaGenerationDTO } from './types';
 
 /**
@@ -26,7 +26,7 @@ export function headlineFrom(raw: unknown): HeadlineLine[] {
   if (!Array.isArray(raw)) throw new MediaRejected('Send the headline as its lines.');
   const lines = raw
     .map((l) => ({
-      text: typeof l?.text === 'string' ? l.text.replace(/\s+/g, ' ').trim() : '',
+      text: typeof l?.text === 'string' ? printable(l.text) : '',
       role: ROLES.has(l?.role) ? (l.role as HeadlineLine['role']) : 'lead',
     }))
     .filter((l) => l.text);

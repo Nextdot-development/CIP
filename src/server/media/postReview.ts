@@ -22,6 +22,10 @@ export type ReviewRound = {
   fixed: string[];
 };
 
+/** A note that wants words added, which no scene is ever painted with. */
+const ASKS_FOR_TEXT =
+  /\b(add|include|insert|place|put|show|missing|required|must (?:carry|include|show))\b[^.]*\b(text|copy|warning|disclaimer|legal|statutory|drink responsibly|18\+|25\+|line|caption|tagline|slogan|words?)\b/i;
+
 /** How far a bottle is moved for one "floating" fault, as a share of the height. */
 const STEP = 0.035;
 
@@ -93,8 +97,19 @@ export function fixesFor(
         break;
     }
   }
-  if (scene.length && rescened) unresolved.push(...scene);
-  const rescene = scene.length && !rescened ? `Fix in this version: ${scene.join(' ')}` : null;
+  // A scene is never painted with words in it: a note asking for a warning,
+  // a line of copy or a sign is the reviewer wanting text, which the words
+  // laid over the post carry and the scene never does.
+  const painted = scene.filter((note) => {
+    // "No letters ... anywhere" is asking for text to go, which it may.
+    if (note.startsWith('No ') || !ASKS_FOR_TEXT.test(note)) return true;
+    unresolved.push(note);
+    return false;
+  });
+  if (painted.length && rescened) unresolved.push(...painted);
+  const rescene = painted.length && !rescened
+    ? `Fix in this version: ${painted.join(' ')} There is still no text, lettering, warning or disclaimer anywhere in the scene.`
+    : null;
   if (rescene) fixed.push('Painted the scene again.');
   return { tweaks, rescene, fixed, unresolved };
 }

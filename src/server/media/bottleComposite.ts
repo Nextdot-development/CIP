@@ -44,7 +44,7 @@ export type PlacedBottle = {
  * a packshot at dusk is the first thing that looks pasted - but never so far
  * that the label loses its colours.
  */
-const MAX_EXPOSURE = { bright: 0.1, dark: 0.22 };
+const MAX_EXPOSURE = { bright: 0.1, dark: 0.28 };
 const MAX_TINT = 0.12;
 /** How much darker the side away from the light falls, at its edge. */
 const FAR_SIDE = { bright: 0.18, dark: 0.34 };
@@ -89,8 +89,15 @@ export async function placeBottle(input: {
   if ((input.surface ?? 'matte') === 'gloss') drawReflection(ctx, bottle, { x, y, w, h });
 
   const lit = lightMatched(bottle, around, light);
+  mirrorRoom(lit, scene, { x, y, w, h });
+  filmMatched(lit, sceneData, W, H, { x, y, w, h });
   wrapLight(lit, sceneData, W, H, { x, y, w, h });
+  // As soft as the lens that took the scene: a packshot is sharper than any
+  // photograph around it, and that edge is what reads as pasted.
+  ctx.save();
+  ctx.filter = `blur(${Math.min(0.7, Math.max(0.25, w / 1100)).toFixed(2)}px)`;
   ctx.drawImage(lit, x, y);
+  ctx.restore();
 
   return { bytes: out.toBuffer('image/png'), box: { x, y, w, h }, light };
 }
@@ -308,6 +315,124 @@ function lightMatched(bottle: Canvas, around: { r: number; g: number; b: number;
   c.drawImage(bottle, 0, 0);
   c.globalCompositeOperation = 'source-over';
   return out;
+}
+
+/**
+ * The room in the glass. Glass shows what is around it - a window as a pale
+ * streak, a dark wall as depth - and a packshot carries the studio it was shot
+ * in instead. The scene behind the bottle, blurred out of all detail, is laid
+ * softly over it, so the bottle picks up this room's light and colour where it
+ * stands: brighter where the scene is bright, deeper where it is dark.
+ */
+const ROOM_IN_GLASS = 0.32;
+
+function mirrorRoom(lit: Canvas, scene: Image, box: Box) {
+  const w = lit.width;
+  const h = lit.height;
+  const room = createCanvas(w, h);
+  const r = room.getContext('2d');
+  // A little more than the bottle's own patch, so the blur has the room's
+  // colour to draw on at the edges rather than black.
+  const pad = Math.round(w * 0.6);
+  r.filter = `blur(${Math.max(6, Math.round(w * 0.12))}px)`;
+  r.drawImage(scene, box.x - pad, box.y - pad, w + pad * 2, h + pad * 2, -pad, -pad, w + pad * 2, h + pad * 2);
+  r.filter = 'none';
+  // Only where the bottle is.
+  r.globalCompositeOperation = 'destination-in';
+  r.drawImage(lit, 0, 0);
+
+  const c = lit.getContext('2d');
+  c.save();
+  c.globalCompositeOperation = 'soft-light';
+  c.globalAlpha = ROOM_IN_GLASS;
+  c.drawImage(room, 0, 0);
+  c.restore();
+}
+
+/**
+ * The bottle on the same film as the scene.
+ *
+ * A packshot is lit in a studio: true blacks, clean whites, full colour and no
+ * grain. A painted evening room has lifted shadows, softer highlights, muted
+ * colour and a fine grain, and a bottle that keeps its studio look in it is
+ * the first thing an eye catches as pasted. So its tonal range is moved part
+ * of the way to the scene's, its colour muted as far as the scene's is, and the
+ * scene's grain laid over it - each held small, so the label keeps its own
+ * colours and reads exactly as designed.
+ */
+const FILM = { lift: 0.08, dim: 0.18, mute: 0.24, keepWhite: 0.74 };
+
+function filmMatched(lit: Canvas, scene: Pixels, W: number, H: number, box: Box) {
+  const w = lit.width;
+  const h = lit.height;
+  const c = lit.getContext('2d');
+  const img = c.getImageData(0, 0, w, h);
+  const d = img.data;
+
+  // The scene's range, from around the bottle; the bottle's, from its glass.
+  const around = rangeOf(scene.data, W, {
+    x0: Math.max(0, Math.round(box.x - box.w)), y0: Math.max(0, Math.round(box.y - box.h * 0.1)),
+    x1: Math.min(W, Math.round(box.x + box.w * 2)), y1: Math.min(H, Math.round(box.y + box.h)),
+  });
+  const own = rangeOf(d, w, { x0: 0, y0: 0, x1: w, y1: h }, true);
+  if (!around || !own || own.white - own.black < 0.1) return;
+
+  // Blacks lifted towards a hazy scene's, whites eased towards a dim one's.
+  const black = own.black + Math.max(0, Math.min(FILM.lift, (around.black - own.black) * 0.5));
+  const white = Math.max(FILM.keepWhite, own.white - Math.max(0, Math.min(FILM.dim, (own.white - around.white) * 0.35)));
+  const gain = (white - black) / (own.white - own.black);
+  // Colour muted as far as the scene is muted, never more than the cap.
+  const mute = Math.max(0, Math.min(FILM.mute, (own.saturation - around.saturation) * 0.6));
+  // Grain: finer in a bright scene, a little more in a dark one.
+  const grain = 2 + 4 * Math.max(0, Math.min(1, (0.4 - around.mean) / 0.3));
+
+  let seed = 0x2f6b1d;
+  const noise = () => {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    return (seed / 4294967296 - 0.5) * 2;
+  };
+  for (let i = 0; i < d.length; i += 4) {
+    if (d[i + 3] === 0) continue;
+    const r = black + (d[i]! / 255 - own.black) * gain;
+    const g = black + (d[i + 1]! / 255 - own.black) * gain;
+    const b = black + (d[i + 2]! / 255 - own.black) * gain;
+    const L = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    const n = noise() * grain;
+    d[i] = Math.max(0, Math.min(255, Math.round((L + (r - L) * (1 - mute)) * 255 + n)));
+    d[i + 1] = Math.max(0, Math.min(255, Math.round((L + (g - L) * (1 - mute)) * 255 + n)));
+    d[i + 2] = Math.max(0, Math.min(255, Math.round((L + (b - L) * (1 - mute)) * 255 + n)));
+  }
+  c.putImageData(img, 0, 0);
+}
+
+/** Where the darks and lights of a patch sit, and how much colour it has. */
+function rangeOf(
+  data: Uint8ClampedArray, stride: number,
+  area: { x0: number; y0: number; x1: number; y1: number },
+  opaqueOnly = false,
+): { black: number; white: number; mean: number; saturation: number } | null {
+  const hist = new Uint32Array(256);
+  let total = 0; let sum = 0; let sat = 0;
+  const step = Math.max(1, Math.round(Math.sqrt(((area.x1 - area.x0) * (area.y1 - area.y0)) / 40000)));
+  for (let y = area.y0; y < area.y1; y += step) {
+    for (let x = area.x0; x < area.x1; x += step) {
+      const i = (y * stride + x) * 4;
+      if (opaqueOnly && data[i + 3]! < 200) continue;
+      const r = data[i]!; const g = data[i + 1]!; const b = data[i + 2]!;
+      const l = lum(r, g, b);
+      hist[Math.round(l * 255)]! += 1;
+      total += 1; sum += l;
+      const hi = Math.max(r, g, b); const lo = Math.min(r, g, b);
+      sat += hi === 0 ? 0 : (hi - lo) / hi;
+    }
+  }
+  if (total < 50) return null;
+  const at = (share: number) => {
+    let seen = 0;
+    for (let v = 0; v < 256; v++) { seen += hist[v]!; if (seen >= total * share) return v / 255; }
+    return 1;
+  };
+  return { black: at(0.02), white: at(0.98), mean: sum / total, saturation: sat / total };
 }
 
 /**
