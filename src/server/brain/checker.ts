@@ -2024,6 +2024,8 @@ export async function checkNextGeneration(): Promise<'checked' | 'failed' | null
          and g.status = 'completed'
          and g.created_by is not null
          and g.completed_at > now() - interval '7 days'
+         -- A post arranged layer by layer is checked when its person asks.
+         and coalesce((g.output_metadata->'composed'->>'autoCheck')::boolean, true)
          and not exists (
            select 1 from creative_checks c
             where c.company_id = g.company_id and c.generation_id = g.id

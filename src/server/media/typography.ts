@@ -239,8 +239,31 @@ export function balancedLines(text: string, maxWidth: number, measure: (s: strin
 
 export type SetHeadline = {
   bytes: Buffer;
+  /** The headline alone, on transparency: the layer a designer would edit. */
+  layer: Buffer;
   /** Each line as set, where it landed in pixels, and the face it was set in. */
-  lines: { text: string; role: LayoutLine['role']; box: { x: number; y: number; w: number; h: number }; face: string; substitute: boolean }[];
+  lines: SetLine[];
+};
+
+/** One line as set: enough to set it again as live text in another editor. */
+export type SetLine = {
+  text: string;
+  role: LayoutLine['role'];
+  /** Its box in pixels, from the top of its letters. */
+  box: { x: number; y: number; w: number; h: number };
+  /** The face's name, and the file it was set from. */
+  face: string;
+  file: string;
+  /** The brand's own name for the face, as Photoshop and Illustrator know it. */
+  font: string;
+  substitute: boolean;
+  px: number;
+  colour: string;
+  /** Letter spacing in pixels. */
+  spacing: number;
+  /** The solid box behind it, when it has one. */
+  boxFill: string | null;
+  shadow: boolean;
 };
 
 /**
@@ -295,7 +318,13 @@ export async function setHeadline(input: {
   const ctx = canvas.getContext('2d');
   ctx.drawImage(img, 0, 0);
   const text = input.layout.text;
-  if (!text || input.lines.length === 0) return { bytes: canvas.toBuffer('image/png'), lines: [] };
+  if (!text || input.lines.length === 0) {
+    return { bytes: canvas.toBuffer('image/png'), layer: createCanvas(W, H).toBuffer('image/png'), lines: [] };
+  }
+  // The words are set on a layer of their own and laid over the picture, so
+  // the same headline can be handed to an editor as its own layer.
+  const words = createCanvas(W, H);
+  const wctx = words.getContext('2d');
 
   const ink = input.colours?.ink ?? text.ink;
   const accent = input.colours?.accent ?? text.accent ?? '#f5c242';
@@ -313,7 +342,10 @@ export async function setHeadline(input: {
   const block = input.layout.textBox;
   // Beside the words unless it stands wholly below them: a tall bottle whose
   // top is level with the lower lines is still in their way.
-  const beside = bottle && bottle.x > text.x && (!block || bottle.y < block.y + block.h + 0.08);
+  // A bottle under words centred across the post is below them, not beside.
+  // Words placed by hand go where they were put, whatever stands beside them.
+  const beside = !input.layout.placedText && bottle && bottle.x > text.x && bottle.x + bottle.w / 2 > text.x + text.width / 2 + 0.1
+    && (!block || bottle.y < block.y + block.h + 0.08);
   const edge = beside ? bottle.x - 0.03 : 0.97;
   const maxWidth = Math.max(0.15, Math.min(edge - text.x, text.width * 1.4)) * W;
   const background = ctx.getImageData(0, 0, W, H);
@@ -356,46 +388,54 @@ export async function setHeadline(input: {
   // A block in the lower half grows upwards from where the designer's ended;
   // either way it stays inside the post.
   const learned = input.layout.textBox;
-  const low = learned ? learned.y + learned.h / 2 > 0.5 : text.y > 0.5;
+  const low = !input.layout.placedText && (learned ? learned.y + learned.h / 2 > 0.5 : text.y > 0.5);
   const start = low && learned ? (learned.y + learned.h) * H - height : text.y * H;
   let y = Math.min(Math.max(start, 0.03 * H), 0.97 * H - height);
 
-  const out: SetHeadline['lines'] = [];
+  const out: SetLine[] = [];
   for (const [i, line] of placed!.entries()) {
-    setFont(ctx, line.face.family, line.px, line.style);
-    const width = ctx.measureText(line.text).width;
+    setFont(wctx, line.face.family, line.px, line.style);
+    const width = wctx.measureText(line.text).width;
     const x = text.align === 'center' ? x0 + (maxWidth - width) / 2 : text.align === 'right' ? x0 + maxWidth - width : x0;
     // A line's top: the box's padding first, when it has one.
     const pad = padOf(line);
     const top = y + pad.y;
 
+    const colour = line.style.box ? boxInk : line.style.accent ? accent : ink;
+    let shadow = false;
     if (line.style.box) {
-      ctx.save();
-      ctx.fillStyle = line.style.box;
-      ctx.fillRect(x - pad.x, top - pad.y, width + pad.x * 2, line.px * 1.0 + pad.y * 2);
-      ctx.restore();
+      wctx.save();
+      wctx.fillStyle = line.style.box;
+      wctx.fillRect(x - pad.x, top - pad.y, width + pad.x * 2, line.px * 1.0 + pad.y * 2);
+      wctx.restore();
     } else {
       // A light word on a bright ground, or a dark one on a dark ground, gets a soft shadow.
-      const colour = line.style.accent ? accent : ink;
       const behind = luminanceIn(background.data, W, H, { x, y: top, w: width, h: line.px });
       const lightInk = luminanceOf(colour) > 0.5;
       if (lightInk ? behind > 0.5 : behind < 0.35) {
-        ctx.shadowColor = lightInk ? 'rgba(0,0,0,0.55)' : 'rgba(255,255,255,0.55)';
-        ctx.shadowBlur = line.px * 0.35;
-        ctx.shadowOffsetY = line.px * 0.04;
+        shadow = true;
+        wctx.shadowColor = lightInk ? 'rgba(0,0,0,0.55)' : 'rgba(255,255,255,0.55)';
+        wctx.shadowBlur = line.px * 0.35;
+        wctx.shadowOffsetY = line.px * 0.04;
       }
     }
-    ctx.fillStyle = line.style.box ? boxInk : line.style.accent ? accent : ink;
-    ctx.textBaseline = 'top';
-    ctx.fillText(line.text, x, top);
-    ctx.shadowColor = 'transparent';
-    ctx.shadowBlur = 0;
-    ctx.shadowOffsetY = 0;
-    out.push({ text: line.text, role: line.role, box: { x, y: top, w: width, h: line.px }, face: line.face.family.replace(/^CIP /, ''), substitute: line.face.substitute });
+    wctx.fillStyle = colour;
+    wctx.textBaseline = 'top';
+    wctx.fillText(line.text, x, top);
+    wctx.shadowColor = 'transparent';
+    wctx.shadowBlur = 0;
+    wctx.shadowOffsetY = 0;
+    out.push({
+      text: line.text, role: line.role, box: { x, y: top, w: width, h: line.px },
+      face: line.face.family.replace(/^CIP /, ''), file: line.face.file, substitute: line.face.substitute,
+      font: line.style.font ?? line.face.family.replace(/^CIP /, ''),
+      px: line.px, colour, spacing: ((line.style.tracking || 0) / 1000) * line.px, boxFill: line.style.box, shadow,
+    });
 
     y += advance(line, placed![i + 1]);
   }
-  return { bytes: canvas.toBuffer('image/png'), lines: out };
+  ctx.drawImage(words, 0, 0);
+  return { bytes: canvas.toBuffer('image/png'), layer: words.toBuffer('image/png'), lines: out };
 }
 
 function setFont(ctx: SKRSContext2D, family: string, px: number, style: Pick<LayoutLine, 'tracking'>) {

@@ -38,6 +38,15 @@ export type MediaGenerationDTO = {
   assetCount: number;
   /** A post put together from the brand's own files: its headline, whose words can be changed. */
   headline?: { text: string; role: 'lead' | 'key' | 'tail' }[] | null;
+  /** Where its bottle and logo are, which can be moved; null when the picture is one piece. */
+  layers?: {
+    bottle: 'left' | 'center' | 'right' | 'none';
+    size: 'small' | 'medium' | 'large';
+    logo: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right' | 'none';
+    arrangedAt: string | null;
+    previousBackground?: boolean;
+    headline?: 'shown' | 'none';
+  } | null;
   createdAt: string;
   startedAt: string | null;
   completedAt: string | null;
@@ -95,6 +104,20 @@ export function assetUrl(generationId: string, assetId?: string): string {
 export function assetDownloadUrl(generationId: string, assetId?: string): string {
   const query = assetId ? `?assetId=${encodeURIComponent(assetId)}&download=1` : '?download=1';
   return `/api/media/generations/${generationId}/asset${query}`;
+}
+
+/**
+ * The picture of a post whose layers can be moved, as it is now: the same
+ * address, marked with when it was last arranged, so a browser that already
+ * holds the earlier arrangement fetches this one.
+ */
+export function arrangedUrl(generationId: string, arrangedAt: string | null | undefined): string {
+  return arrangedAt ? `${assetUrl(generationId)}?v=${encodeURIComponent(arrangedAt)}` : assetUrl(generationId);
+}
+
+/** A composed post as a file an editor opens. */
+export function exportUrl(generationId: string, format: 'png' | 'psd' | 'svg' | 'pdf'): string {
+  return `/api/media/generations/${generationId}/export?format=${format}`;
 }
 
 /** A generation still moving is one the UI should keep polling. */

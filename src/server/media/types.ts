@@ -39,6 +39,20 @@ export type MediaGenerationDTO = {
    * for any other picture, whose words are part of the picture.
    */
   headline: { text: string; role: 'lead' | 'key' | 'tail' }[] | null;
+  /**
+   * Where the bottle and the logo are on such a post, which a person can
+   * move - and when it was last moved, so a picture shown for it is fresh.
+   */
+  layers: {
+    bottle: 'left' | 'center' | 'right' | 'none';
+    size: 'small' | 'medium' | 'large';
+    logo: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right' | 'none';
+    arrangedAt: string | null;
+    /** An earlier background is kept, to go back to for nothing. */
+    previousBackground: boolean;
+    /** Whether the headline is on the post; off, its words are kept to put back. */
+    headline?: 'shown' | 'none';
+  } | null;
   createdAt: string;
   startedAt: string | null;
   completedAt: string | null;

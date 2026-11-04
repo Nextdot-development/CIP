@@ -36,6 +36,8 @@ export type PlacedBottle = {
   /** Where the bottle landed, in pixels of the scene. */
   box: { x: number; y: number; w: number; h: number };
   light: LightFrom;
+  /** The shadows and reflection, and the lit bottle, each alone on transparency. */
+  layers: { shadow: Buffer; bottle: Buffer };
 };
 
 /**
@@ -84,9 +86,14 @@ export async function placeBottle(input: {
   const bottle = createCanvas(w, h);
   bottle.getContext('2d').drawImage(cut.canvas, 0, 0, w, h);
 
-  drawContactShadow(ctx, { x, y, w, h });
-  drawCastShadow(ctx, bottle, { x, y, w, h }, light);
-  if ((input.surface ?? 'matte') === 'gloss') drawReflection(ctx, bottle, { x, y, w, h });
+  // The shadows and the reflection on a layer of their own, the bottle on
+  // another, each then laid over the scene: the same picture, and the two
+  // layers a designer would want to move or soften by hand.
+  const shade = createCanvas(W, H);
+  const sctx = shade.getContext('2d');
+  drawContactShadow(sctx, { x, y, w, h });
+  drawCastShadow(sctx, bottle, { x, y, w, h }, light);
+  if ((input.surface ?? 'matte') === 'gloss') drawReflection(sctx, bottle, { x, y, w, h });
 
   const lit = lightMatched(bottle, around, light);
   mirrorRoom(lit, scene, { x, y, w, h });
@@ -94,12 +101,19 @@ export async function placeBottle(input: {
   wrapLight(lit, sceneData, W, H, { x, y, w, h });
   // As soft as the lens that took the scene: a packshot is sharper than any
   // photograph around it, and that edge is what reads as pasted.
-  ctx.save();
-  ctx.filter = `blur(${Math.min(0.7, Math.max(0.25, w / 1100)).toFixed(2)}px)`;
-  ctx.drawImage(lit, x, y);
-  ctx.restore();
+  const pack = createCanvas(W, H);
+  const pctx = pack.getContext('2d');
+  pctx.filter = `blur(${Math.min(0.7, Math.max(0.25, w / 1100)).toFixed(2)}px)`;
+  pctx.drawImage(lit, x, y);
 
-  return { bytes: out.toBuffer('image/png'), box: { x, y, w, h }, light };
+  ctx.drawImage(shade, 0, 0);
+  ctx.drawImage(pack, 0, 0);
+  return {
+    bytes: out.toBuffer('image/png'),
+    box: { x, y, w, h },
+    light,
+    layers: { shadow: shade.toBuffer('image/png'), bottle: pack.toBuffer('image/png') },
+  };
 }
 
 /** The cut-out without its transparent margins, so its height is the bottle's. */

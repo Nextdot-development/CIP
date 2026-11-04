@@ -651,6 +651,8 @@ export type BenchBrief = {
   pastHeadlines?: string[];
   /** The most words a headline for this brand runs to, read off those posts. */
   maxWords?: number;
+  /** How the brand's own posts were set - background, light, mood - one each. */
+  pastScenes?: string[];
 };
 
 /** The Bench's plan, as its three seats wrote it. CIP settles it against what exists afterwards. */

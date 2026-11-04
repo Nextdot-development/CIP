@@ -9,7 +9,7 @@ import { createCanvas, loadImage } from '@napi-rs/canvas';
  */
 
 process.env.DATABASE_URL ??= 'postgres://unused@localhost:5432/unused';
-const { buildPost, colourName, generationShape, inGenerated, postSize, scenePrompt } = await import('../src/server/media/composePost');
+const { buildPost, colourName, drinkLine, generationShape, inGenerated, postSize, scenePrompt } = await import('../src/server/media/composePost');
 const { DEFAULT_LAYOUT } = await import('../src/server/brain/bench');
 const { fitLayout } = await import('../src/server/brain/layouts');
 
@@ -53,7 +53,7 @@ describe('the scene brief', () => {
     const prompt = scenePrompt(plan, fitLayout(DEFAULT_LAYOUT, 1), 1, 1);
     assert.match(prompt, /A polished bar at night/);
     assert.match(prompt, /clear spot on the polished surface right of centre/);
-    assert.match(prompt, /is for words: calm, uncluttered, out of focus and evenly dark/);
+    assert.match(prompt, /is for words: calm, uncluttered, plain and evenly dark/);
     assert.match(prompt, /top right corner plain/);
     assert.match(prompt, /no bottles, packaging or labels anywhere, and no text/);
   });
@@ -68,8 +68,21 @@ describe('the craft in the scene brief', () => {
     assert.equal(colourName('#f5f5f2'), 'white');
     const prompt = scenePrompt(plan, fitLayout(DEFAULT_LAYOUT, 1), 1, 1, ['#5a2d0c', '#c9a227']);
     assert.match(prompt, /product's own colours are deep brown, gold/);
-    assert.match(prompt, /85mm lens/);
+    assert.match(prompt, /f\/8 for deep focus/);
+    assert.match(prompt, /no blur, no bokeh/);
+    assert.match(prompt, /glass in the scene is never empty/);
     assert.match(prompt, /Balance:/);
+  });
+
+  it('pours the brand\'s own drink into any glass, a flavour in its own colour', () => {
+    assert.match(drinkLine({ kind: 'whisky', colour: 'amber/golden' }), /amber\/golden whisky/);
+    assert.match(drinkLine({ kind: 'whisky', colour: null }), /deep golden amber whisky/);
+    assert.match(drinkLine({ kind: 'vodka', colour: null }), /crystal-clear vodka/);
+    // Jamun vodka is not poured clear.
+    const flavoured = drinkLine({ kind: 'vodka', colour: null, variant: 'Jamun' });
+    assert.match(flavoured, /true colour of Jamun vodka/);
+    assert.doesNotMatch(flavoured, /crystal-clear/);
+    assert.match(drinkLine({ kind: 'vodka', colour: null, variant: 'Original' }), /crystal-clear vodka/);
   });
 });
 

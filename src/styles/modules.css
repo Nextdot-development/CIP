@@ -474,3 +474,67 @@ a.gtag:hover { color: var(--ink-900); border-color: var(--ink-400); }
 .rulebook-note { margin: 12px 0 0; padding: 8px 12px; border-radius: var(--r-sm); background: var(--nav-hover); }
 .rulebook-error { color: #f08a7a; }
 .rulebook-link { background: none; border: 0; padding: 0; color: var(--brand); font: inherit; text-decoration: underline; cursor: pointer; }
+
+/* ---------- Layer studio: a post designed layer by layer ---------- */
+.studio { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(260px, 1fr); gap: 18px; margin-top: 14px; align-items: start; }
+@media (max-width: 900px) { .studio { grid-template-columns: 1fr; } }
+.studio-stage { background: var(--canvas); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 14px; display: grid; place-items: center; }
+.studio-canvas {
+  position: relative; border-radius: var(--r-sm); overflow: hidden;
+  /* A checkerboard, as editors show transparency, under whatever is not yet placed. */
+  background: repeating-conic-gradient(#2a2620 0 25%, #221f19 0 50%) 0 0 / 20px 20px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+}
+.studio-layer { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; transition: opacity .25s ease; }
+.studio-layer.is-hidden { opacity: 0; }
+.studio-wait { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(0, 0, 0, 0.45); color: var(--nav-fg-strong); font-size: 13px; }
+.studio-panel { display: flex; flex-direction: column; gap: 14px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 14px; }
+.studio-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.studio-step {
+  width: 100%; display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: var(--r-sm);
+  background: transparent; border: 1px solid transparent; color: var(--nav-fg); font: inherit; font-size: 13px; text-align: left; cursor: pointer;
+}
+.studio-step:hover { background: var(--nav-hover); color: var(--nav-fg-strong); }
+.studio-step.is-on { background: var(--brand-soft); border-color: color-mix(in srgb, var(--brand) 45%, transparent); color: var(--nav-fg-strong); }
+.studio-step.is-done { color: var(--nav-fg-strong); }
+.studio-step-n {
+  width: 22px; height: 22px; border-radius: 50%; display: inline-grid; place-items: center; flex-shrink: 0;
+  border: 1px solid var(--line-strong); font-size: 11px;
+}
+.studio-step.is-on .studio-step-n { background: var(--brand); border-color: var(--brand); color: var(--brand-ink); }
+.studio-step.is-done .studio-step-n { background: var(--brand-soft); border-color: transparent; color: var(--brand); }
+.studio-body { display: flex; flex-direction: column; gap: 8px; padding-top: 12px; border-top: 1px solid var(--line-soft); }
+.studio-q { margin: 0; font-weight: 600; font-size: 14px; }
+.studio-export { display: flex; align-items: center; gap: 10px; text-decoration: none; }
+.studio-layers { display: grid; gap: 2px; padding-top: 12px; border-top: 1px solid var(--line-soft); }
+.studio-layer-row {
+  display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: var(--r-xs);
+  background: transparent; border: 0; color: var(--nav-fg-strong); font: inherit; font-size: 13px; text-align: left; cursor: pointer;
+}
+.studio-layer-row:hover:not(:disabled) { background: var(--nav-hover); }
+.studio-layer-row:disabled { cursor: default; }
+.studio-layer-row.is-off { color: var(--nav-fg); opacity: .55; }
+.studio-eye { width: 18px; height: 18px; border-radius: 4px; border: 1px solid var(--line-strong); display: inline-grid; place-items: center; color: var(--brand); }
+.studio-step:focus-visible, .studio-layer-row:focus-visible { outline: none; box-shadow: var(--sh-focus); }
+/* Pieces that can be dragged, and the corner that resizes them. */
+.studio-canvas { touch-action: none; user-select: none; }
+.studio-layer { pointer-events: none; will-change: transform; }
+.studio-box {
+  position: absolute; border: 1px dashed rgba(255, 255, 255, 0.35); border-radius: 4px; cursor: move;
+  transition: border-color .15s ease, background .15s ease;
+}
+.studio-box:hover { border-color: rgba(255, 255, 255, 0.75); }
+.studio-box.is-on { border: 1.5px solid var(--brand); background: color-mix(in srgb, var(--brand) 8%, transparent); }
+.studio-box-label {
+  position: absolute; left: -1px; top: -22px; padding: 2px 7px; border-radius: 4px 4px 4px 0; font-size: 11px; line-height: 16px;
+  background: var(--brand); color: var(--brand-ink); opacity: 0; transition: opacity .15s ease; white-space: nowrap; pointer-events: none;
+}
+.studio-box:hover .studio-box-label, .studio-box.is-on .studio-box-label { opacity: 1; }
+.studio-box-grip {
+  position: absolute; right: -7px; bottom: -7px; width: 14px; height: 14px; border-radius: 3px;
+  background: var(--brand); border: 2px solid #fff; cursor: nwse-resize; opacity: 0; transition: opacity .15s ease;
+}
+.studio-box:hover .studio-box-grip, .studio-box.is-on .studio-box-grip { opacity: 1; }
+.studio-layer-row.is-on { background: var(--brand-soft); }
+.studio-redesign { display: grid; gap: 8px; padding-top: 12px; border-top: 1px solid var(--line-soft); }
+.studio-redesign .insp-label { margin: 0; }

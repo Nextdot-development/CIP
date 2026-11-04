@@ -310,6 +310,79 @@ export async function saveLayout(scope: CompanyScope, layout: { brand: string | 
   `);
 }
 
+// --- arranging by hand --------------------------------------------------------------
+
+/**
+ * Where a person put each piece of a post, layer by layer: the bottle left,
+ * centre or right and how big, the logo in a corner, or either left out.
+ */
+export type PostChoices = {
+  bottle: 'left' | 'center' | 'right' | 'none';
+  size: 'small' | 'medium' | 'large';
+  logo: Corner | 'none';
+  /** Whether the post carries its headline. Absent means it does. */
+  headline?: 'shown' | 'none';
+  /**
+   * Where a person dragged a piece to and how big they made it, in fractions
+   * of the post: it stands exactly there, whatever the layout would do. Each
+   * is cleared when that piece is put back on a preset place.
+   */
+  place?: Placement;
+};
+
+export type Placement = {
+  /** The bottle's centre across, the line it stands on, and its height. */
+  bottle?: { cx: number; base: number; height: number };
+  /** The logo's left edge, top edge and width. */
+  logo?: { x: number; y: number; w: number };
+  /** The headline's left edge and top, and its size against the layout's. */
+  text?: { x: number; y: number; scale: number };
+};
+
+const BOTTLE_CX = { left: 0.27, center: 0.5, right: 0.73 } as const;
+const BOTTLE_HEIGHT = { small: 0.5, medium: 0.62, large: 0.74 } as const;
+
+/** The choices a layout already makes, for a post nobody has arranged yet. */
+export function choicesOf(spec: LayoutSpec): PostChoices {
+  const cx = spec.bottle?.cx ?? 0.7;
+  const height = spec.bottle?.height ?? 0.62;
+  return {
+    bottle: spec.bottle === null ? 'none' : cx < 0.4 ? 'left' : cx > 0.6 ? 'right' : 'center',
+    size: height < 0.56 ? 'small' : height < 0.68 ? 'medium' : 'large',
+    logo: spec.logo?.corner ?? 'none',
+  };
+}
+
+/**
+ * A layout arranged as a person chose: the brand's own type kept - its faces,
+ * sizes, colours and parts - and the pieces moved. The words take the side
+ * the bottle leaves; with the bottle in the middle they go above it, centred,
+ * clear of the logo's corner. fitLayout then fits it as it fits any layout.
+ */
+export function arrangeLayout(spec: LayoutSpec, choices: PostChoices): LayoutSpec {
+  const margin = 0.07;
+  const logo = choices.logo === 'none'
+    ? null
+    : { ...(spec.logo ?? { width: 0.16, insetX: 0.04, insetY: 0.04 }), corner: choices.logo };
+  const bottle = choices.bottle === 'none'
+    ? null
+    : { cx: BOTTLE_CX[choices.bottle], base: spec.bottle?.base ?? 0.92, height: BOTTLE_HEIGHT[choices.size] };
+  if (!spec.text) return { ...spec, logo, bottle };
+
+  const logoTop = logo !== null && logo.corner.startsWith('top');
+  const below = logoTop ? logo.insetY + logo.width * 0.9 + 0.03 : margin;
+  const text = choices.bottle === 'left'
+    ? { ...spec.text, x: 0.5, width: 0.43, align: 'left' as const }
+    : choices.bottle === 'right'
+      ? { ...spec.text, x: margin, width: 0.43, align: 'left' as const }
+      : choices.bottle === 'center'
+        ? { ...spec.text, x: margin + 0.05, width: 1 - 2 * (margin + 0.05), align: 'center' as const, y: Math.max(below, 0.08) }
+        : { ...spec.text, x: margin, width: 1 - 2 * margin, align: spec.text.align };
+  // A block that starts under the logo's corner moves down past it.
+  const underLogo = logoTop && (logo!.corner === 'top-left' ? text.x < 0.3 : text.x + text.width > 0.7);
+  return { ...spec, logo, bottle, text: underLogo ? { ...text, y: Math.max(text.y, below) } : text };
+}
+
 // --- fitting the pieces ------------------------------------------------------------
 
 /** Where each piece goes on a post, in fractions of its width and height. */
@@ -317,7 +390,44 @@ export type FittedLayout = LayoutSpec & {
   bottleBox: { x: number; y: number; w: number; h: number } | null;
   textBox: { x: number; y: number; w: number; h: number } | null;
   logoBox: { x: number; y: number; w: number; h: number } | null;
+  /** Put there by hand: the words start at their top and make way for nothing. */
+  placedText?: boolean;
 };
+
+/**
+ * A fitted layout with the pieces a person dragged standing exactly where
+ * they were dropped, at the size they were left. Nothing is moved out of
+ * anything's way - that was the person's call.
+ */
+export function placeLayout(
+  layout: FittedLayout,
+  place: Placement | undefined,
+  ratio: number,
+  bottleAspect: number,
+  logoAspect: number,
+): FittedLayout {
+  if (!place) return layout;
+  let out = layout;
+  if (place.bottle && out.bottle) {
+    const { cx, base, height } = place.bottle;
+    const w = (height * bottleAspect) / ratio;
+    out = { ...out, bottle: { cx, base, height }, bottleBox: { x: cx - w / 2, y: base - height, w, h: height } };
+  }
+  if (place.logo && out.logo) {
+    const { x, y, w } = place.logo;
+    out = { ...out, logoBox: { x, y, w, h: w * ratio * logoAspect } };
+  }
+  if (place.text && out.text) {
+    const { x, y } = place.text;
+    out = {
+      ...out,
+      text: { ...out.text, x, y },
+      textBox: out.textBox ? { ...out.textBox, x, y } : null,
+      placedText: true,
+    };
+  }
+  return out;
+}
 
 /** The space a designer keeps between pieces, as a fraction of the short side. */
 const GAP = 0.03;
@@ -376,9 +486,12 @@ export function fitLayout(
         w: s.text.width,
         h: (() => {
           const own = s.text.lines.reduce((n, l, i) => n + l.size * (i === s.text!.lines.length - 1 ? 1 : s.text!.leading), 0);
-          // More lines than the designer set take more height, at their average size.
+          // More lines than the designer set take more height, at their average
+          // size; fewer take less, so a two-line headline does not hold the
+          // room of the four lines the layout was made for.
           const extra = words ? Math.max(0, words.lines - s.text.lines.length) : 0;
-          return own + extra * (own / s.text.lines.length) * s.text.leading;
+          const fewer = words && words.lines < s.text.lines.length ? words.lines / s.text.lines.length : 1;
+          return (own + extra * (own / s.text.lines.length) * s.text.leading) * fewer;
         })(),
       }
     : null;
@@ -400,6 +513,13 @@ export function fitLayout(
 
   // Clear of the words: across first, as far as the right margin allows; then
   // smaller, keeping its foot where it stands.
+  // Words across most of the width leave no side to move to: the bottle keeps
+  // its place and stands below them, as short as it must be.
+  if (textBox && textBox.w > 0.6 && overlap(boxOf(bottle), textBox, marginX)) {
+    // A wider gap than beside: the key words are often set larger than measured.
+    const below = bottle.base - (textBox.y + textBox.h + margin * 2.5);
+    bottle = { ...bottle, height: Math.max(0.2, Math.min(bottle.height, below)) };
+  }
   if (textBox && overlap(boxOf(bottle), textBox, marginX)) {
     const wanted = textBox.x + textBox.w + marginX + widthOf(bottle.height) / 2;
     const furthest = 1 - marginX - widthOf(bottle.height) / 2;

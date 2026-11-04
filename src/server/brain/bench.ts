@@ -120,6 +120,90 @@ export function headlineLimit(examples: string[]): number {
   return Math.max(4, Math.min(8, upper));
 }
 
+/**
+ * How the brand's own pictures were set: the background, the light, the mood,
+ * the props and the colours of each one CIP has read - its posters, social
+ * posts and lifestyle shots, not its packshots on black or its logo files.
+ * What a new scene should belong with. Read from what was learned when the
+ * files came in, so nothing is asked of a model here.
+ */
+export async function pastScenes(scope: CompanyScope, brand: string, limit = 6): Promise<string[]> {
+  const rows = await withCompanyScope(scope, (tx) => tx<{
+    background: string | null; lighting: string | null; mood: string | null; style: string | null;
+    objects: unknown; colours: unknown;
+  }[]>`
+    select u.structured->>'background' as background, u.structured->>'lighting' as lighting,
+           u.structured->>'mood' as mood, u.structured->>'style' as style,
+           u.structured->'objects' as objects, u.structured->'colours' as colours
+      from asset_understanding u
+      join drive_files d on d.id = u.file_id and d.company_id = u.company_id
+     where d.brand = ${brand} and d.archived_at is null
+       and u.kind = 'image' and u.status = 'ready'
+       and coalesce(u.structured->>'contentType', '') !~* '(logo|label|pack ?-?shot|product (shot|photo)|catalogue|mock|document|chart|slide)'
+     order by (u.structured->>'contentType' ~* '(advert|poster|social|post|hero|campaign|creative|promotional|static|lifestyle)') desc,
+              u.updated_at desc
+     limit ${limit * 4}
+  `).catch(() => []);
+  // Soft focus taken out: a background is painted clear, whatever the old shots did.
+  const tidy = (s: string | null) => (s ?? '')
+    .replace(/[^;,.]*\b(bokeh|out[- ]of[- ]focus|soft[- ]focus|shallow depth of field|blurr?(ed|y)?|defocused)\b[^;,.]*[;,.]?/gi, '')
+    .replace(/\s+/g, ' ').trim().replace(/^[;,.\s]+|[;,.\s]+$/g, '');
+  const list = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
+  const scenes: string[] = [];
+  for (const r of rows) {
+    const background = tidy(r.background);
+    // A packshot's black or white is not a scene to belong with.
+    if (!background || /^(solid |plain |pure )?(black|white|transparent)\b/i.test(background)) continue;
+    // The props, without the pack, the words or the people - those are placed, not painted.
+    const props = list(r.objects).filter((o) => !PLACED.test(o)).slice(0, 5);
+    const colours = list(r.colours).slice(0, 4);
+    const line = [
+      background, tidy(r.lighting), tidy(r.mood), tidy(r.style),
+      props.length ? `props: ${props.join(', ')}` : '',
+      colours.length ? `colours: ${colours.join(', ')}` : '',
+    ].filter(Boolean).join('; ').slice(0, 320);
+    if (!scenes.some((s) => plain(s) === plain(line))) scenes.push(line);
+    if (scenes.length >= limit) break;
+  }
+  return scenes;
+}
+
+/** What a post has placed on it rather than painted into its scene. */
+const PLACED = /bottle|pack|label|logo|text|word|headline|warning|disclaimer|person|people|\bman\b|woman|female|male|model|face|hand|bokeh|graphic|illustrat/i;
+
+/** What the brand pours, and its colour: for a glass in the scene that holds the right drink. */
+export type BrandDrink = { kind: string | null; colour: string | null; variant?: string | null };
+
+/**
+ * The brand's drink as its files describe it - "whisky", "deep amber" - the
+ * value said most often. Read from the Brand DNA already learned; no model.
+ */
+export async function brandDrink(scope: CompanyScope, brand: string): Promise<BrandDrink> {
+  const rows = await withCompanyScope(scope, (tx) => tx<{ attribute: string; value: string; n: number }[]>`
+    select attribute, value, sum(greatest(evidence_count, 1))::int as n
+      from brand_dna_facts
+     where brand = ${brand} and status = 'active'
+       and lower(attribute) ~ '(liquid|drink|spirit|product ?type|category|liquor)'
+     group by 1, 2
+  `).catch(() => []);
+  // The kind: the drink word the brand's files say most, wherever they say it.
+  const kinds = new Map<string, number>();
+  for (const r of rows) {
+    const said = `${r.attribute} ${r.value}`.toLowerCase().match(DRINK_WORDS)?.[0];
+    if (said) kinds.set(said.replace('whiskey', 'whisky'), (kinds.get(said) ?? 0) + r.n);
+  }
+  const kind = [...kinds].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+  // The colour: what the liquid itself was called, the plainest of the most said.
+  const colours = rows
+    .filter((r) => /liquid colou?r|drink colou?r|spirit colou?r/i.test(r.attribute) && r.value.length <= 40)
+    .map((r) => ({ value: r.value.replace(/\s+/g, ' ').replace(/\b(liquid|visible|in the bottle|inside the bottle)\b/gi, '').replace(/\s+/g, ' ').trim(), n: r.n }))
+    .filter((c) => c.value)
+    .sort((a, b) => b.n - a.n || a.value.length - b.value.length);
+  return { kind, colour: colours[0]?.value ?? null };
+}
+
+const DRINK_WORDS = /\b(single malt|whiske?y|vodka|gin|rum|brandy|cognac|liqueur|tequila|wine|beer)\b/;
+
 /** The pack a brand calls its standard one, when it names it. */
 const STANDARD = /^(plain|original|classic|regular|standard)$/i;
 
@@ -241,8 +325,8 @@ function splitGiven(given: string, roles: Set<HeadlineLine['role']>): HeadlineLi
 export async function planPost(
   scope: CompanyScope,
   input: { request: string; brand: string; ratio: number; market?: string | null },
-): Promise<BenchPlan & { bottleFileId: string | null; rules: string[] }> {
-  const [layouts, bottles, everyRule, brands, saidHeadlines] = await Promise.all([
+): Promise<BenchPlan & { bottleFileId: string | null; rules: string[]; pastScenes: string[]; drink: BrandDrink }> {
+  const [layouts, bottles, everyRule, brands, saidHeadlines, scenes, drink] = await Promise.all([
     brandLayouts(scope, input.brand),
     brandAssets(scope, { brand: input.brand, kind: 'bottle' }),
     rulesForBrief(scope, { brand: input.brand, market: input.market ?? null, format: 'image' }),
@@ -254,6 +338,8 @@ export async function planPost(
        order by evidence_count desc
        limit 40
     `).catch(() => []),
+    pastScenes(scope, input.brand),
+    brandDrink(scope, input.brand),
   ]);
   // How this brand writes headlines: its own posts, not every brand's.
   const examples = pastHeadlines(
@@ -277,8 +363,9 @@ export async function planPost(
     ratio: input.ratio,
     pastHeadlines: examples,
     maxWords,
+    pastScenes: scenes,
   });
   const plan = settlePlan(draft, { request: input.request, brand: input.brand, variants, layouts: usable, brands, maxWords });
   const [bottle] = await brandAssets(scope, { brand: input.brand, kind: 'bottle', variant: plan.variant });
-  return { ...plan, bottleFileId: bottle?.asset.cutout ? bottle.fileId : null, rules: rules.map((r) => r.rule) };
+  return { ...plan, bottleFileId: bottle?.asset.cutout ? bottle.fileId : null, rules: rules.map((r) => r.rule), pastScenes: scenes, drink };
 }

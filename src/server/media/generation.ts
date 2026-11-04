@@ -25,6 +25,7 @@ import { reframe } from './reframe';
 import { stampLogo } from './logoStamp';
 import type { StampOutcome } from './logoStamp';
 import type { LogoCorner } from '../brain/category';
+import { choicesOf, type LayoutSpec, type PostChoices } from '../brain/layouts';
 import type { TargetShape } from './reframe';
 
 /**
@@ -57,6 +58,9 @@ type GenerationRow = {
   storage_path: string | null;
   asset_count: number;
   headline_lines: { text: string; role: 'lead' | 'key' | 'tail' }[] | null;
+  layer_recipe: { spec: LayoutSpec; choices?: PostChoices } | null;
+  arranged_at: string | null;
+  previous_scene: boolean | null;
   created_at: Date;
   started_at: Date | null;
   completed_at: Date | null;
@@ -81,6 +85,9 @@ function toDTO(row: GenerationRow): MediaGenerationDTO {
     hasAsset: row.storage_path !== null,
     assetCount: Number(row.asset_count ?? 0),
     headline: Array.isArray(row.headline_lines) && row.headline_lines.length ? row.headline_lines : null,
+    layers: row.layer_recipe?.spec && Array.isArray(row.headline_lines) && row.headline_lines.length
+      ? { ...(row.layer_recipe.choices ?? choicesOf(row.layer_recipe.spec)), arrangedAt: row.arranged_at, previousBackground: Boolean(row.previous_scene) }
+      : null,
     createdAt: row.created_at.toISOString(),
     startedAt: row.started_at?.toISOString() ?? null,
     completedAt: row.completed_at?.toISOString() ?? null,
@@ -96,7 +103,13 @@ const SELECT_COLUMNS = `
     where a.generation_id = g.id and a.company_id = g.company_id)::int as asset_count,
   case when g.output_metadata->'composed' ? 'recipe'
         and coalesce((g.output_metadata->'composed'->>'scene')::boolean, false)
-       then g.output_metadata->'composed'->'headline' end as headline_lines
+       then g.output_metadata->'composed'->'headline' end as headline_lines,
+  case when g.output_metadata->'composed' ? 'recipe'
+        and coalesce((g.output_metadata->'composed'->>'scene')::boolean, false)
+       then jsonb_build_object('spec', g.output_metadata->'composed'->'recipe'->'spec',
+                               'choices', g.output_metadata->'composed'->'recipe'->'choices') end as layer_recipe,
+  g.output_metadata->'composed'->>'arrangedAt' as arranged_at,
+  coalesce((g.output_metadata->'composed'->>'previousScene')::boolean, false) as previous_scene
 `;
 
 export type ImageGenerationInput = {

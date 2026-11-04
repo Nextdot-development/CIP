@@ -125,7 +125,7 @@ export type GenerationQc = {
   /** Pictures made in all, the first included. */
   attempts: number;
   /** Why it stopped where it did. */
-  stopped: 'passed' | 'out_of_tries' | 'out_of_time' | 'generation_failed' | 'check_failed';
+  stopped: 'passed' | 'out_of_tries' | 'out_of_time' | 'generation_failed' | 'check_failed' | 'left_to_you';
   /** The versions made before the one handed back, and what each broke. */
   earlier: { generationId: string; broke: string[] }[];
 };
@@ -235,7 +235,11 @@ export async function generateWithBrain(
       idempotencyKey: key,
       // Reviewed by the Bench and fixed; no new scene is started late in the request.
       finish: async (scene, regenerate) => {
-        const post = await composing.finish(scene, { regenerate, deadline: started + composeBudgetMs() });
+        // A post arranged layer by layer is built once, as planned: the person
+        // places the layers, and no review asks for a scene to be painted again.
+        const post = await composing.finish(scene, layered()
+          ? { review: false }
+          : { regenerate, deadline: started + composeBudgetMs() });
         // The recipe and the scene go with it, so its words can be changed later without a new scene.
         return { ...post, report: { review: post.rounds, unresolved: post.unresolved, tweaks: post.tweaks, recipe: post.recipe }, scene: post.scene };
       },
@@ -248,11 +252,21 @@ export async function generateWithBrain(
         notes: composing.plan.notes,
         risks: composing.plan.risks,
         settled: composing.plan.settled,
+        // Kept so the background alone can be painted again later, from the
+        // same brief with what the person adds to it.
+        scenePrompt: composing.prompt,
+        sceneBrief: composing.plan.scene,
+        // Checked when the person asks, never by the worker on its own.
+        ...(layered() ? { autoCheck: false } : {}),
       },
     });
     const generation = await make(null, input.idempotencyKey);
     await linkBriefToGeneration(scope, plan.briefId, generation.id);
     if (generation.status !== 'completed') return { status: 'generated', generation, briefId: plan.briefId, plan: summary, qc: null };
+    // A post arranged layer by layer is checked when the person asks, once it
+    // is arranged - a check of the first arrangement is spent on a post they
+    // are about to change.
+    if (layered()) return { status: 'generated', generation, briefId: plan.briefId, plan: summary, qc: null };
     const checked = await checkAndFix(scope, {
       first: generation,
       briefId: plan.briefId,
@@ -397,7 +411,17 @@ async function composedPost(
     ratio,
     generatorShape: made,
     market: input.market ?? null,
+    layered: layered(),
   });
+}
+
+/**
+ * Whether posts are made layer by layer: one scene, then the bottle, logo and
+ * words placed by the person for nothing. The way posts are made unless
+ * CIP_LAYERED_POSTS=off brings back the one-go post the Bench reviews and fixes.
+ */
+function layered(): boolean {
+  return process.env.CIP_LAYERED_POSTS !== 'off';
 }
 
 /**
@@ -475,7 +499,12 @@ async function checkAndFix(
     briefId: string;
     started: number;
     onQc?: (progress: QcProgress) => void;
-    remake: (from: MediaGenerationDTO, broke: BrokenRule[]) => Promise<MediaGenerationDTO>;
+    /**
+     * Makes another version with the faults named. Null for a post arranged
+     * layer by layer: the check says what is wrong, and the person moves the
+     * layers - a new picture is never paid for without being asked for.
+     */
+    remake: ((from: MediaGenerationDTO, broke: BrokenRule[]) => Promise<MediaGenerationDTO>) | null;
   },
 ): Promise<{ generation: MediaGenerationDTO; qc: GenerationQc }> {
   const tried: { generation: MediaGenerationDTO; check: CreativeCheck | null; broke: BrokenRule[] }[] = [];
@@ -491,6 +520,7 @@ async function checkAndFix(
 
     if (!check || check.status !== 'ready') { stopped = 'check_failed'; break; }
     if (broke.length === 0) { stopped = 'passed'; break; }
+    if (!input.remake) { stopped = 'left_to_you'; break; }
     if (attempt > maxFixes()) { stopped = 'out_of_tries'; break; }
     if (Date.now() - input.started > qcBudgetMs()) { stopped = 'out_of_time'; break; }
 

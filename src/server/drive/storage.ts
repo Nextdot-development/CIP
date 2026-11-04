@@ -77,6 +77,11 @@ const SAFE_KEY = new RegExp(
     // The scene a composed post stands on, kept so its words can be set again.
     // One fixed word after the generation's id, nothing a caller chose.
     `|media\\/${UUID}\\/scene` +
+    // The scene it stood on before a new background was made, to go back to.
+    `|media\\/${UUID}\\/scene-previous` +
+    // Each layer of a post arranged layer by layer, named by one of five
+    // fixed words - never anything a caller chose.
+    `|media\\/${UUID}\\/layer-(background|shadow|bottle|headline|logo)` +
     // A PDF read visually keeps each rendered page, grouped under the file it
     // came from so a file's pages can be found without consulting the database.
     // Both segments are ids we generated, so the shape stays as strict as the

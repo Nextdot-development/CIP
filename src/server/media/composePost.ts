@@ -3,11 +3,11 @@ import { createCanvas, loadImage } from '@napi-rs/canvas';
 import type { CompanyScope } from '../db';
 import { planPost, type BenchPlan } from '../brain/bench';
 import { brandAssets, type BrandAsset } from '../brain/brandAssets';
-import { adaptLayout, fitLayout, type FittedLayout, type LayoutSpec } from '../brain/layouts';
+import { adaptLayout, arrangeLayout, choicesOf, fitLayout, placeLayout, type FittedLayout, type LayoutSpec, type PostChoices } from '../brain/layouts';
 import { readFile } from '../drive/service';
 import { placeBottle } from './bottleComposite';
 import { imageGenerationProvider } from './providers';
-import { measureHeadline, setHeadline, type Casing, type HeadlineLine } from './typography';
+import { measureHeadline, setHeadline, type Casing, type HeadlineLine, type SetLine } from './typography';
 import { reviewAndFix, type ReviewRound } from './postReview';
 import { brain } from '../brain/providers';
 import { readPalette } from '../brain/palette';
@@ -84,6 +84,18 @@ export function scenePrompt(
   postRatio: number,
   genRatio: number,
   packColours: string[] = [],
+  /**
+   * A scene for a post arranged by hand, where the bottle may yet stand left,
+   * centre or right: the surface is kept clear across the whole frame rather
+   * than at one spot, and the quiet space on both sides.
+   */
+  options: {
+    open?: boolean;
+    /** How the brand's own posts were set, for a scene that belongs with them. */
+    brandScenes?: string[];
+    /** What the brand pours, for any glass in the scene. */
+    drink?: { kind: string | null; colour: string | null; variant?: string | null };
+  } = {},
 ): string {
   const lines: string[] = [];
   lines.push(
@@ -97,10 +109,18 @@ export function scenePrompt(
     'there would separate from the background.',
   );
   lines.push(
-    'Camera: full-frame, 85mm lens at f/2.8, at the height of the surface looking very slightly down, level ' +
-    'horizon, no tilt. The surface in the foreground is sharp; the background falls away into soft, creamy bokeh. ' +
-    'Rich, cinematic colour grade with deep but detailed shadows; no haze, no HDR look, no oversharpening.',
+    'Camera: full-frame, 50mm lens at f/8 for deep focus, at the height of the surface looking very slightly down, level ' +
+    'horizon, no tilt. Clear and crisp from front to back: the surface, the props and the setting behind all in ' +
+    'focus and cleanly lit, with no blur, no bokeh, no haze, fog, smoke, dust, grain or glow over anything. ' +
+    'Rich, true colour grade with deep but detailed shadows; no HDR look, no oversharpening.',
   );
+  if (options.brandScenes?.length) {
+    lines.push(
+      'In the brand\'s own photographic style - its posts have been set like this, and this scene belongs with them ' +
+      `in place, props, light and colour, without copying any: ${options.brandScenes.slice(0, 5).join(' / ')}.`,
+    );
+  }
+  lines.push(drinkLine(options.drink));
   const named = [...new Set(packColours.map(colourName).filter(Boolean))];
   if (named.length) {
     lines.push(`The product's own colours are ${named.join(', ')}: choose tones for the scene that flatter them and let the product stand out, never matching it exactly.`);
@@ -110,7 +130,20 @@ export function scenePrompt(
     'for the words left open. Few objects, each deliberate; nothing cluttered or random.',
   );
   lines.push('Composition - these places must be kept as described:');
-  if (layout.bottleBox) {
+  if (options.open) {
+    const base = layout.bottleBox ? inGenerated(layout.bottleBox, postRatio, genRatio) : { y: 0.3, h: 0.62 };
+    const light = luminanceOf(layout.text?.ink ?? '#ffffff') > 0.5;
+    lines.push(
+      `- The ${plan.scene.surface === 'gloss' ? 'polished ' : ''}surface runs level across the whole width of the frame, its ` +
+      `front edge about ${pct(base.y + base.h + 0.02)} down, sharp and clear from the left edge to the right, so a bottle about ` +
+      `${pct(base.h)} of the frame's height can be stood anywhere on it later - left, centre or right. Nothing stands on its ` +
+      'front; props sit only behind, low, or at the very edges.',
+      `- Above the surface the frame is calm and uncluttered on both sides, plain and evenly ${light ? 'dark' : 'light'}, ` +
+      'with no bright lights, no busy detail and no faces: words may go on either side, or across the top.',
+      '- All four corners plain and quiet, for a logo.',
+    );
+  }
+  if (layout.bottleBox && !options.open) {
     const b = inGenerated(layout.bottleBox, postRatio, genRatio);
     const base = b.y + b.h;
     lines.push(
@@ -119,15 +152,15 @@ export function scenePrompt(
       `that spot, level and in focus, and nothing may stand in front of it or between ${pct(b.x - 0.04)} and ${pct(b.x + b.w + 0.04)} across above it.`,
     );
   }
-  if (layout.textBox) {
+  if (layout.textBox && !options.open) {
     const t = inGenerated(layout.textBox, postRatio, genRatio);
     const light = luminanceOf(layout.text?.ink ?? '#ffffff') > 0.5;
     lines.push(
       `- The area from ${pct(t.x)} to ${pct(t.x + t.w)} across and ${pct(t.y - 0.04)} to ${pct(t.y + t.h + 0.04)} down is for words: ` +
-      `calm, uncluttered, out of focus and evenly ${light ? 'dark' : 'light'}, with no bright lights, no sharp objects and no faces in it.`,
+      `calm, uncluttered, plain and evenly ${light ? 'dark' : 'light'}, with no bright lights, no busy detail and no faces in it.`,
     );
   }
-  if (layout.logoBox && layout.logo) {
+  if (layout.logoBox && layout.logo && !options.open) {
     lines.push(`- The ${layout.logo.corner.replace('-', ' ')} corner plain and quiet, for a logo.`);
   }
   lines.push(
@@ -138,10 +171,67 @@ export function scenePrompt(
   return lines.join('\n');
 }
 
+/**
+ * A glass in the scene holds the brand's own drink, in its own colour - a
+ * whisky post with an empty tumbler, or one of clear spirit, reads as wrong.
+ */
+export function drinkLine(drink?: { kind: string | null; colour: string | null; variant?: string | null }): string {
+  const kind = drink?.kind?.toLowerCase() ?? null;
+  // A flavour is poured in its own colour, not the plain spirit's.
+  const flavour = drink?.variant && !STANDARD_PACK.test(drink.variant) ? drink.variant : null;
+  const colour = flavour
+    ? `the true colour of ${flavour}`
+    : drink?.colour ?? (kind ? DRINK_COLOURS.find(([k]) => k.test(kind))?.[1] ?? null : null);
+  const what = [colour, kind].filter(Boolean).join(' ');
+  return 'Any glass in the scene is never empty: it holds the brand\'s own drink' +
+    (what ? ` - ${what} - ` : ' ') +
+    'poured to a natural level, real liquid with true colour, catching the light' +
+    (kind && /whisk|rum|brandy|cognac/.test(kind) ? ', ice optional' : '') +
+    '. No other drink, no other colour of liquid, no empty or half-wiped glass.';
+}
+
+const STANDARD_PACK = /^(plain|original|classic|regular|standard)$/i;
+
+/** The colour a drink is poured, when the brand's files do not say. */
+const DRINK_COLOURS: [RegExp, string][] = [
+  [/whisk|bourbon|scotch|malt/, 'deep golden amber'],
+  [/dark rum|rum/, 'rich dark amber'],
+  [/brandy|cognac/, 'warm reddish amber'],
+  [/vodka|gin|white spirit/, 'crystal-clear'],
+  [/red wine/, 'deep ruby red'],
+  [/white wine/, 'pale straw gold'],
+];
+
+/**
+ * A post's parts, each alone on its own transparent layer, bottom to top -
+ * what a designer gets in a Photoshop file - and its headline as live text.
+ */
+export type PostLayers = {
+  background: Buffer;
+  shadow: Buffer | null;
+  bottle: Buffer | null;
+  headline: Buffer;
+  logo: Buffer | null;
+  lines: SetLine[];
+};
+
+type Frac = { x: number; y: number; w: number; h: number };
+export type PostBoxes = {
+  bottle: Frac | null;
+  logo: Frac | null;
+  text: Frac | null;
+  /** The left edge the words are laid out from, which their box may sit inside of. */
+  textAnchor: { x: number } | null;
+};
+
 export type BuiltPost = {
   bytes: Buffer;
   width: number;
   height: number;
+  /** Only when asked for: the layers it was built from. */
+  layers?: PostLayers;
+  /** Where each piece landed, in fractions of the post: what a person drags. */
+  boxes: PostBoxes;
   /** What was used, and what stood in for what the brand did not supply. */
   logo: string | null;
   substitutes: string[];
@@ -196,6 +286,8 @@ export async function buildPost(input: {
   bottle: Buffer | null;
   logos: { name: string; bytes: Buffer; asset: Pick<BrandAsset, 'tone' | 'bbox' | 'width' | 'height'> }[];
   tweaks?: PostTweaks;
+  /** Also hand back each part on its own layer, for an editor. */
+  layers?: boolean;
 }): Promise<BuiltPost> {
   const { width: W, height: H } = postSize(input.ratio);
   const tweaks = input.tweaks ?? NO_TWEAKS;
@@ -232,11 +324,15 @@ export async function buildPost(input: {
     }
   }
   let bytes = canvas.toBuffer('image/png');
+  const background = bytes;
 
   // The real bottle, stood where the layout puts it.
+  let packLayers: { shadow: Buffer; bottle: Buffer } | null = null;
   if (input.bottle && layout.bottleBox) {
     const b = layout.bottleBox;
-    bytes = (await placeBottle({ scene: bytes, bottle: input.bottle, place: { cx: b.x + b.w / 2, base: b.y + b.h, height: b.h }, surface: input.plan.scene.surface, light: 'auto' })).bytes;
+    const placed = await placeBottle({ scene: bytes, bottle: input.bottle, place: { cx: b.x + b.w / 2, base: b.y + b.h, height: b.h }, surface: input.plan.scene.surface, light: 'auto' });
+    bytes = placed.bytes;
+    packLayers = placed.layers;
   }
 
   // The headline.
@@ -250,13 +346,17 @@ export async function buildPost(input: {
 
   // The logo: the version that stands out against where it lands.
   let logoName: string | null = null;
+  let logoLayer: Buffer | null = null;
+  let logoBox: Frac | null = null;
   if (layout.logoBox && input.logos.length) {
     const img = await loadImage(bytes);
     const out = createCanvas(W, H);
-    const c = out.getContext('2d');
-    c.drawImage(img, 0, 0);
+    out.getContext('2d').drawImage(img, 0, 0);
+    // The logo and any shading behind it on a layer of their own, laid over.
+    const mark = createCanvas(W, H);
+    const c = mark.getContext('2d');
     const box = layout.logoBox;
-    const under = toneOf(c.getImageData(Math.round(box.x * W), Math.round(box.y * H), Math.max(1, Math.round(box.w * W)), Math.max(1, Math.round(box.h * H))).data).mean;
+    const under = toneOf(out.getContext('2d').getImageData(Math.round(box.x * W), Math.round(box.y * H), Math.max(1, Math.round(box.w * W)), Math.max(1, Math.round(box.h * H))).data).mean;
     const wanted = under < 0.55 ? 'light' : 'dark';
     const logo = input.logos.find((l) => l.asset.tone === wanted) ?? input.logos.find((l) => l.asset.tone === 'colour') ?? input.logos[0]!;
     const pic = await loadImage(logo.bytes);
@@ -283,12 +383,28 @@ export async function buildPost(input: {
       c.fillRect(cx - r, cy - r, r * 2, r * 2);
     }
     c.drawImage(pic, lx * pic.width, ly * pic.height, lw * pic.width, lh * pic.height, box.x * W, box.y * H, w, h);
+    logoBox = { x: box.x, y: box.y, w: box.w, h: h / H };
+    out.getContext('2d').drawImage(mark, 0, 0);
     bytes = out.toBuffer('image/png');
     logoName = logo.name;
+    if (input.layers) logoLayer = mark.toBuffer('image/png');
   }
 
   const substitutes = [...new Set(set.lines.filter((l) => l.substitute).map((l) => l.face))];
-  return { bytes, width: W, height: H, logo: logoName, substitutes, tweaks };
+  const layers: PostLayers | undefined = input.layers
+    ? { background, shadow: packLayers?.shadow ?? null, bottle: packLayers?.bottle ?? null, headline: set.layer, logo: logoLayer, lines: set.lines }
+    : undefined;
+  // The words' box is where they were set, not where the layout meant them.
+  const set_ = set.lines;
+  const text = set_.length
+    ? (() => {
+        const x0 = Math.min(...set_.map((l) => l.box.x)); const y0 = Math.min(...set_.map((l) => l.box.y));
+        const x1 = Math.max(...set_.map((l) => l.box.x + l.box.w)); const y1 = Math.max(...set_.map((l) => l.box.y + l.box.h * 1.15));
+        return { x: x0 / W, y: y0 / H, w: (x1 - x0) / W, h: (y1 - y0) / H };
+      })()
+    : null;
+  const boxes: PostBoxes = { bottle: packLayers ? layout.bottleBox : null, logo: logoBox, text, textAnchor: layout.text ? { x: layout.text.x } : null };
+  return { bytes, width: W, height: H, logo: logoName, substitutes, tweaks, layers, boxes };
 }
 
 export type ComposedPost = FinishedPost & {
@@ -328,6 +444,11 @@ export type PostRecipe = {
   surface: 'matte' | 'gloss';
   /** What the Bench's review settled on: the bottle's place and size, the words' ground. */
   tweaks: PostTweaks;
+  /**
+   * Where a person put the pieces, layer by layer. Absent, the layout's own
+   * places stand - a post made before posts were arranged by hand.
+   */
+  choices?: PostChoices;
 };
 
 export type FinishedPost = BuiltPost & {
@@ -344,13 +465,16 @@ export type FinishedPost = BuiltPost & {
  */
 async function assemble(
   scope: CompanyScope,
-  r: Pick<PostRecipe, 'brand' | 'variant' | 'bottleFileId' | 'spec' | 'ratio' | 'casing' | 'keep' | 'surface'> & { headline: HeadlineLine[] },
+  given: Pick<PostRecipe, 'brand' | 'variant' | 'bottleFileId' | 'spec' | 'ratio' | 'casing' | 'keep' | 'surface' | 'choices'> & { headline: HeadlineLine[] },
 ) {
-  const [bottle, logos, bottles] = await Promise.all([
-    r.bottleFileId ? brandFile(scope, r.bottleFileId) : Promise.resolve(null),
+  // The layout as a person arranged it, when they have.
+  const r = given.choices ? { ...given, spec: arrangeLayout(given.spec, given.choices) } : given;
+  const [bottle, allLogos, bottles] = await Promise.all([
+    r.bottleFileId && r.spec.bottle ? brandFile(scope, r.bottleFileId) : Promise.resolve(null),
     logosFor(scope, r.brand, r.variant),
     brandAssets(scope, { brand: r.brand, kind: 'bottle', variant: r.variant }),
   ]);
+  const logos = r.spec.logo ? allLogos : [];
   const bottleAsset = bottles.find((b) => b.fileId === r.bottleFileId)?.asset ?? null;
   const bottleAspect = bottleAsset ? (bottleAsset.bbox[2] * bottleAsset.width) / (bottleAsset.bbox[3] * bottleAsset.height) : 0.32;
   const logoAspect = logos[0] ? aspectOf(logos[0].asset) : 0.8;
@@ -358,26 +482,36 @@ async function assemble(
   // bottle across, or below the words in a story, rather than being squeezed.
   const adapted = adaptLayout(r.spec, r.ratio);
   const words = adapted.text ? measureHeadline(adapted.text, r.headline, r.ratio, r.casing, r.keep) : null;
-  const layout = fitLayout(r.spec, r.ratio, bottleAspect, logoAspect, words);
+  // Then whatever a person dragged, exactly where they left it.
+  const layout = placeLayout(fitLayout(r.spec, r.ratio, bottleAspect, logoAspect, words), r.choices?.place, r.ratio, bottleAspect, logoAspect);
   // Only the logos in the same shape as the one the layout was fitted to.
   const sameShape = logos.filter((l) => Math.abs(aspectOf(l.asset) - logoAspect) < 0.15);
-  const plan = { headline: r.headline, casing: r.casing, keep: r.keep, scene: { surface: r.surface } };
+  // A post with its headline taken off keeps the words, to put back.
+  const plan = { headline: r.choices?.headline === 'none' ? [] : r.headline, casing: r.casing, keep: r.keep, scene: { surface: r.surface } };
   return {
     bottle,
     layout,
-    build: (scene: Buffer, tweaks: PostTweaks) =>
-      buildPost({ scene, ratio: r.ratio, layout, plan, bottle: bottle?.body ?? null, logos: sameShape.length ? sameShape : logos, tweaks }),
+    build: (scene: Buffer, tweaks: PostTweaks, options: { layers?: boolean } = {}) =>
+      buildPost({ scene, ratio: r.ratio, layout, plan, bottle: bottle?.body ?? null, logos: sameShape.length ? sameShape : logos, tweaks, layers: options.layers }),
   };
 }
 
 /**
  * A composed post set again with other words, on the scene it was made on:
  * the bottle, logo and layout as they were, fitted to the new headline. The
- * review's fixes to the bottle are kept; the words start fresh.
+ * review's fixes to the bottle are kept; the words start fresh. Moved by
+ * hand, the bottle stands where it was put, and the review's nudges go.
  */
-export async function rebuildPost(scope: CompanyScope, recipe: PostRecipe, scene: Buffer, headline: HeadlineLine[]): Promise<BuiltPost> {
+export async function rebuildPost(
+  scope: CompanyScope,
+  recipe: PostRecipe,
+  scene: Buffer,
+  headline: HeadlineLine[],
+  options: { layers?: boolean } = {},
+): Promise<BuiltPost> {
   const { build } = await assemble(scope, { ...recipe, headline });
-  return build(scene, { ...recipe.tweaks, textWidth: 1, textScale: 1 });
+  const tweaks = recipe.choices ? { ...recipe.tweaks, bottleShift: 0, bottleScale: 1 } : recipe.tweaks;
+  return build(scene, { ...tweaks, textWidth: 1, textScale: recipe.choices?.place?.text?.scale ?? 1 }, options);
 }
 
 /** Whether a brand has what a composed post needs: a bottle cut out on transparency. */
@@ -394,7 +528,15 @@ export async function canCompose(scope: CompanyScope, brand: string | null): Pro
  */
 export async function preparePost(
   scope: CompanyScope,
-  input: { request: string; brand: string; ratio: number; generatorShape: string; market?: string | null },
+  input: {
+    request: string; brand: string; ratio: number; generatorShape: string; market?: string | null;
+    /**
+     * A post to be arranged layer by layer: its scene painted to take the
+     * bottle anywhere, and the layout's places kept as choices a person can
+     * change - for nothing, once the scene is made.
+     */
+    layered?: boolean;
+  },
 ): Promise<PreparedPost> {
   const plan = await planPost(scope, input);
   const recipe: Omit<PostRecipe, 'tweaks'> = {
@@ -407,12 +549,13 @@ export async function preparePost(
     casing: plan.casing,
     keep: plan.keep,
     surface: plan.scene.surface,
+    ...(input.layered ? { choices: choicesOf(plan.layout.spec) } : {}),
   };
   const { bottle, layout, build } = await assemble(scope, { ...recipe, headline: plan.headline });
   const [gw, gh] = input.generatorShape.split(':').map(Number);
   // The pack's own colours, measured from its photograph, for a scene that flatters them.
   const packColours = bottle ? (await readPalette(bottle.body, 'image/png')).filter((c) => c.share >= 0.08).slice(0, 3).map((c) => c.hex) : [];
-  const prompt = scenePrompt(plan, layout, input.ratio, gw && gh ? gw / gh : input.ratio, packColours);
+  const prompt = scenePrompt(plan, layout, input.ratio, gw && gh ? gw / gh : input.ratio, packColours, { open: input.layered, brandScenes: plan.pastScenes, drink: { ...plan.drink, variant: plan.variant } });
   const headline = plan.headline.map((l) => l.text).join(' / ');
   return {
     plan,

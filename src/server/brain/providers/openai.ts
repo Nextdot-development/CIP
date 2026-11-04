@@ -1602,9 +1602,10 @@ export class OpenAIBrainProvider implements BrainProvider {
             'and believable - "a carved sandstone balcony in a Jaipur haveli at dusk", not "a luxurious place"); ' +
             'the surface the bottle stands on, in the foreground, level, running the full width, seen from just ' +
             'above at the bottle\'s height; two or three props at most that belong to the idea and the brand ' +
-            '(for whisky, a cut-crystal tumbler with ice is fine; for a flavour, its ingredient), kept to the sides ' +
+            '(for whisky, a cut-crystal tumbler of its own amber drink with ice is fine - a glass is never empty, and ' +
+            'holds the brand\'s own drink in its true colour; for a flavour, its ingredient), kept to the sides ' +
             'and behind, smaller than a bottle and never touching its spot; the background a few metres back and ' +
-            'softly out of focus; the light - motivated by something in the scene (a window, lamps, candles, the ' +
+            'clear and in focus, never blurred or hazy; the light - motivated by something in the scene (a window, lamps, candles, the ' +
             'low sun), warm or cool to suit the brand, with a soft rim of light where the bottle will stand so it ' +
             'separates from the background; the time of day. Premium, cinematic and real: never cluttered, never ' +
             'cartoonish, never a stock-photo cliché. Leave calm, uncluttered space on the side where the words go. ' +
@@ -1648,6 +1649,11 @@ export class OpenAIBrainProvider implements BrainProvider {
             `Layouts:\n${input.layouts.map((l) => `- "${l.name}": ${l.description}`).join('\n') || '- none learned: choose "default"'}\n\n` +
             (input.pastHeadlines?.length
               ? `The brand's own headlines, for length and voice only - never to be reused:\n${input.pastHeadlines.map((h) => `- "${h}"`).join('\n')}\n\n`
+              : '') +
+            (input.pastScenes?.length
+              ? 'How the brand\'s own posts have been set - background, light, mood. The scene belongs in this family ' +
+                '(its kind of place, its light, its colour), made for this occasion, never a copy of one:\n' +
+                `${input.pastScenes.map((s) => `- ${s}`).join('\n')}\n\n`
               : '') +
             `Rules:\n${input.rules.map((r) => `- ${r}`).join('\n') || '- none'}\n\n` +
             `Request: ${input.request}`,
