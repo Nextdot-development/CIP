@@ -39,8 +39,11 @@ export type LayoutSpec = {
   /** Width over height of the post it was learned from. */
   ratio: number;
   logo: { corner: Corner; width: number; insetX: number; insetY: number } | null;
-  /** Centre across, the line it stands on, and its height. */
-  bottle: { cx: number; base: number; height: number } | null;
+  /**
+   * Centre across, the line it stands on, and its height. `chosen`: a person
+   * put it on this side, and a post of another shape keeps it there.
+   */
+  bottle: { cx: number; base: number; height: number; chosen?: boolean } | null;
   text: {
     x: number;
     y: number;
@@ -264,11 +267,13 @@ export function adaptLayout(spec: LayoutSpec, ratio: number): LayoutSpec {
       }
     : null;
 
+  // A bottle a person put on the left of a wide post keeps the left, and the words take the right.
+  const leftInWide = ratio > 1.4 && Boolean(spec.bottle?.chosen) && spec.bottle!.cx < 0.4;
   const text = spec.text
     ? {
         ...spec.text,
         lines: spec.text.lines.map((l) => ({ ...l, size: byHeight(l.size) * (ratio < 0.7 ? 1.15 : 1) })),
-        x: byWidth(spec.text.x),
+        x: leftInWide ? 0.56 : byWidth(spec.text.x),
         // A story stacks the bottle below the words, so they may run the full width.
         width: ratio < 0.7 ? 1 - 2 * byWidth(spec.text.x) : Math.min(ratio > 1.4 ? 0.36 : 0.62, byWidth(spec.text.width)),
         y: ratio < 0.7 ? STORY_SAFE.top + 0.04 : ratio > 1.4 ? Math.max(0.12, spec.text.y) : spec.text.y * (spec.ratio / Math.max(ratio, 0.01)) ** 0.25,
@@ -279,10 +284,12 @@ export function adaptLayout(spec: LayoutSpec, ratio: number): LayoutSpec {
   if (bottle) {
     if (ratio < 0.7) {
       // Story: the bottle below the words, a little right of centre as the posts have it.
-      bottle = { cx: Math.max(0.5, Math.min(0.62, bottle.cx)), base: 1 - STORY_SAFE.bottom, height: Math.min(0.5, bottle.height * 0.75) };
+      // A side a person chose is kept, as far as a story's width allows.
+      const cx = bottle.chosen ? Math.max(0.38, Math.min(0.62, bottle.cx)) : Math.max(0.5, Math.min(0.62, bottle.cx));
+      bottle = { cx, base: 1 - STORY_SAFE.bottom, height: Math.min(0.5, bottle.height * 0.75), chosen: bottle.chosen };
     } else if (ratio > 1.4) {
       // Wide: the bottle in the right half, as tall as the frame allows.
-      bottle = { cx: 0.66, base: 0.92, height: Math.min(0.82, bottle.height * 1.25) };
+      bottle = { cx: leftInWide ? 0.34 : 0.66, base: 0.92, height: Math.min(0.82, bottle.height * 1.25), chosen: bottle.chosen };
     } else {
       bottle = { ...bottle, height: Math.min(0.9, bottle.height * (spec.ratio / ratio) ** 0.5) };
     }
@@ -328,11 +335,44 @@ export type PostChoices = {
    * is cleared when that piece is put back on a preset place.
    */
   place?: Placement;
+  /** How the headline and the bottle look, as a person set them. Absent: as the layout has them. */
+  style?: PostStyle;
+};
+
+export type PostStyle = {
+  /** The headline's colour - one of the brand's own. */
+  ink?: string;
+  /** The headline's lines against each other. */
+  align?: 'left' | 'center' | 'right';
+  /** The headline's size against the layout's. */
+  textSize?: number;
+  /** How strong the bottle's shadow is: 0 none, 1 as the scene casts it. */
+  shadow?: number;
+  /** The bottle lighter (above 0) or darker (below). */
+  bright?: number;
+  /** The shadow's edge: below 1 sharper, above softer. */
+  shadowSoft?: number;
+  /** Which way the shadow falls: below 0 to the left, above to the right. Absent: away from the scene's light. */
+  shadowAngle?: number;
+  /** How far the shadow reaches against as the scene casts it. */
+  shadowLength?: number;
+  /** How strong the reflection is: 0 none, 1 as the surface gives it, up to 2. */
+  reflection?: number;
+  /** How soft the reflection is: 0 as the surface gives it, more for a blurrier one. */
+  reflectionSoft?: number;
 };
 
 export type Placement = {
-  /** The bottle's centre across, the line it stands on, and its height. */
-  bottle?: { cx: number; base: number; height: number };
+  /** The bottle's centre across, the line it stands on, its height, and how far it is turned (degrees, clockwise). */
+  bottle?: { cx: number; base: number; height: number; rotate?: number };
+  /**
+   * The shadow moved off where the scene casts it, as a person dragged it:
+   * how far (fractions of the post), how big against as cast, and how far turned (degrees).
+   * It goes with the bottle when the bottle moves.
+   */
+  shadow?: { dx: number; dy: number; scale: number; rotate: number };
+  /** The reflection moved, sized and turned the same way, on its own. */
+  reflection?: { dx: number; dy: number; scale: number; rotate: number };
   /** The logo's left edge, top edge and width. */
   logo?: { x: number; y: number; w: number };
   /** The headline's left edge and top, and its size against the layout's. */
@@ -366,7 +406,7 @@ export function arrangeLayout(spec: LayoutSpec, choices: PostChoices): LayoutSpe
     : { ...(spec.logo ?? { width: 0.16, insetX: 0.04, insetY: 0.04 }), corner: choices.logo };
   const bottle = choices.bottle === 'none'
     ? null
-    : { cx: BOTTLE_CX[choices.bottle], base: spec.bottle?.base ?? 0.92, height: BOTTLE_HEIGHT[choices.size] };
+    : { cx: BOTTLE_CX[choices.bottle], base: spec.bottle?.base ?? 0.92, height: BOTTLE_HEIGHT[choices.size], chosen: true };
   if (!spec.text) return { ...spec, logo, bottle };
 
   const logoTop = logo !== null && logo.corner.startsWith('top');
@@ -519,6 +559,17 @@ export function fitLayout(
     // A wider gap than beside: the key words are often set larger than measured.
     const below = bottle.base - (textBox.y + textBox.h + margin * 2.5);
     bottle = { ...bottle, height: Math.max(0.2, Math.min(bottle.height, below)) };
+  }
+  // A bottle on the left of the words makes way to the left, as far as the margin allows.
+  if (textBox && overlap(boxOf(bottle), textBox, marginX) && bottle.cx < textBox.x + textBox.w / 2 && textBox.x > 0.3) {
+    const wanted = textBox.x - marginX - widthOf(bottle.height) / 2;
+    const nearest = marginX + widthOf(bottle.height) / 2;
+    bottle = { ...bottle, cx: Math.max(Math.min(bottle.cx, wanted), nearest) };
+    if (overlap(boxOf(bottle), textBox, marginX)) {
+      const room = textBox.x - 2 * marginX;
+      const height = Math.max(0.2, Math.min(bottle.height, room > 0 ? (room * ratio) / bottleAspect : 0));
+      bottle = { ...bottle, height, cx: marginX + widthOf(height) / 2 };
+    }
   }
   if (textBox && overlap(boxOf(bottle), textBox, marginX)) {
     const wanted = textBox.x + textBox.w + marginX + widthOf(bottle.height) / 2;

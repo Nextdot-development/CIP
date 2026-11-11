@@ -4,6 +4,7 @@ import type { TransactionSql } from 'postgres';
 import { withCompanyScope } from '../db';
 import type { CompanyScope } from '../db';
 import { THUMBNAIL_EDGES, driveStorage, sha256, storageKeyFor, thumbnailKeyFor } from './storage';
+import { readThrough } from '../storageCache';
 import type { ThumbnailEdge } from './storage';
 import { MAX_FILE_BYTES, maxFileSizeLabel, sanitiseFilename, specFor } from '@/lib/fileTypes';
 import type { FileKind } from '@/lib/fileTypes';
@@ -552,8 +553,10 @@ export async function readFile(scope: CompanyScope, fileId: string): Promise<Fil
   });
 
   // The key is read back from the row we just proved belongs to this company,
-  // never assembled from anything the caller sent.
-  const body = await driveStorage().get(row.storage_path);
+  // never assembled from anything the caller sent. Kept on this server under
+  // when the file last changed, so a bottle or a logo is downloaded once.
+  const changed = row.updated_at instanceof Date ? row.updated_at.toISOString() : String(row.updated_at);
+  const body = await readThrough(row.storage_path, `file:${changed}:${row.file_size}`, () => driveStorage().get(row.storage_path));
   return { file: toFile(row), body, filename: row.name };
 }
 

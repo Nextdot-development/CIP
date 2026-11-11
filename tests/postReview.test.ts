@@ -75,7 +75,7 @@ describe('reviewing and fixing', () => {
         scene: Buffer.from('scene-1'),
         build: async (scene, tweaks) => {
           built.push({ scene: scene.toString(), tweaks });
-          return { bytes: Buffer.from(''), width: 1, height: 1, logo: null, substitutes: [], tweaks, boxes: { bottle: null, logo: null, text: null, textAnchor: null } };
+          return { bytes: Buffer.from(''), flat: async () => Buffer.from(''), width: 1, height: 1, logo: null, substitutes: [], tweaks, boxes: { bottle: null, logo: null, text: null, textAnchor: null } };
         },
         review: async () => reviews.shift() ?? review([], 9),
         regenerate: opts.regenerate === false ? null : async (note) => { scenes.push(note); return Buffer.from(`scene-${scenes.length + 1}`); },
@@ -119,7 +119,7 @@ describe('reviewing and fixing', () => {
   it('keeps the post it has when a review fails', async () => {
     const out = await reviewAndFix({
       scene: Buffer.from('s'),
-      build: async (_s, tweaks) => ({ bytes: Buffer.from('post'), width: 1, height: 1, logo: null, substitutes: [], tweaks, boxes: { bottle: null, logo: null, text: null, textAnchor: null } }),
+      build: async (_s, tweaks) => ({ bytes: Buffer.from('post'), flat: async () => Buffer.from('post'), width: 1, height: 1, logo: null, substitutes: [], tweaks, boxes: { bottle: null, logo: null, text: null, textAnchor: null } }),
       review: async () => { throw new Error('down'); },
     });
     assert.equal(out.post.bytes.toString(), 'post');

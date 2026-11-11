@@ -66,6 +66,16 @@ type GenerationRow = {
   completed_at: Date | null;
 };
 
+/**
+ * One generation as a caller sees it, read in a transaction already open
+ * under the caller's company - so a change and the post it leaves come back
+ * in one trip to the database. None when it is not this company's.
+ */
+export async function generationIn(tx: Parameters<Parameters<typeof withCompanyScope>[1]>[0], id: string): Promise<MediaGenerationDTO | null> {
+  const [row] = await tx.unsafe<GenerationRow[]>(`select ${SELECT_COLUMNS} from media_generations g where g.id = $1`, [id]);
+  return row ? toDTO(row) : null;
+}
+
 /** The only place a row becomes something a caller can see. */
 function toDTO(row: GenerationRow): MediaGenerationDTO {
   return {
@@ -396,14 +406,10 @@ export async function getGeneration(
   if (!isUuid(id)) throw new MediaNotFound();
 
   return withCompanyScope(scope, async (tx) => {
-    const rows = await tx.unsafe<GenerationRow[]>(
-      `select ${SELECT_COLUMNS} from media_generations g where g.id = $1`,
-      [id],
-    );
-    const row = rows[0];
+    const generation = await generationIn(tx, id);
     // 404 rather than 403: telling a caller that an id exists but is not
     // theirs is telling them it exists.
-    if (!row) throw new MediaNotFound();
+    if (!generation) throw new MediaNotFound();
 
     const assets = await tx<
       {
@@ -423,7 +429,7 @@ export async function getGeneration(
     `;
 
     return {
-      generation: toDTO(row),
+      generation,
       assets: assets.map((a) => ({
         id: a.id,
         mimeType: a.mime_type,
@@ -448,13 +454,22 @@ export async function readAsset(
   scope: CompanyScope,
   generationId: string,
   assetId?: string | null,
-): Promise<{ bytes: Buffer; mimeType: string; fileSize: number }> {
+  /** The arrangement the page asked for (?v=), for a post whose layers move. */
+  asked?: string | null,
+): Promise<{ bytes: Buffer; mimeType: string; fileSize: number; lasting: boolean }> {
   if (!isUuid(generationId)) throw new MediaNotFound();
   if (assetId && !isUuid(assetId)) throw new MediaNotFound();
 
   const row = await withCompanyScope(scope, async (tx) => {
-    const rows = await tx<{ storage_path: string; mime_type: string; file_size: number }[]>`
-      select a.storage_path, a.mime_type, a.file_size
+    const rows = await tx<{
+      storage_path: string; mime_type: string; file_size: number;
+      status: string; completed_at: Date | null; composed: boolean; arranged_at: string | null; flat_at: string | null;
+    }[]>`
+      select a.storage_path, a.mime_type, a.file_size,
+             g.status, g.completed_at,
+             coalesce(g.output_metadata ? 'composed', false) as composed,
+             g.output_metadata->'composed'->>'arrangedAt' as arranged_at,
+             g.output_metadata->'composed'->>'flatAt' as flat_at
         from media_generation_assets a
         join media_generations g
           on g.id = a.generation_id and g.company_id = a.company_id
@@ -468,9 +483,20 @@ export async function readAsset(
 
   if (!row) throw new MediaNotFound('That file');
 
+  // Which picture this is, when that is certain: one never changed after it was made, or a post's
+  // as it was last arranged once that arrangement's picture is stored. Kept on this server under it.
+  const made = row.status === 'completed' && row.completed_at ? `made:${row.completed_at.toISOString()}` : null;
+  const version = !row.composed
+    ? made
+    : row.arranged_at
+      ? (row.flat_at === row.arranged_at ? `flat:${row.arranged_at}` : null)
+      : made;
+  // A browser may keep it for good only at an address that names it: the picture of a post
+  // whose layers move changes under its plain address, so only its ?v= one is kept.
+  const lasting = Boolean(version) && (!row.composed || (Boolean(row.arranged_at) && asked === row.arranged_at));
   try {
-    const bytes = await driveStorage().get(row.storage_path);
-    return { bytes, mimeType: row.mime_type, fileSize: row.file_size };
+    const bytes = await getMediaAsset(row.storage_path, version ?? undefined);
+    return { bytes, mimeType: row.mime_type, fileSize: bytes.byteLength, lasting };
   } catch {
     // The row says the object exists and the store disagrees. Recoverable, and
     // worth saying so plainly rather than returning a broken download.
@@ -932,7 +958,11 @@ export async function keepScene(scope: CompanyScope, generationId: string, scene
   }
 }
 
-/** The scene a composed post was kept with. The generation must already be known to be this company's. */
-export async function sceneOf(scope: CompanyScope, generationId: string): Promise<Buffer> {
-  return getMediaAsset(mediaStorageKey(scope.companyId, generationId, 'scene', 'png'));
+/**
+ * The scene a composed post was kept with. The generation must already be
+ * known to be this company's. Given when the scene last changed, it is kept
+ * on this server once read.
+ */
+export async function sceneOf(scope: CompanyScope, generationId: string, version?: string): Promise<Buffer> {
+  return getMediaAsset(mediaStorageKey(scope.companyId, generationId, 'scene', 'png'), version ? `scene:${version}` : undefined);
 }

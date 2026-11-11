@@ -1,9 +1,10 @@
 import 'server-only';
 import { createCanvas, loadImage } from '@napi-rs/canvas';
-import type { CompanyScope } from '../db';
+import type { Canvas } from '@napi-rs/canvas';
+import { withCompanyScope, type CompanyScope } from '../db';
 import { planPost, type BenchPlan } from '../brain/bench';
 import { brandAssets, type BrandAsset } from '../brain/brandAssets';
-import { adaptLayout, arrangeLayout, choicesOf, fitLayout, placeLayout, type FittedLayout, type LayoutSpec, type PostChoices } from '../brain/layouts';
+import { adaptLayout, arrangeLayout, choicesOf, fitLayout, placeLayout, type FittedLayout, type LayoutSpec, type Placement, type PostChoices, type PostStyle } from '../brain/layouts';
 import { readFile } from '../drive/service';
 import { placeBottle } from './bottleComposite';
 import { imageGenerationProvider } from './providers';
@@ -209,6 +210,8 @@ const DRINK_COLOURS: [RegExp, string][] = [
 export type PostLayers = {
   background: Buffer;
   shadow: Buffer | null;
+  /** The bottle's mirror on a glossy surface. Absent on layers set before it was its own. */
+  reflection?: Buffer | null;
   bottle: Buffer | null;
   headline: Buffer;
   logo: Buffer | null;
@@ -218,6 +221,13 @@ export type PostLayers = {
 type Frac = { x: number; y: number; w: number; h: number };
 export type PostBoxes = {
   bottle: Frac | null;
+  /** Where the shadow lies, as cast and then moved by hand - what a person drags. Absent on posts set before it could be. */
+  shadow?: Frac | null;
+  /** The point it turns about: the bottle's foot, moved with it. */
+  shadowPivot?: { x: number; y: number } | null;
+  /** The reflection's, the same way. */
+  reflection?: Frac | null;
+  reflectionPivot?: { x: number; y: number } | null;
   logo: Frac | null;
   text: Frac | null;
   /** The left edge the words are laid out from, which their box may sit inside of. */
@@ -226,6 +236,8 @@ export type PostBoxes = {
 
 export type BuiltPost = {
   bytes: Buffer;
+  /** The flat post, encoded when first asked for - the same bytes as `bytes` when those were made. */
+  flat: () => Promise<Buffer>;
   width: number;
   height: number;
   /** Only when asked for: the layers it was built from. */
@@ -273,6 +285,69 @@ export function tweaked(layout: FittedLayout, t: PostTweaks): FittedLayout {
   return { ...layout, bottleBox, text, textBox };
 }
 
+/** At least this much of each side of a scene is kept, however different the post's shape. */
+export const SCENE_KEPT = 0.78;
+
+/**
+ * A scene laid into a frame. Cropped from its centre when that loses little.
+ * When the frame is another shape - a story from a square scene - cropping
+ * would cut away most of it, so the scene is kept as far as it can be and the
+ * frame past it filled from its own edges, softened, with the seam feathered.
+ * A taller frame keeps the scene at the bottom, where its surface and the
+ * bottle are; a wider one keeps it centred.
+ */
+export function drawScene(
+  ctx: ReturnType<ReturnType<typeof createCanvas>['getContext']>,
+  scene: Awaited<ReturnType<typeof loadImage>>,
+  W: number,
+  H: number,
+): void {
+  const have = scene.width / scene.height;
+  const want = W / H;
+  const sw = have > want ? scene.height * want : scene.width;
+  const sh = have > want ? scene.height : scene.width / want;
+  const kept = Math.min(sw / scene.width, sh / scene.height);
+  if (kept >= SCENE_KEPT) {
+    ctx.drawImage(scene, (scene.width - sw) / 2, (scene.height - sh) / 2, sw, sh, 0, 0, W, H);
+    return;
+  }
+  // The fill: the scene itself, covering the frame, softened out of detail -
+  // softened small and drawn up, which looks the same and takes a fraction of the time.
+  const k = 1 / 8;
+  const fill = createCanvas(Math.max(1, Math.round(W * k)), Math.max(1, Math.round(H * k)));
+  const fc = fill.getContext('2d');
+  fc.filter = `blur(${Math.max(1, Math.round(Math.max(W, H) * 0.03 * k))}px)`;
+  const cover = Math.max(fill.width / scene.width, fill.height / scene.height) * 1.06;
+  fc.drawImage(scene, (fill.width - scene.width * cover) / 2, (fill.height - scene.height * cover) / 2, scene.width * cover, scene.height * cover);
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(fill, 0, 0, W, H);
+  // The scene, losing no more than it must of its long side.
+  const wide = have > want;
+  const dw = wide ? W / SCENE_KEPT : H * have / SCENE_KEPT;
+  const dh = dw / have;
+  const dx = (W - dw) / 2;
+  const dy = wide ? H - dh : (H - dh) / 2;
+  const piece = createCanvas(Math.ceil(dw), Math.ceil(dh));
+  const p = piece.getContext('2d');
+  p.drawImage(scene, 0, 0, dw, dh);
+  // Feathered into the fill where it ends.
+  p.globalCompositeOperation = 'destination-in';
+  const f = wide ? dh * 0.12 : dw * 0.1;
+  const g = wide ? p.createLinearGradient(0, 0, 0, f) : p.createLinearGradient(Math.max(0, -dx), 0, Math.max(0, -dx) + f, 0);
+  g.addColorStop(0, 'rgba(0,0,0,0)');
+  g.addColorStop(1, 'rgba(0,0,0,1)');
+  p.fillStyle = g;
+  p.fillRect(0, 0, dw, dh);
+  if (!wide) {
+    const right = p.createLinearGradient(dw - Math.max(0, -dx) - f, 0, dw - Math.max(0, -dx), 0);
+    right.addColorStop(0, 'rgba(0,0,0,1)');
+    right.addColorStop(1, 'rgba(0,0,0,0)');
+    p.fillStyle = right;
+    p.fillRect(0, 0, dw, dh);
+  }
+  ctx.drawImage(piece, dx, dy);
+}
+
 /**
  * The post, put together from its parts: the scene cropped to size, the words'
  * ground calmed where the scene is too busy for them, the bottle, the
@@ -288,19 +363,23 @@ export async function buildPost(input: {
   tweaks?: PostTweaks;
   /** Also hand back each part on its own layer, for an editor. */
   layers?: boolean;
+  /** The flat post is not needed yet: encode it only when flat() is asked. */
+  flatLater?: boolean;
+  /** How a person set the headline and the bottle to look. */
+  style?: PostStyle;
+  /** The bottle turned, and the shadow moved, as a person left them. */
+  turn?: { bottle?: number; shadow?: Placement['shadow']; reflection?: Placement['reflection'] };
 }): Promise<BuiltPost> {
   const { width: W, height: H } = postSize(input.ratio);
   const tweaks = input.tweaks ?? NO_TWEAKS;
   const layout = tweaked(input.layout, tweaks);
 
-  // The scene, cropped from its centre to the post and scaled to size.
+  // The scene, cropped from its centre to the post and scaled to size - or,
+  // for a post of another shape than it was painted for, kept and extended.
   const scene = await loadImage(input.scene);
   const canvas = createCanvas(W, H);
   const ctx = canvas.getContext('2d');
-  const have = scene.width / scene.height;
-  const sw = have > input.ratio ? scene.height * input.ratio : scene.width;
-  const sh = have > input.ratio ? scene.height : scene.width / input.ratio;
-  ctx.drawImage(scene, (scene.width - sw) / 2, (scene.height - sh) / 2, sw, sh, 0, 0, W, H);
+  drawScene(ctx, scene, W, H);
 
   // The words' ground: a scene that left it busy or bright gets the soft
   // shading a designer paints behind words, fading out towards the bottle.
@@ -323,35 +402,50 @@ export async function buildPost(input: {
       ctx.fillRect(0, 0, W, H);
     }
   }
-  let bytes = canvas.toBuffer('image/png');
-  const background = bytes;
+  // Each stage draws on the one before as it is, a canvas; nothing is encoded
+  // to a PNG and read back between them - that was most of the time a change
+  // took - and what is kept is encoded once, at the end, all at the same time.
+  const background = canvas;
+  let picture: Canvas = canvas;
 
   // The real bottle, stood where the layout puts it.
-  let packLayers: { shadow: Buffer; bottle: Buffer } | null = null;
+  let packLayers: { shadow: Canvas; reflection: Canvas; bottle: Canvas } | null = null;
+  let shadowBox: Frac | null = null;
+  let shadowPivot: { x: number; y: number } | null = null;
+  let reflectionBox: Frac | null = null;
+  let reflectionPivot: { x: number; y: number } | null = null;
   if (input.bottle && layout.bottleBox) {
     const b = layout.bottleBox;
-    const placed = await placeBottle({ scene: bytes, bottle: input.bottle, place: { cx: b.x + b.w / 2, base: b.y + b.h, height: b.h }, surface: input.plan.scene.surface, light: 'auto' });
-    bytes = placed.bytes;
-    packLayers = placed.layers;
+    const placed = await placeBottle({ scene: picture, bottle: input.bottle, place: { cx: b.x + b.w / 2, base: b.y + b.h, height: b.h }, surface: input.plan.scene.surface, light: 'auto', shadow: input.style?.shadow, bright: input.style?.bright,
+      cast: { soft: input.style?.shadowSoft, angle: input.style?.shadowAngle, length: input.style?.shadowLength },
+      mirror: { strength: input.style?.reflection, soft: input.style?.reflectionSoft },
+      rotate: input.turn?.bottle, moveShadow: input.turn?.shadow, moveReflection: input.turn?.reflection });
+    picture = placed.canvas;
+    packLayers = placed.layerCanvases;
+    shadowBox = placed.shadowBox;
+    shadowPivot = placed.shadowPivot;
+    reflectionBox = placed.reflectionBox;
+    reflectionPivot = placed.reflectionPivot;
   }
 
   // The headline.
-  const set = await setHeadline({ image: bytes, layout, lines: input.plan.headline, casing: input.plan.casing, keep: input.plan.keep, scale: tweaks.textScale });
+  // Lined up and coloured as the person chose, when they did.
+  const align = input.style?.align;
+  const wordsLayout = align && layout.text ? { ...layout, text: { ...layout.text, align } } : layout;
+  const set = await setHeadline({ image: picture, layout: wordsLayout, lines: input.plan.headline, casing: input.plan.casing, keep: input.plan.keep, scale: tweaks.textScale, colours: input.style?.ink ? { ink: input.style.ink } : undefined });
   // A line of the plan broken down to a lone word means the block was too
   // narrow for it: set again, wider, as far as the bottle allows.
   const planned = new Set(input.plan.headline.map((l) => l.text.trim().toLowerCase()));
   const lone = set.lines.some((l) => !l.text.includes(' ') && !planned.has(l.text.trim().toLowerCase()));
   if (lone && tweaks.textWidth < 1.5) return buildPost({ ...input, tweaks: { ...tweaks, textWidth: tweaks.textWidth * 1.25, textScale: Math.max(0.85, tweaks.textScale * 0.95) } });
-  bytes = set.bytes;
+  picture = set.canvas;
 
   // The logo: the version that stands out against where it lands.
   let logoName: string | null = null;
-  let logoLayer: Buffer | null = null;
+  let logoLayer: Canvas | null = null;
   let logoBox: Frac | null = null;
   if (layout.logoBox && input.logos.length) {
-    const img = await loadImage(bytes);
-    const out = createCanvas(W, H);
-    out.getContext('2d').drawImage(img, 0, 0);
+    const out = picture;
     // The logo and any shading behind it on a layer of their own, laid over.
     const mark = createCanvas(W, H);
     const c = mark.getContext('2d');
@@ -385,14 +479,30 @@ export async function buildPost(input: {
     c.drawImage(pic, lx * pic.width, ly * pic.height, lw * pic.width, lh * pic.height, box.x * W, box.y * H, w, h);
     logoBox = { x: box.x, y: box.y, w: box.w, h: h / H };
     out.getContext('2d').drawImage(mark, 0, 0);
-    bytes = out.toBuffer('image/png');
     logoName = logo.name;
-    if (input.layers) logoLayer = mark.toBuffer('image/png');
+    if (input.layers) logoLayer = mark;
   }
 
   const substitutes = [...new Set(set.lines.filter((l) => l.substitute).map((l) => l.face))];
+  // Encoded side by side, off the main thread: the post, and its layers when asked for.
+  // A layer just as it was last time is not encoded again - moving the logo
+  // leaves the background, the bottle and the words as they were.
+  const png = (c: Canvas | null) => (c ? keptPng(c) : Promise.resolve(null));
+  // The flat post, when it can follow the answer, is encoded only when asked for.
+  let flatPng: Promise<Buffer> | null = input.flatLater ? null : picture.encode('png');
+  const flat = () => (flatPng ??= picture.encode('png'));
+  const [bytes, bg, shadow, mirror, pack, words, mark] = await Promise.all([
+    input.flatLater ? null : flatPng,
+    input.layers ? png(background) : null,
+    input.layers ? png(packLayers?.shadow ?? null) : null,
+    // A post with no reflection has no reflection layer: nothing empty handed to an editor.
+    input.layers && reflectionBox ? png(packLayers?.reflection ?? null) : null,
+    input.layers ? png(packLayers?.bottle ?? null) : null,
+    input.layers ? png(set.layerCanvas) : null,
+    input.layers ? png(logoLayer) : null,
+  ]);
   const layers: PostLayers | undefined = input.layers
-    ? { background, shadow: packLayers?.shadow ?? null, bottle: packLayers?.bottle ?? null, headline: set.layer, logo: logoLayer, lines: set.lines }
+    ? { background: bg!, shadow, reflection: mirror, bottle: pack, headline: words!, logo: mark, lines: set.lines }
     : undefined;
   // The words' box is where they were set, not where the layout meant them.
   const set_ = set.lines;
@@ -403,8 +513,36 @@ export async function buildPost(input: {
         return { x: x0 / W, y: y0 / H, w: (x1 - x0) / W, h: (y1 - y0) / H };
       })()
     : null;
-  const boxes: PostBoxes = { bottle: packLayers ? layout.bottleBox : null, logo: logoBox, text, textAnchor: layout.text ? { x: layout.text.x } : null };
-  return { bytes, width: W, height: H, logo: logoName, substitutes, tweaks, layers, boxes };
+  const boxes: PostBoxes = { bottle: packLayers ? layout.bottleBox : null, shadow: packLayers ? shadowBox : null, shadowPivot: packLayers ? shadowPivot : null,
+    reflection: packLayers ? reflectionBox : null, reflectionPivot: packLayers ? reflectionPivot : null, logo: logoBox, text, textAnchor: layout.text ? { x: layout.text.x } : null };
+  const post: BuiltPost = { bytes: bytes!, flat, width: W, height: H, logo: logoName, substitutes, tweaks, layers, boxes };
+  if (input.flatLater) {
+    Object.defineProperty(post, 'bytes', { get() { throw new Error('This post is encoded later: ask flat() for it.'); } });
+  }
+  return post;
+}
+
+/**
+ * Layers encoded lately, by what their pixels are: the same picture is the
+ * same PNG, so a layer a change left alone is handed back as it was rather
+ * than encoded again - half a second each, at full size.
+ */
+const encoded = new Map<string, Promise<Buffer>>();
+async function keptPng(c: Canvas): Promise<Buffer> {
+  const { createHash } = await import('node:crypto');
+  const key = `${c.width}x${c.height}:${createHash('sha1').update(c.data()).digest('hex')}`;
+  const known = encoded.get(key);
+  if (known) {
+    // Kept the longest when used the most.
+    encoded.delete(key);
+    encoded.set(key, known);
+    return known;
+  }
+  const made = c.encode('png');
+  encoded.set(key, made);
+  made.catch(() => encoded.delete(key));
+  if (encoded.size > 24) encoded.delete(encoded.keys().next().value!);
+  return made;
 }
 
 export type ComposedPost = FinishedPost & {
@@ -471,8 +609,8 @@ async function assemble(
   const r = given.choices ? { ...given, spec: arrangeLayout(given.spec, given.choices) } : given;
   const [bottle, allLogos, bottles] = await Promise.all([
     r.bottleFileId && r.spec.bottle ? brandFile(scope, r.bottleFileId) : Promise.resolve(null),
-    logosFor(scope, r.brand, r.variant),
-    brandAssets(scope, { brand: r.brand, kind: 'bottle', variant: r.variant }),
+    held(`logos:${scope.companyId}:${r.brand}:${r.variant ?? ''}`, () => logosFor(scope, r.brand, r.variant)),
+    held(`bottles:${scope.companyId}:${r.brand}:${r.variant ?? ''}`, () => brandAssets(scope, { brand: r.brand, kind: 'bottle', variant: r.variant })),
   ]);
   const logos = r.spec.logo ? allLogos : [];
   const bottleAsset = bottles.find((b) => b.fileId === r.bottleFileId)?.asset ?? null;
@@ -491,8 +629,9 @@ async function assemble(
   return {
     bottle,
     layout,
-    build: (scene: Buffer, tweaks: PostTweaks, options: { layers?: boolean } = {}) =>
-      buildPost({ scene, ratio: r.ratio, layout, plan, bottle: bottle?.body ?? null, logos: sameShape.length ? sameShape : logos, tweaks, layers: options.layers }),
+    build: (scene: Buffer, tweaks: PostTweaks, options: { layers?: boolean; flatLater?: boolean } = {}) =>
+      buildPost({ scene, ratio: r.ratio, layout, plan, bottle: bottle?.body ?? null, logos: sameShape.length ? sameShape : logos, tweaks, layers: options.layers, flatLater: options.flatLater, style: r.choices?.style,
+        turn: { bottle: r.choices?.place?.bottle?.rotate, shadow: r.choices?.place?.shadow, reflection: r.choices?.place?.reflection } }),
   };
 }
 
@@ -507,11 +646,65 @@ export async function rebuildPost(
   recipe: PostRecipe,
   scene: Buffer,
   headline: HeadlineLine[],
-  options: { layers?: boolean } = {},
+  options: { layers?: boolean; flatLater?: boolean } = {},
 ): Promise<BuiltPost> {
   const { build } = await assemble(scope, { ...recipe, headline });
   const tweaks = recipe.choices ? { ...recipe.tweaks, bottleShift: 0, bottleScale: 1 } : recipe.tweaks;
-  return build(scene, { ...tweaks, textWidth: 1, textScale: recipe.choices?.place?.text?.scale ?? 1 }, options);
+  const size = recipe.choices?.style?.textSize ?? 1;
+  return build(scene, { ...tweaks, textWidth: 1, textScale: (recipe.choices?.place?.text?.scale ?? 1) * size }, options);
+}
+
+/**
+ * The colours a headline may take on this post: the ones the brand's
+ * designer set its words in, the colours of its own pack, and white and
+ * near-black, which read on anything. Measured from files CIP holds; nothing is spent.
+ */
+export async function headlineInks(scope: CompanyScope, recipe: Pick<PostRecipe, 'spec' | 'bottleFileId'>): Promise<string[]> {
+  const own = [recipe.spec.text?.ink, recipe.spec.text?.accent].filter((c): c is string => Boolean(c));
+  const pack = recipe.bottleFileId
+    ? await held(`inks:${scope.companyId}:${recipe.bottleFileId}`, async () =>
+        (await readPalette((await brandFile(scope, recipe.bottleFileId!)).body, 'image/png')).filter((c) => c.share >= 0.05).slice(0, 4).map((c) => c.hex))
+        .catch(() => [] as string[])
+    : [];
+  return [...new Set([...own, ...pack, '#ffffff', '#141414'].map((c) => c.toLowerCase()))].filter((c) => /^#[0-9a-f]{6}$/.test(c)).slice(0, 8);
+}
+
+/**
+ * Where a new post's pieces start: where the person last put them on this
+ * brand's posts of the same shape - the bottle's side and size, the logo's
+ * corner, and anything dragged - or the layout's own places when nothing has
+ * been arranged yet. Read from the posts already kept; nothing is asked of a
+ * model. The headline is always shown on a new post, whatever was done before.
+ */
+export async function learnedChoices(scope: CompanyScope, brand: string, ratio: number, spec: LayoutSpec): Promise<PostChoices> {
+  const own = choicesOf(spec);
+  const [last] = await withCompanyScope(scope, (tx) => tx<{ choices: PostChoices | null }[]>`
+    select output_metadata->'composed'->'recipe'->'choices' as choices
+      from media_generations
+     where company_id = ${scope.companyId}
+       and output_metadata->'composed'->'recipe'->>'brand' = ${brand}
+       and output_metadata->'composed'->>'arrangedAt' is not null
+       and abs((output_metadata->'composed'->'recipe'->>'ratio')::float - ${ratio}) < 0.01
+     order by output_metadata->'composed'->>'arrangedAt' desc
+     limit 1
+  `).catch(() => []);
+  return mergeLearned(own, last?.choices ?? null);
+}
+
+/** The layout's own places, with what a person chose before laid over them - only for pieces this layout has. */
+export function mergeLearned(own: PostChoices, learned: PostChoices | null): PostChoices {
+  if (!learned) return own;
+  const place = { ...(learned.place ?? {}) };
+  const bottle = own.bottle === 'none' ? 'none' : learned.bottle === 'none' ? own.bottle : learned.bottle;
+  if (bottle === 'none') delete place.bottle;
+  const logo = own.logo === 'none' ? 'none' : learned.logo === 'none' ? own.logo : learned.logo;
+  if (logo === 'none') delete place.logo;
+  return {
+    bottle,
+    size: learned.size ?? own.size,
+    logo,
+    ...(Object.keys(place).length ? { place } : {}),
+  };
 }
 
 /** Whether a brand has what a composed post needs: a bottle cut out on transparency. */
@@ -536,6 +729,8 @@ export async function preparePost(
      * change - for nothing, once the scene is made.
      */
     layered?: boolean;
+    /** Planned from what CIP holds, no model asked: for a post on a picture the person brought. */
+    noModel?: boolean;
   },
 ): Promise<PreparedPost> {
   const plan = await planPost(scope, input);
@@ -549,7 +744,7 @@ export async function preparePost(
     casing: plan.casing,
     keep: plan.keep,
     surface: plan.scene.surface,
-    ...(input.layered ? { choices: choicesOf(plan.layout.spec) } : {}),
+    ...(input.layered ? { choices: await learnedChoices(scope, input.brand, input.ratio, plan.layout.spec) } : {}),
   };
   const { bottle, layout, build } = await assemble(scope, { ...recipe, headline: plan.headline });
   const [gw, gh] = input.generatorShape.split(':').map(Number);
@@ -594,9 +789,9 @@ export async function composePost(
   const provider = imageGenerationProvider();
   const shape = generationShape(input.ratio, provider.aspectRatios);
   const prepared = await preparePost(scope, { ...input, generatorShape: shape.label });
-  const generated = await provider.generate({ prompt: prepared.prompt, references: [], aspectRatio: shape.label, imageSize: input.quality ?? 'high' });
+  const generated = await provider.generate({ prompt: prepared.prompt, references: [], aspectRatio: shape.label, imageSize: input.quality });
   const built = await prepared.finish(generated.assets[0]!.bytes, {
-    regenerate: async (note) => (await provider.generate({ prompt: `${prepared.prompt}\n${note}`, references: [], aspectRatio: shape.label, imageSize: input.quality ?? 'high' })).assets[0]!.bytes,
+    regenerate: async (note) => (await provider.generate({ prompt: `${prepared.prompt}\n${note}`, references: [], aspectRatio: shape.label, imageSize: input.quality })).assets[0]!.bytes,
   });
   return { ...built, plan: prepared.plan, prompt: prepared.prompt, bottle: prepared.bottle };
 }
@@ -604,6 +799,23 @@ export async function composePost(
 const aspectOf = (a: Pick<BrandAsset, 'bbox' | 'width' | 'height'>) => (a.bbox[3] * a.height) / (a.bbox[2] * a.width);
 
 /** The brand's logos, the pack's own first, each with its bytes. */
+/**
+ * A brand's logos and bottles, held for a minute once read: a person placing
+ * the pieces sets the post again on every drop, and asking the database for
+ * the same files each time was most of a second of the wait.
+ */
+const HELD_FOR_MS = 60_000;
+const heldFiles = new Map<string, { at: number; value: Promise<unknown> }>();
+function held<T>(key: string, read: () => Promise<T>): Promise<T> {
+  const known = heldFiles.get(key);
+  if (known && Date.now() - known.at < HELD_FOR_MS) return known.value as Promise<T>;
+  const value = read();
+  heldFiles.set(key, { at: Date.now(), value });
+  value.catch(() => heldFiles.delete(key));
+  if (heldFiles.size > 40) heldFiles.delete(heldFiles.keys().next().value!);
+  return value;
+}
+
 async function logosFor(scope: CompanyScope, brand: string, variant: string | null) {
   const all = await brandAssets(scope, { brand, kind: 'logo', variant });
   const own = variant ? all.filter((l) => l.asset.variant?.toLowerCase() === variant.toLowerCase()) : all.filter((l) => !l.asset.variant);

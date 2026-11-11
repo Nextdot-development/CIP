@@ -2,7 +2,7 @@ import 'server-only';
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { createCanvas, GlobalFonts, loadImage } from '@napi-rs/canvas';
-import type { SKRSContext2D } from '@napi-rs/canvas';
+import type { Canvas, SKRSContext2D } from '@napi-rs/canvas';
 import type { FittedLayout, LayoutLine, LayoutSpec } from '../brain/layouts';
 
 /**
@@ -237,10 +237,28 @@ export function balancedLines(text: string, maxWidth: number, measure: (s: strin
 
 // --- setting the headline ---------------------------------------------------------------
 
+/** The set headline, its pictures encoded only when read. */
+function encodedLater(canvas: Canvas, words: Canvas, lines: SetLine[]): SetHeadline {
+  let flat: Buffer | null = null;
+  let layer: Buffer | null = null;
+  return {
+    get bytes() { return (flat ??= canvas.toBuffer('image/png')); },
+    canvas,
+    get layer() { return (layer ??= words.toBuffer('image/png')); },
+    layerCanvas: words,
+    lines,
+  };
+}
+
 export type SetHeadline = {
+  /** The picture with its words, encoded when first asked for. */
   bytes: Buffer;
+  /** The same, not yet encoded: to draw on without a PNG there and back. */
+  canvas: Canvas;
   /** The headline alone, on transparency: the layer a designer would edit. */
   layer: Buffer;
+  /** That layer, not yet encoded. */
+  layerCanvas: Canvas;
   /** Each line as set, where it landed in pixels, and the face it was set in. */
   lines: SetLine[];
 };
@@ -302,7 +320,8 @@ export function measureHeadline(
 }
 
 export async function setHeadline(input: {
-  image: Buffer;
+  /** The picture to set the words on: bytes, or a canvas already drawn. */
+  image: Buffer | Canvas;
   layout: FittedLayout;
   lines: HeadlineLine[];
   casing?: Casing;
@@ -311,7 +330,7 @@ export async function setHeadline(input: {
   /** Every line's size, scaled: a headline set a little smaller to sit on fewer lines. */
   scale?: number;
 }): Promise<SetHeadline> {
-  const img = await loadImage(input.image);
+  const img = Buffer.isBuffer(input.image) ? await loadImage(input.image) : input.image;
   const W = img.width;
   const H = img.height;
   const canvas = createCanvas(W, H);
@@ -319,7 +338,7 @@ export async function setHeadline(input: {
   ctx.drawImage(img, 0, 0);
   const text = input.layout.text;
   if (!text || input.lines.length === 0) {
-    return { bytes: canvas.toBuffer('image/png'), layer: createCanvas(W, H).toBuffer('image/png'), lines: [] };
+    return encodedLater(canvas, createCanvas(W, H), []);
   }
   // The words are set on a layer of their own and laid over the picture, so
   // the same headline can be handed to an editor as its own layer.
@@ -435,7 +454,7 @@ export async function setHeadline(input: {
     y += advance(line, placed![i + 1]);
   }
   ctx.drawImage(words, 0, 0);
-  return { bytes: canvas.toBuffer('image/png'), layer: words.toBuffer('image/png'), lines: out };
+  return encodedLater(canvas, words, out);
 }
 
 function setFont(ctx: SKRSContext2D, family: string, px: number, style: Pick<LayoutLine, 'tracking'>) {

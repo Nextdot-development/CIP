@@ -134,7 +134,7 @@ describe('where the layers are kept', async () => {
   const company = '11111111-1111-4111-8111-111111111111';
   const generation = '22222222-2222-4222-8222-222222222222';
 
-  it('keeps each of the five layers beside the post, and nothing a caller could name', () => {
+  it('keeps each of the six layers beside the post, and nothing a caller could name', () => {
     for (const name of LAYER_NAMES) assert.doesNotThrow(() => assertSafeKey(mediaStorageKey(company, generation, `layer-${name}`, 'png')));
     assert.throws(() => assertSafeKey(mediaStorageKey(company, generation, 'layer-anything', 'png')));
     assert.throws(() => assertSafeKey(mediaStorageKey(company, generation, 'layer-logo/../scene', 'png')));

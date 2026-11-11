@@ -1,3 +1,4 @@
+import { after } from 'next/server';
 import { noStore, withMediaScope } from '@/server/media/http';
 import { arrangePost, postLayers } from '@/server/media/arrange';
 
@@ -24,10 +25,11 @@ export const dynamic = 'force-dynamic';
 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
-  const body = (await request.json().catch(() => null)) as { choices?: unknown; lines?: unknown } | null;
+  const body = (await request.json().catch(() => null)) as { choices?: unknown; lines?: unknown; version?: unknown } | null;
 
   return withMediaScope(async (scope) => {
-    const arranged = await arrangePost(scope, id, { choices: body?.choices, lines: body?.lines });
+    // The flat picture is stored once the answer is on its way: the studio draws from the layers.
+    const arranged = await arrangePost(scope, id, { choices: body?.choices, lines: body?.lines, version: body?.version }, (task) => after(task));
     return Response.json(arranged, { headers: noStore });
   });
 }

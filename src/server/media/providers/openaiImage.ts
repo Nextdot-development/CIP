@@ -79,9 +79,11 @@ export class OpenAIImageProvider implements ImageGenerationProvider {
     }
 
     const size = SIZE_FOR_RATIO[request.aspectRatio ?? '1:1'] ?? SIZE_FOR_RATIO['1:1']!;
+    // Asked for nothing in particular, the least rendering and the least spent:
+    // "auto" let the model choose, and it chose the dearest.
     const quality = (QUALITIES as readonly string[]).includes(request.imageSize ?? '')
       ? request.imageSize!
-      : 'auto';
+      : 'low';
 
     // Editing an existing image is a different endpoint from making a new one,
     // and it takes multipart rather than JSON.

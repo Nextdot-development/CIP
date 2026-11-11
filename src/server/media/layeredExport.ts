@@ -92,6 +92,7 @@ async function toPsd(post: Post): Promise<Buffer> {
   const children = [
     await raster('Background', layers.background),
     await raster('Bottle shadow', layers.shadow),
+    await raster('Bottle reflection', layers.reflection ?? null),
     await raster('Bottle', layers.bottle),
     words.length ? { name: 'Headline', opened: true, children: words.reverse() } : null,
     await raster('Logo', layers.logo),
@@ -143,6 +144,7 @@ function toSvg(post: Post): string {
     '<filter id="soft" x="-20%" y="-40%" width="140%" height="180%"><feDropShadow dx="0" dy="2" stdDeviation="6" flood-color="#000" flood-opacity="0.55"/></filter></defs>' +
     `<g id="Background">${image('background', layers.background)}</g>` +
     `<g id="Bottle-shadow">${image('bottle-shadow', layers.shadow)}</g>` +
+    `<g id="Bottle-reflection">${image('bottle-reflection', layers.reflection ?? null)}</g>` +
     `<g id="Bottle">${image('bottle', layers.bottle)}</g>` +
     `<g id="Headline">${text}</g>` +
     `<g id="Logo">${image('logo', layers.logo)}</g>` +
@@ -160,7 +162,7 @@ async function toPdf(post: Post): Promise<Buffer> {
   const { width: W, height: H, layers } = post;
   const doc = new PDFDocument({ title: layers.lines.map((l) => l.text).join(' ') || 'Post', creator: 'CIP' });
   const ctx = doc.beginPage(W, H) as unknown as SKRSContext2D;
-  for (const png of [layers.background, layers.shadow, layers.bottle]) {
+  for (const png of [layers.background, layers.shadow, layers.reflection ?? null, layers.bottle]) {
     if (png) ctx.drawImage(await loadImage(png), 0, 0, W, H);
   }
   for (const line of layers.lines) {

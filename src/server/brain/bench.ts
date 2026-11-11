@@ -314,6 +314,62 @@ export function settlePlan(
   };
 }
 
+/**
+ * Other headlines to try on a post, for nothing: the same words broken at
+ * another place, on one line, and the brand's own headlines from its past
+ * posts, as long as its headlines run. No model is asked; these are read
+ * from what CIP already holds.
+ */
+export async function headlineSuggestions(
+  scope: CompanyScope,
+  brand: string,
+  current: HeadlineLine[],
+  roles: Set<HeadlineLine['role']>,
+): Promise<{ from: 'words' | 'brand'; lines: HeadlineLine[] }[]> {
+  const [layouts, said] = await Promise.all([
+    brandLayouts(scope, brand).catch(() => []),
+    withCompanyScope(scope, (tx) => tx<{ value: string }[]>`
+      select value from brand_dna_facts
+       where brand = ${brand} and status = 'active'
+         and lower(attribute) ~ '^(headline|static headline|headline text|headline copy)$'
+       order by evidence_count desc
+       limit 40
+    `).catch(() => []),
+  ]);
+  return suggestHeadlines(current, roles, pastHeadlines(layouts.filter((l) => l.brand === brand).map((l) => l.name), said.map((r) => r.value)));
+}
+
+/** The suggestions themselves, from the words and the brand's past headlines. */
+export function suggestHeadlines(
+  current: HeadlineLine[],
+  roles: Set<HeadlineLine['role']>,
+  past: string[],
+): { from: 'words' | 'brand'; lines: HeadlineLine[] }[] {
+  const out: { from: 'words' | 'brand'; lines: HeadlineLine[] }[] = [];
+  const seen = new Set<string>([current.map((l) => `${l.role}:${plain(l.text)}`).join('|')]);
+  const add = (from: 'words' | 'brand', lines: HeadlineLine[]) => {
+    const key = lines.map((l) => `${l.role}:${plain(l.text)}`).join('|');
+    if (lines.length && !seen.has(key)) { seen.add(key); out.push({ from, lines }); }
+  };
+  const words = current.map((l) => l.text).join(' ').trim().split(/\s+/).filter(Boolean);
+  if (words.length >= 3 && roles.has('key')) {
+    // Broken a word earlier and a word later than the middle: what stands out changes.
+    const mid = Math.ceil(words.length / 2);
+    for (const at of [mid - 1, mid, mid + 1]) {
+      if (at < 1 || at >= words.length) continue;
+      add('words', [{ text: words.slice(0, at).join(' '), role: 'lead' }, { text: words.slice(at).join(' '), role: 'key' }]);
+    }
+  }
+  if (words.length >= 2) add('words', [{ text: words.join(' '), role: 'lead' }]);
+  const limit = headlineLimit(past);
+  for (const headline of past) {
+    if (headline.trim().split(/\s+/).length > limit) continue;
+    add('brand', splitGiven(headline, roles));
+    if (out.filter((o) => o.from === 'brand').length >= 6) break;
+  }
+  return out;
+}
+
 /** A person's words in the layout's parts: broken at a comma or full stop, the second half made the key. */
 function splitGiven(given: string, roles: Set<HeadlineLine['role']>): HeadlineLine[] {
   const parts = given.split(/(?<=[,.!?;:])\s+/).filter(Boolean);
@@ -321,10 +377,29 @@ function splitGiven(given: string, roles: Set<HeadlineLine['role']>): HeadlineLi
   return [{ text: parts[0]!, role: 'lead' }, { text: parts.slice(1).join(' '), role: 'key' }];
 }
 
+/** What the Bench would have said, from what CIP holds - no model asked. Settled like any other plan. */
+export function freeDraft(request: string, brand: string, examples: string[]): Omit<BenchDraft, 'usage'> {
+  const past = examples.find((e) => e.split(/\s+/).length <= 12) ?? null;
+  return {
+    creativeDirector: { idea: request.trim() || `A post for ${brand}`, scene: 'A picture the person brought.', mood: '', light: 'front', surface: 'matte', note: '' },
+    brandManager: { variant: null, keep: [], risks: [], note: '' },
+    artDirector: { layout: '', casing: 'sentence', headline: past ? splitGiven(past, new Set(['lead', 'key'])) : [], note: '' },
+  };
+}
+
 /** The Bench plans one post for a brand. */
 export async function planPost(
   scope: CompanyScope,
-  input: { request: string; brand: string; ratio: number; market?: string | null },
+  input: {
+    request: string; brand: string; ratio: number; market?: string | null;
+    /**
+     * Planned from what CIP holds, with no model asked and nothing spent: for
+     * a post on a picture the person brought. The person's words, when they
+     * gave any, else one of the brand's own headlines; the brand's layout; the
+     * pack the request names.
+     */
+    noModel?: boolean;
+  },
 ): Promise<BenchPlan & { bottleFileId: string | null; rules: string[]; pastScenes: string[]; drink: BrandDrink }> {
   const [layouts, bottles, everyRule, brands, saidHeadlines, scenes, drink] = await Promise.all([
     brandLayouts(scope, input.brand),
@@ -354,7 +429,7 @@ export async function planPost(
   const variants = [...new Map(bottles.filter((b) => b.asset.cutout).map((b) => [b.asset.variant?.toLowerCase() ?? '', b.asset.variant])).values()];
   const usable = layouts.filter((l) => l.spec.text);
 
-  const draft = await brain().benchPlan({
+  const draft = input.noModel ? freeDraft(input.request, input.brand, examples) : await brain().benchPlan({
     request: input.request,
     brand: input.brand,
     variants,

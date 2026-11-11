@@ -32,13 +32,35 @@ export type Surface = 'matte' | 'gloss';
 export type LightFrom = 'left' | 'right' | 'front';
 
 export type PlacedBottle = {
+  /** The picture, encoded when first asked for. */
   bytes: Buffer;
+  /** The same picture, not yet encoded: to draw on, without a PNG there and back. */
+  canvas: Canvas;
   /** Where the bottle landed, in pixels of the scene. */
   box: { x: number; y: number; w: number; h: number };
   light: LightFrom;
-  /** The shadows and reflection, and the lit bottle, each alone on transparency. */
-  layers: { shadow: Buffer; bottle: Buffer };
+  /** The shadow, the reflection and the lit bottle, each alone on transparency - encoded when asked for. */
+  layers: { shadow: Buffer; reflection: Buffer; bottle: Buffer };
+  /** Those three, not yet encoded. */
+  layerCanvases: { shadow: Canvas; reflection: Canvas; bottle: Canvas };
+  /** Where the shadow lies, moved and sized as asked but before it is turned - in fractions of the scene. */
+  shadowBox: { x: number; y: number; w: number; h: number } | null;
+  /** The point the shadow turns and sizes about: the bottle's foot, moved with the shadow. */
+  shadowPivot: { x: number; y: number } | null;
+  /** The reflection's, the same way - none on a surface that does not reflect, or under a turned bottle. */
+  reflectionBox: { x: number; y: number; w: number; h: number } | null;
+  reflectionPivot: { x: number; y: number } | null;
 };
+
+/** A picture handed over as bytes or as a canvas already drawn. */
+export type Picture = Buffer | Canvas;
+export const pictureOf = async (p: Picture): Promise<Image | Canvas> => (Buffer.isBuffer(p) ? loadImage(p) : p);
+
+/** Encoded once, the first time it is read. */
+export function lazyPng(canvas: Canvas): () => Buffer {
+  let png: Buffer | null = null;
+  return () => (png ??= canvas.toBuffer('image/png'));
+}
 
 /**
  * Never more than this much brighter or darker, or tinted, than the bottle as
@@ -52,13 +74,31 @@ const MAX_TINT = 0.12;
 const FAR_SIDE = { bright: 0.18, dark: 0.34 };
 
 export async function placeBottle(input: {
-  scene: Buffer;
+  scene: Picture;
   bottle: Buffer;
   place: BottlePlacement;
   surface?: Surface;
   light?: LightFrom | 'auto';
+  /** The shadow's strength as a person set it: 0 none, 1 as the scene casts it, up to 2. */
+  shadow?: number;
+  /** The bottle lighter (above 0) or darker (below), as a person set it. */
+  bright?: number;
+  /**
+   * The shadow shaped by hand, as an editor has it: how soft its edge is, which
+   * way it falls (below 0 to the left, above to the right; absent, away from
+   * the scene's light) and how far it reaches. Each 1 is as the scene casts it.
+   */
+  cast?: { soft?: number; angle?: number; length?: number };
+  /** The bottle turned about its middle, in degrees clockwise. */
+  rotate?: number;
+  /** The shadow moved off where it is cast (fractions of the scene), sized and turned about the bottle's foot - all the way round. */
+  moveShadow?: { dx: number; dy: number; scale: number; rotate: number };
+  /** The reflection moved off where the surface gives it, the same way. */
+  moveReflection?: { dx: number; dy: number; scale: number; rotate: number };
+  /** The reflection's own look, as a person set it: how strong (1 as the surface gives it) and how soft (0 as given). */
+  mirror?: { strength?: number; soft?: number };
 }): Promise<PlacedBottle> {
-  const scene = await loadImage(input.scene);
+  const scene = await pictureOf(input.scene);
   const W = scene.width;
   const H = scene.height;
   // A packshot is often three thousand pixels tall and lands a thousand tall:
@@ -86,34 +126,182 @@ export async function placeBottle(input: {
   const bottle = createCanvas(w, h);
   bottle.getContext('2d').drawImage(cut.canvas, 0, 0, w, h);
 
-  // The shadows and the reflection on a layer of their own, the bottle on
-  // another, each then laid over the scene: the same picture, and the two
-  // layers a designer would want to move or soften by hand.
+  // The shadow, the reflection and the bottle each on a layer of its own, laid
+  // over the scene in that order: the same picture, and the layers a designer
+  // would want to move or soften by hand - one at a time, the others staying put.
   const shade = createCanvas(W, H);
   const sctx = shade.getContext('2d');
-  drawContactShadow(sctx, { x, y, w, h });
-  drawCastShadow(sctx, bottle, { x, y, w, h }, light);
-  if ((input.surface ?? 'matte') === 'gloss') drawReflection(sctx, bottle, { x, y, w, h });
+  // A bottle turned has no upright twin below it: its reflection is left off rather than drawn wrong.
+  const turned = Math.abs(input.rotate ?? 0) >= 0.5;
+  const dark = createCanvas(W, H);
+  const dctx = dark.getContext('2d');
+  drawContactShadow(dctx, { x, y, w, h }, input.cast?.soft ?? 1);
+  drawCastShadow(dctx, bottle, { x, y, w, h }, light, input.cast);
+  // Made fainter or stronger as asked.
+  strengthened(dark, input.shadow ?? 1);
+  // Turned and sized about the foot, where shadow, reflection and bottle meet, so each stays joined to it.
+  const foot = { x: x + w / 2, y: y + h };
+  const shadowAt = laidAt(sctx, dark, foot, input.moveShadow, W, H)
+    ?? laidAt(sctx, dark, foot, input.moveShadow, W, H, { x: x - w * 0.1, y: y + h - w * 0.1, w: w * 1.2, h: w * 0.2 })!;
+
+  // The reflection, on its own layer: the bottle's mirror below its foot.
+  const mirror = createCanvas(W, H);
+  let reflectionAt: ReturnType<typeof laidAt> = null;
+  if ((input.surface ?? 'matte') === 'gloss' && !turned) {
+    const own = createCanvas(W, H);
+    drawReflection(own.getContext('2d'), bottle, { x, y, w, h });
+    // Softened, then made fainter or stronger, as asked - on its own, the shadow and the bottle left as they are.
+    const soft = input.mirror?.soft ?? 0;
+    if (soft > 0.01) {
+      const copy = createCanvas(W, H);
+      copy.getContext('2d').drawImage(own, 0, 0);
+      const octx = own.getContext('2d');
+      octx.clearRect(0, 0, W, H);
+      octx.filter = `blur(${(soft * Math.max(2, w * 0.03)).toFixed(1)}px)`;
+      octx.drawImage(copy, 0, 0);
+      octx.filter = 'none';
+    }
+    strengthened(own, input.mirror?.strength ?? 1);
+    const mctx = mirror.getContext('2d');
+    reflectionAt = laidAt(mctx, own, foot, input.moveReflection, W, H);
+    // The shadow darkens the reflection where it falls on it, as on a real
+    // surface: laid plainly over, the reflection covered the foot's shadow and
+    // the bottle stood on nothing.
+    mctx.save();
+    mctx.globalCompositeOperation = 'source-atop';
+    mctx.drawImage(shade, 0, 0);
+    mctx.restore();
+  }
 
   const lit = lightMatched(bottle, around, light);
   mirrorRoom(lit, scene, { x, y, w, h });
   filmMatched(lit, sceneData, W, H, { x, y, w, h });
   wrapLight(lit, sceneData, W, H, { x, y, w, h });
+  brightened(lit, input.bright ?? 0);
   // As soft as the lens that took the scene: a packshot is sharper than any
   // photograph around it, and that edge is what reads as pasted.
   const pack = createCanvas(W, H);
   const pctx = pack.getContext('2d');
   pctx.filter = `blur(${Math.min(0.7, Math.max(0.25, w / 1100)).toFixed(2)}px)`;
-  pctx.drawImage(lit, x, y);
+  if (turned) {
+    // Turned about its middle, as a person turned it.
+    pctx.translate(x + w / 2, y + h / 2);
+    pctx.rotate(((input.rotate ?? 0) * Math.PI) / 180);
+    pctx.drawImage(lit, -w / 2, -h / 2);
+    pctx.setTransform(1, 0, 0, 1, 0, 0);
+  } else {
+    pctx.drawImage(lit, x, y);
+  }
 
   ctx.drawImage(shade, 0, 0);
+  ctx.drawImage(mirror, 0, 0);
   ctx.drawImage(pack, 0, 0);
+  // Nothing is encoded until it is wanted: the post goes on to be drawn on, and
+  // its layers are encoded together at the end.
+  const flat = lazyPng(out);
+  const shadowPng = lazyPng(shade);
+  const mirrorPng = lazyPng(mirror);
+  const packPng = lazyPng(pack);
   return {
-    bytes: out.toBuffer('image/png'),
+    get bytes() { return flat(); },
+    canvas: out,
     box: { x, y, w, h },
     light,
-    layers: { shadow: shade.toBuffer('image/png'), bottle: pack.toBuffer('image/png') },
+    layers: { get shadow() { return shadowPng(); }, get reflection() { return mirrorPng(); }, get bottle() { return packPng(); } },
+    layerCanvases: { shadow: shade, reflection: mirror, bottle: pack },
+    shadowBox: shadowAt.box,
+    shadowPivot: shadowAt.pivot,
+    reflectionBox: reflectionAt?.box ?? null,
+    reflectionPivot: reflectionAt?.pivot ?? null,
   };
+}
+
+/**
+ * A layer laid down where a person moved it: shifted from the foot, then
+ * sized and turned about the point it was shifted to - all the way round.
+ * Says where it now lies (before it is turned) and the point it turns about,
+ * in fractions; none when there is nothing on it and no stand-in box is given.
+ */
+function laidAt(
+  ctx: SKRSContext2D,
+  layer: Canvas,
+  foot: { x: number; y: number },
+  m: { dx: number; dy: number; scale: number; rotate: number } | undefined,
+  W: number,
+  H: number,
+  standIn?: { x: number; y: number; w: number; h: number },
+): { box: { x: number; y: number; w: number; h: number }; pivot: { x: number; y: number } } | null {
+  const own = alphaBox(layer) ?? standIn;
+  if (!own) return null;
+  const at = { x: foot.x + (m?.dx ?? 0) * W, y: foot.y + (m?.dy ?? 0) * H };
+  const k = m?.scale ?? 1;
+  if (!standIn) {
+    if (m) {
+      ctx.save();
+      ctx.translate(at.x, at.y);
+      ctx.rotate(((m.rotate ?? 0) * Math.PI) / 180);
+      ctx.scale(k, k);
+      ctx.translate(-foot.x, -foot.y);
+      ctx.drawImage(layer, 0, 0);
+      ctx.restore();
+    } else {
+      ctx.drawImage(layer, 0, 0);
+    }
+  }
+  return {
+    box: { x: (at.x + (own.x - foot.x) * k) / W, y: (at.y + (own.y - foot.y) * k) / H, w: (own.w * k) / W, h: (own.h * k) / H },
+    pivot: { x: at.x / W, y: at.y / H },
+  };
+}
+
+/** The box around what is drawn on a layer, in pixels - none when nothing is. Read every other pixel: a shadow is soft. */
+function alphaBox(c: Canvas): { x: number; y: number; w: number; h: number } | null {
+  const { data } = c.getContext('2d').getImageData(0, 0, c.width, c.height);
+  let x0 = c.width; let y0 = c.height; let x1 = -1; let y1 = -1;
+  for (let y = 0; y < c.height; y += 2) {
+    for (let x = 0; x < c.width; x += 2) {
+      if (data[(y * c.width + x) * 4 + 3]! < 10) continue;
+      if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+    }
+  }
+  return x1 < 0 ? null : { x: x0, y: y0, w: x1 - x0 + 2, h: y1 - y0 + 2 };
+}
+
+/**
+ * The shadow layer made fainter, or stronger, as a person asked: below 1 it
+ * fades, above 1 it is laid over itself again - darker, never harder-edged.
+ */
+function strengthened(shade: Canvas, k: number) {
+  if (Math.abs(k - 1) < 0.01) return;
+  const copy = createCanvas(shade.width, shade.height);
+  copy.getContext('2d').drawImage(shade, 0, 0);
+  const ctx = shade.getContext('2d');
+  if (k < 1) {
+    ctx.clearRect(0, 0, shade.width, shade.height);
+    if (k <= 0) return;
+    ctx.globalAlpha = k;
+    ctx.drawImage(copy, 0, 0);
+    ctx.globalAlpha = 1;
+    return;
+  }
+  // Laid over itself once for each whole step past 1, and in part for what is left.
+  for (let left = k - 1; left > 0.01; left -= 1) {
+    ctx.globalAlpha = Math.min(1, left);
+    ctx.drawImage(copy, 0, 0);
+  }
+  ctx.globalAlpha = 1;
+}
+
+/** The bottle a little lighter or darker, as a person asked - the label's colours kept. */
+function brightened(lit: Canvas, by: number) {
+  if (Math.abs(by) < 0.01) return;
+  const copy = createCanvas(lit.width, lit.height);
+  copy.getContext('2d').drawImage(lit, 0, 0);
+  const ctx = lit.getContext('2d');
+  ctx.clearRect(0, 0, lit.width, lit.height);
+  ctx.filter = `brightness(${(1 + by).toFixed(2)})`;
+  ctx.drawImage(copy, 0, 0);
+  ctx.filter = 'none';
 }
 
 /** The cut-out without its transparent margins, so its height is the bottle's. */
@@ -190,7 +378,7 @@ function averageAround(scene: Pixels, W: number, H: number, box: Box) {
 }
 
 /** A soft dark ellipse where the bottle meets the surface. */
-function drawContactShadow(ctx: SKRSContext2D, box: Box) {
+function drawContactShadow(ctx: SKRSContext2D, box: Box, soft = 1) {
   // Two: a wide soft one, and a tight dark one right under the foot, where no
   // light gets in at all. Set a little below the foot so the bottle does not
   // hide them.
@@ -198,12 +386,12 @@ function drawContactShadow(ctx: SKRSContext2D, box: Box) {
   const foot = box.y + box.h + box.w * 0.015;
   ctx.save();
   ctx.globalCompositeOperation = 'multiply';
-  ctx.filter = `blur(${Math.max(3, box.w * 0.08)}px)`;
+  ctx.filter = `blur(${Math.max(3, box.w * 0.08) * soft}px)`;
   ctx.fillStyle = 'rgba(0,0,0,0.55)';
   ctx.beginPath();
   ctx.ellipse(cx, foot, box.w * 0.62, Math.max(4, box.w * 0.11), 0, 0, Math.PI * 2);
   ctx.fill();
-  ctx.filter = `blur(${Math.max(1.5, box.w * 0.02)}px)`;
+  ctx.filter = `blur(${Math.max(1.5, box.w * 0.02) * soft}px)`;
   ctx.fillStyle = 'rgba(0,0,0,0.85)';
   ctx.beginPath();
   ctx.ellipse(cx, foot - box.w * 0.01, box.w * 0.47, Math.max(2, box.w * 0.035), 0, 0, Math.PI * 2);
@@ -212,7 +400,7 @@ function drawContactShadow(ctx: SKRSContext2D, box: Box) {
 }
 
 /** The bottle's own shape laid on the surface, away from the light, softening as it goes. */
-function drawCastShadow(ctx: SKRSContext2D, bottle: Canvas, box: Box, light: LightFrom) {
+function drawCastShadow(ctx: SKRSContext2D, bottle: Canvas, box: Box, light: LightFrom, shaped: { soft?: number; angle?: number; length?: number } = {}) {
   const shape = createCanvas(bottle.width, bottle.height);
   const s = shape.getContext('2d');
   s.drawImage(bottle, 0, 0);
@@ -220,15 +408,34 @@ function drawCastShadow(ctx: SKRSContext2D, bottle: Canvas, box: Box, light: Lig
   s.fillStyle = '#000';
   s.fillRect(0, 0, shape.width, shape.height);
 
+  // Falling straight back only when the light is in front and no one turned it.
+  const straight = light === 'front' && shaped.angle === undefined;
+  const lean = shaped.angle ?? (light === 'left' ? 1.1 : light === 'right' ? -1.1 : 0);
+  const flat = (straight ? 0.12 : 0.22) * (shaped.length ?? 1);
+  const foot = { x: box.x + box.w / 2, y: box.y + box.h };
+  // Drawn alone first, so it can fade along its length before it is laid down.
+  const own = createCanvas(ctx.canvas.width, ctx.canvas.height);
+  const o = own.getContext('2d');
+  o.filter = `blur(${Math.max(3, box.w * 0.12) * (shaped.soft ?? 1)}px)`;
+  // From the foot: flattened onto the surface and leaned away from the light - or the way a person turned it.
+  o.translate(foot.x, foot.y);
+  o.transform(1, 0, -lean * 0.9, flat, 0, 0);
+  o.drawImage(shape, -box.w / 2, -box.h);
+  o.setTransform(1, 0, 0, 1, 0, 0);
+  o.filter = 'none';
+  // Darkest where it leaves the foot, fading towards its tip: joined to the bottle, never a smudge beside it.
+  const tip = { x: foot.x + lean * 0.9 * box.h, y: foot.y - flat * box.h };
+  const fade = o.createLinearGradient(foot.x, foot.y, tip.x, tip.y);
+  fade.addColorStop(0, 'rgba(0,0,0,1)');
+  fade.addColorStop(0.6, 'rgba(0,0,0,0.55)');
+  fade.addColorStop(1, 'rgba(0,0,0,0.15)');
+  o.globalCompositeOperation = 'destination-in';
+  o.fillStyle = fade;
+  o.fillRect(0, 0, own.width, own.height);
   ctx.save();
   ctx.globalCompositeOperation = 'multiply';
-  ctx.globalAlpha = light === 'front' ? 0.22 : 0.34;
-  ctx.filter = `blur(${Math.max(3, box.w * 0.14)}px)`;
-  // From the foot: flattened onto the surface and leaned away from the light.
-  const lean = light === 'left' ? 1.1 : light === 'right' ? -1.1 : 0;
-  ctx.translate(box.x + box.w / 2, box.y + box.h);
-  ctx.transform(1, 0, -lean * 0.9, light === 'front' ? 0.12 : 0.22, 0, 0);
-  ctx.drawImage(shape, -box.w / 2, -box.h);
+  ctx.globalAlpha = straight ? 0.3 : 0.45;
+  ctx.drawImage(own, 0, 0);
   ctx.restore();
 }
 
@@ -340,7 +547,7 @@ function lightMatched(bottle: Canvas, around: { r: number; g: number; b: number;
  */
 const ROOM_IN_GLASS = 0.32;
 
-function mirrorRoom(lit: Canvas, scene: Image, box: Box) {
+function mirrorRoom(lit: Canvas, scene: Image | Canvas, box: Box) {
   const w = lit.width;
   const h = lit.height;
   const room = createCanvas(w, h);

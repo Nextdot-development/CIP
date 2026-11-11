@@ -115,9 +115,10 @@ export function arrangedUrl(generationId: string, arrangedAt: string | null | un
   return arrangedAt ? `${assetUrl(generationId)}?v=${encodeURIComponent(arrangedAt)}` : assetUrl(generationId);
 }
 
-/** A composed post as a file an editor opens. */
-export function exportUrl(generationId: string, format: 'png' | 'psd' | 'svg' | 'pdf'): string {
-  return `/api/media/generations/${generationId}/export?format=${format}`;
+/** A composed post as a file an editor opens - in another shape, laid out again on the same background. */
+export function exportUrl(generationId: string, format: 'png' | 'psd' | 'svg' | 'pdf', shape?: string | null): string {
+  const other = shape ? `&shape=${encodeURIComponent(shape)}` : '';
+  return `/api/media/generations/${generationId}/export?format=${format}${other}`;
 }
 
 /** A generation still moving is one the UI should keep polling. */

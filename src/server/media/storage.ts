@@ -1,5 +1,6 @@
 import 'server-only';
 import { driveStorage } from '../drive/storage';
+import { forget, readThrough } from '../storageCache';
 import { ProviderFailed } from './providers/types';
 
 /**
@@ -65,8 +66,17 @@ export async function putMediaAsset(key: string, bytes: Buffer, mimeType: string
   }
 }
 
-export async function getMediaAsset(key: string): Promise<Buffer> {
-  return driveStorage().get(key);
+/**
+ * A stored file. Given a version - a layer's hash, when a scene was last
+ * changed - it is kept on this server once read, and not downloaded again.
+ */
+export async function getMediaAsset(key: string, version?: string): Promise<Buffer> {
+  return version ? readThrough(key, version, () => driveStorage().get(key)) : driveStorage().get(key);
+}
+
+/** Lets go of a file kept under a version it turned out not to be. */
+export function forgetMediaAsset(key: string, version: string): Promise<void> {
+  return forget(key, version);
 }
 
 export async function removeMediaAsset(key: string): Promise<void> {

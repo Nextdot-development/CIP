@@ -191,6 +191,9 @@ export function AskSection({
   const [market, setMarket] = useState<string | null>(markets.length === 1 ? markets[0]! : null);
   // Null is "let CIP decide", which is what it did before there was a picker.
   const [shape, setShape] = useState<string | null>(null);
+  // A picture of the person's own to set the post on, instead of one painted for it: free.
+  const [ownPicture, setOwnPicture] = useState<File | null>(null);
+  const [placing, setPlacing] = useState(false);
   // A picture already made, to carry into the next one. "The same thing at
   // 9:16" used to start again from nothing and come back a different picture.
   const [basedOn, setBasedOn] = useState<{ id: string; prompt: string } | null>(null);
@@ -320,7 +323,31 @@ export function AskSection({
     }
   };
 
-  const busy = phase === 'planning' || phase === 'making' || phase === 'checking';
+  /**
+   * The post set on the person's own picture: the bottle, logo and headline
+   * placed on it, layer by layer. Nothing is painted and no model is asked.
+   */
+  const placeOnOwn = async () => {
+    if (!ownPicture) return;
+    setPlacing(true);
+    setFailure(null);
+    const form = new FormData();
+    form.append('file', ownPicture);
+    form.append('request', draft.trim());
+    form.append('ratio', shape ?? '1:1');
+    const res = await fetch('/api/media/own-picture', { method: 'POST', body: form }).catch(() => null);
+    setPlacing(false);
+    if (!res?.ok) {
+      const message = (await res?.json().catch(() => null) as { message?: string } | null)?.message;
+      setFailure(message ?? 'The post could not be set on your picture.');
+      return;
+    }
+    note('Made on your picture - free. Arrange it below.');
+    setOwnPicture(null);
+    void refresh();
+  };
+
+  const busy = phase === 'planning' || phase === 'making' || phase === 'checking' || placing;
 
   return (
     <div className="rise">
@@ -439,6 +466,38 @@ export function AskSection({
           </div>
         )}
 
+        {/* The person's own picture, to set the post on instead of one painted for it: free. */}
+        {mediaType === 'image' && (
+          <div className="row" style={{ gap: 6, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+            <label className={`chip ${ownPicture ? 'on' : ''} ${busy ? 'is-off' : ''}`} style={{ cursor: 'pointer' }} title="The bottle, logo and headline are set on your picture. Free.">
+              <Icon name="upload" size={14} /> {ownPicture ? `Your background: ${ownPicture.name.slice(0, 28)}` : 'Add your own background'}
+              <input
+                type="file"
+                accept="image/png,image/jpeg,image/webp"
+                hidden
+                disabled={busy}
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  e.target.value = '';
+                  if (!file) return;
+                  if (file.size > 15 * 1024 * 1024) { note('That picture is over 15 MB. Bring a smaller one.'); return; }
+                  setOwnPicture(file);
+                }}
+              />
+            </label>
+            {ownPicture && (
+              <button type="button" className="btn btn-ghost btn-sm" onClick={() => setOwnPicture(null)} disabled={busy} aria-label="Remove your background">
+                <Icon name="x" size={13} />
+              </button>
+            )}
+            {ownPicture && (
+              <span className="tiny muted">
+                Say the brand, and put the headline in quotes to use your own words - else one of the brand&apos;s own is used.
+              </span>
+            )}
+          </div>
+        )}
+
         <textarea
           className="field-input"
           rows={4}
@@ -453,7 +512,9 @@ export function AskSection({
 
         <div className="row" style={{ justifyContent: 'space-between', marginTop: 12 }}>
           <span className="tiny muted">
-            {ready
+            {mediaType === 'image' && ownPicture
+              ? 'Set on your picture - nothing is painted, nothing is spent.'
+              : ready
               ? mediaType === 'video'
                 ? `${providers.video.provider}/${providers.video.model} · queued, takes a few minutes.`
                 : `${chosen?.provider}/${chosen?.model} · usually about a minute.`
@@ -464,10 +525,10 @@ export function AskSection({
           <button
             type="button"
             className="btn btn-primary"
-            onClick={() => void send()}
-            disabled={busy || !draft.trim() || !ready}
+            onClick={() => void (mediaType === 'image' && ownPicture ? placeOnOwn() : send())}
+            disabled={busy || (mediaType === 'image' && ownPicture ? false : !draft.trim() || !ready)}
           >
-            {busy ? 'Working…' : 'Make it'} <Icon name="arrow-right" size={14} />
+            {placing ? 'Setting it on your picture…' : busy ? 'Working…' : 'Make it'} <Icon name="arrow-right" size={14} />
           </button>
         </div>
       </Card>
@@ -1048,11 +1109,21 @@ function TextEditor({ generation, lines: initial, onDone, onSave, saveLabel = 'S
 }
 
 type Layers = NonNullable<MediaGenerationDTO['layers']>;
-type LayerName = 'background' | 'shadow' | 'bottle' | 'headline' | 'logo';
-type Frac = { x: number; y: number; w: number; h: number };
-type Piece = 'bottle' | 'logo' | 'text';
+type LayerName = 'background' | 'shadow' | 'reflection' | 'bottle' | 'headline' | 'logo';
+/**
+ * A piece's box in fractions of the post, how far it is turned (degrees,
+ * clockwise) for one that turns, and the point it turns and sizes about when
+ * that is not its middle - the shadow's is the bottle's foot.
+ */
+type Frac = { x: number; y: number; w: number; h: number; r?: number; px?: number; py?: number };
+type Piece = 'bottle' | 'shadow' | 'reflection' | 'logo' | 'text';
+/** The pieces that hang from the bottle's foot: each moves, sizes and turns about it, on its own. */
+type FromFoot = 'shadow' | 'reflection';
+const FROM_FOOT = new Set<Piece>(['shadow', 'reflection']);
 type Placement = {
-  bottle?: { cx: number; base: number; height: number };
+  bottle?: { cx: number; base: number; height: number; rotate?: number };
+  shadow?: { dx: number; dy: number; scale: number; rotate: number };
+  reflection?: { dx: number; dy: number; scale: number; rotate: number };
   logo?: { x: number; y: number; w: number };
   text?: { x: number; y: number; scale: number };
 };
@@ -1062,14 +1133,109 @@ type Manifest = {
   version: string;
   /** `v` is what the layer holds: it changes only when that layer does. */
   layers: { name: LayerName; present: boolean; v?: string }[];
-  boxes: { bottle: Frac | null; logo: Frac | null; text: Frac | null; textAnchor: { x: number } | null };
-  choices: { place?: Placement };
+  boxes: {
+    bottle: Frac | null; shadow?: Frac | null; shadowPivot?: { x: number; y: number } | null;
+    reflection?: Frac | null; reflectionPivot?: { x: number; y: number } | null;
+    logo: Frac | null; text: Frac | null; textAnchor: { x: number } | null;
+  };
+  choices: { bottle: Layers['bottle']; size: Layers['size']; logo: Layers['logo']; headline?: 'shown' | 'none'; place?: Placement; style?: PostStyle };
+  /** What measuring the post found to look at, each with the change that puts it right when there is one. */
+  checks?: (string | { text: string; fix?: { choices: Record<string, unknown> } })[];
 };
+
+/** How the headline and the bottle look, as a person set them. */
+type PostStyle = {
+  ink?: string; align?: 'left' | 'center' | 'right'; textSize?: number;
+  shadow?: number; bright?: number; shadowSoft?: number; shadowAngle?: number; shadowLength?: number;
+  reflection?: number; reflectionSoft?: number;
+};
+type SlideKey = 'textSize' | 'shadow' | 'bright' | 'shadowSoft' | 'shadowAngle' | 'shadowLength' | 'reflection' | 'reflectionSoft';
+
+/** A look set by sliding, as an editor has it: its range, where "as designed" is, and how it reads. */
+const SLIDES: Record<SlideKey, { label: string; min: number; max: number; step: number; plain: number | null; shows: (v: number) => string }> = {
+  shadow: { label: 'Strength', min: 0, max: 3, step: 0.05, plain: 1, shows: (v) => `${Math.round(v * 100)}%` },
+  shadowSoft: { label: 'Softness', min: 0.2, max: 3, step: 0.05, plain: 1, shows: (v) => `${Math.round(v * 100)}%` },
+  shadowAngle: { label: 'Direction', min: -1.6, max: 1.6, step: 0.05, plain: null, shows: (v) => (Math.abs(v) < 0.05 ? 'Straight back' : v < 0 ? `Left ${Math.round(-v * 100 / 1.6)}%` : `Right ${Math.round(v * 100 / 1.6)}%`) },
+  shadowLength: { label: 'Length', min: 0.3, max: 3, step: 0.05, plain: 1, shows: (v) => `${Math.round(v * 100)}%` },
+  reflection: { label: 'Strength', min: 0, max: 2, step: 0.05, plain: 1, shows: (v) => `${Math.round(v * 100)}%` },
+  reflectionSoft: { label: 'Softness', min: 0, max: 3, step: 0.05, plain: 0, shows: (v) => (v === 0 ? 'As the surface gives it' : `+${Math.round(v * 100)}%`) },
+  bright: { label: 'Light on the bottle', min: -0.3, max: 0.3, step: 0.01, plain: 0, shows: (v) => (v === 0 ? 'As it is' : `${v > 0 ? '+' : ''}${Math.round(v * 100)}%`) },
+  textSize: { label: 'Size', min: 0.6, max: 1.6, step: 0.02, plain: 1, shows: (v) => `${Math.round(v * 100)}%` },
+};
+
+/** A change to send: the pieces' places and looks, the words. */
+type Change = { choices?: Record<string, unknown>; lines?: HeadlineLine[] };
+
+/**
+ * Two changes made one after the other, as one: what the later one sets wins.
+ * A piece put back on a preset place lets go of where it was dragged, as the
+ * server has it - so a drag then a preset ends on the preset.
+ */
+function mergeChange(a: Change, b: Change): Change {
+  const ac = (a.choices ?? {}) as Record<string, unknown> & { place?: Record<string, unknown>; style?: Record<string, unknown> };
+  const bc = (b.choices ?? {}) as Record<string, unknown> & { place?: Record<string, unknown>; style?: Record<string, unknown> };
+  const place = { ...(ac.place ?? {}) };
+  if (bc.logo !== undefined) delete place.logo;
+  if (bc.bottle !== undefined || bc.size !== undefined) { delete place.bottle; if (bc.bottle !== undefined) delete place.text; }
+  Object.assign(place, bc.place ?? {});
+  const style = { ...(ac.style ?? {}), ...(bc.style ?? {}) };
+  const choices = { ...ac, ...bc, ...(Object.keys(place).length ? { place } : {}), ...(Object.keys(style).length ? { style } : {}) };
+  if (!Object.keys(place).length) delete (choices as Record<string, unknown>).place;
+  const lines = b.lines ?? a.lines;
+  return { ...(Object.keys(choices).length ? { choices } : {}), ...(lines ? { lines } : {}) };
+}
+
+/** The post as it stood at one moment: what undo goes back to. */
+type Snapshot = { choices: Manifest['choices']; lines: HeadlineLine[] | null };
+
+/** A snapshot as a change to send: every piece put back exactly as it was. */
+const restoring = (s: Snapshot) => ({
+  choices: {
+    bottle: s.choices.bottle,
+    size: s.choices.size,
+    logo: s.choices.logo,
+    headline: s.choices.headline ?? 'shown',
+    place: {
+      bottle: s.choices.place?.bottle ?? null, shadow: s.choices.place?.shadow ?? null, reflection: s.choices.place?.reflection ?? null,
+      logo: s.choices.place?.logo ?? null, text: s.choices.place?.text ?? null,
+    },
+    style: {
+      ink: s.choices.style?.ink ?? null, align: s.choices.style?.align ?? null, textSize: s.choices.style?.textSize ?? null,
+      shadow: s.choices.style?.shadow ?? null, bright: s.choices.style?.bright ?? null, shadowSoft: s.choices.style?.shadowSoft ?? null,
+      shadowAngle: s.choices.style?.shadowAngle ?? null, shadowLength: s.choices.style?.shadowLength ?? null,
+      reflection: s.choices.style?.reflection ?? null, reflectionSoft: s.choices.style?.reflectionSoft ?? null,
+    },
+  },
+  ...(s.lines ? { lines: s.lines } : {}),
+});
+
+/** Where a dragged piece settles when it comes near: the middle, and a margin in from each edge. */
+const SNAP = 0.012;
+const MARGIN = 0.05;
+function snapped(box: Frac, piece: Piece): { box: Frac; guides: { x: number[]; y: number[] } } {
+  const guides = { x: [] as number[], y: [] as number[] };
+  let { x, y } = box;
+  const nearX = ([[x + box.w / 2, 0.5], [x, MARGIN], [x + box.w, 1 - MARGIN]] as const).find(([at, line]) => Math.abs(at - line) < SNAP);
+  if (nearX) { x += nearX[1] - nearX[0]; guides.x.push(nearX[1]); }
+  // A bottle stands on its surface: only the words and the logo settle on the bottom margin.
+  const ys: (readonly [number, number])[] = [[y + box.h / 2, 0.5], [y, MARGIN]];
+  if (piece !== 'bottle') ys.push([y + box.h, 1 - MARGIN]);
+  const nearY = ys.find(([at, line]) => Math.abs(at - line) < SNAP);
+  if (nearY) { y += nearY[1] - nearY[0]; guides.y.push(nearY[1]); }
+  return { box: { ...box, x, y }, guides };
+}
+
+const SHAPES: { value: string | null; label: string }[] = [
+  { value: null, label: 'As made' }, { value: '1:1', label: 'Square 1:1' }, { value: '4:5', label: 'Portrait 4:5' },
+  { value: '9:16', label: 'Story 9:16' }, { value: '16:9', label: 'Wide 16:9' },
+];
+
+type HeadlineOption = { from: 'words' | 'brand'; lines: HeadlineLine[] };
 
 /** The steps, in the order a designer builds a post. Each adds its layers to the canvas. */
 const STUDIO_STEPS: { id: 'background' | 'bottle' | 'logo' | 'words' | 'download'; label: string; adds: LayerName[] }[] = [
   { id: 'background', label: 'Background', adds: ['background'] },
-  { id: 'bottle', label: 'Bottle', adds: ['shadow', 'bottle'] },
+  { id: 'bottle', label: 'Bottle', adds: ['shadow', 'reflection', 'bottle'] },
   { id: 'logo', label: 'Logo', adds: ['logo'] },
   { id: 'words', label: 'Headline', adds: ['headline'] },
   { id: 'download', label: 'Download', adds: [] },
@@ -1079,13 +1245,25 @@ const LAYER_LIST: { name: LayerName; label: string }[] = [
   { name: 'logo', label: 'Logo' },
   { name: 'headline', label: 'Headline' },
   { name: 'bottle', label: 'Bottle' },
+  { name: 'reflection', label: 'Bottle reflection' },
   { name: 'shadow', label: 'Bottle shadow' },
   { name: 'background', label: 'Background' },
 ];
 /** Which pictures each draggable piece is made of. */
-const PIECE_LAYERS: Record<Piece, LayerName[]> = { bottle: ['bottle', 'shadow'], logo: ['logo'], text: ['headline'] };
-const PIECE_OF: Partial<Record<LayerName, Piece>> = { bottle: 'bottle', shadow: 'bottle', logo: 'logo', headline: 'text' };
-const PIECE_LABEL: Record<Piece, string> = { bottle: 'Bottle', logo: 'Logo', text: 'Headline' };
+const PIECE_LAYERS: Record<Piece, LayerName[]> = {
+  bottle: ['bottle', 'shadow', 'reflection'], shadow: ['shadow'], reflection: ['reflection'], logo: ['logo'], text: ['headline'],
+};
+const PIECE_OF: Partial<Record<LayerName, Piece>> = { bottle: 'bottle', shadow: 'bottle', reflection: 'bottle', logo: 'logo', headline: 'text' };
+const PIECE_LABEL: Record<Piece, string> = { bottle: 'Bottle', shadow: 'Shadow', reflection: 'Reflection', logo: 'Logo', text: 'Headline' };
+/** The pieces that turn, by a handle above them. */
+const TURNS = new Set<Piece>(['bottle', 'shadow', 'reflection']);
+const middleOf = (b: Frac) => ({ x: b.x + b.w / 2, y: b.y + b.h / 2 });
+/** Where a piece turns and sizes about: its own point when it has one, else its middle. */
+const pivotOf = (b: Frac) => (b.px !== undefined && b.py !== undefined ? { x: b.px, y: b.py } : middleOf(b));
+
+const ALIGNS: { value: PostStyle['align'] | null; label: string }[] = [
+  { value: null, label: 'As designed' }, { value: 'left', label: 'Left' }, { value: 'center', label: 'Centre' }, { value: 'right', label: 'Right' },
+];
 
 const BOTTLE_PLACES: { value: Layers['bottle']; label: string }[] = [
   { value: 'left', label: 'Left' }, { value: 'center', label: 'Centre' }, { value: 'right', label: 'Right' }, { value: 'none', label: 'No bottle' },
@@ -1097,10 +1275,32 @@ const EXPORTS: { format: 'png' | 'psd' | 'svg' | 'pdf'; label: string; note: str
   { format: 'png', label: 'PNG', note: 'The finished post, flat' },
 ];
 
+/**
+ * Layers handed over with a change, held here by what they hold: shown at
+ * once, never fetched. Shared by every studio on the page, a few at a time.
+ */
+const handed = new Map<string, string>();
+function keepHanded(id: string, manifest: Manifest, fresh: Partial<Record<LayerName, string>> | undefined) {
+  for (const [name, b64] of Object.entries(fresh ?? {}) as [LayerName, string][]) {
+    const v = manifest.layers.find((l) => l.name === name)?.v;
+    if (!v) continue;
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    handed.set(`${id}:${name}:${v}`, URL.createObjectURL(new Blob([bytes], { type: 'image/png' })));
+  }
+  // The oldest let go: twenty is several changes back for every layer.
+  while (handed.size > 20) {
+    const [key, url] = handed.entries().next().value!;
+    URL.revokeObjectURL(url);
+    handed.delete(key);
+  }
+}
+
 /** A layer's picture, addressed by what it holds - the browser keeps one that has not changed. */
 const layerSrc = (id: string, manifest: Manifest, name: LayerName) => {
   const v = manifest.layers.find((l) => l.name === name)?.v ?? manifest.version;
-  return `/api/media/generations/${id}/layers/${name}?v=${encodeURIComponent(v)}`;
+  return handed.get(`${id}:${name}:${v}`) ?? `/api/media/generations/${id}/layers/${name}?v=${encodeURIComponent(v)}`;
 };
 
 /**
@@ -1138,6 +1338,11 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
   const [manifest, setManifest] = useState<Manifest | null>(null);
   const [hidden, setHidden] = useState<Set<LayerName>>(new Set());
   const [selected, setSelected] = useState<Piece | null>(null);
+  /** Which of the bottle, its shadow and its reflection the bottle step is setting: the one last chosen. */
+  const [part, setPart] = useState<'bottle' | 'shadow' | 'reflection'>('bottle');
+  useEffect(() => {
+    if (selected === 'bottle' || selected === 'shadow' || selected === 'reflection') setPart(selected);
+  }, [selected]);
   /** Where pieces are shown while dragged and until the post catches up. */
   const [moved, setMoved] = useState<Partial<Record<Piece, Frac>>>({});
   const [saving, setSaving] = useState(false);
@@ -1145,9 +1350,22 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
   const [want, setWant] = useState<{ logo?: boolean; headline?: boolean }>({});
   const [painting, setPainting] = useState(false);
   const [backgroundNote, setBackgroundNote] = useState('');
+  const [exportShape, setExportShape] = useState<string | null>(null);
+  const [guides, setGuides] = useState<{ x: number[]; y: number[] }>({ x: [], y: [] });
+  const [options, setOptions] = useState<HeadlineOption[] | null>(null);
+  /** The colours the headline may take: the brand's own, read with the other headlines. */
+  const [inks, setInks] = useState<string[]>([]);
+  /** The headline's words being changed on the picture itself, line by line. */
+  const [inline, setInline] = useState<HeadlineLine[] | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
-  const drag = useRef<{ piece: Piece; mode: 'move' | 'resize'; x: number; y: number; from: Frac } | null>(null);
+  const drag = useRef<{ piece: Piece; mode: 'move' | 'resize' | 'turn'; x: number; y: number; from: Frac } | null>(null);
   const queue = useRef<Promise<unknown>>(Promise.resolve());
+  // Undo and redo: the post as it stood before each change, kept here in the browser.
+  const latest = useRef<Snapshot | null>(null);
+  const undos = useRef<Snapshot[]>([]);
+  const redos = useRef<Snapshot[]>([]);
+  const [, setHistoryShown] = useState(0);
+  const showHistory = () => setHistoryShown((n) => n + 1);
 
   const load = useCallback(async (): Promise<Manifest | null> => {
     const res = await fetch(`/api/media/generations/${generation.id}/layers`, { cache: 'no-store' }).catch(() => null);
@@ -1159,11 +1377,25 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
     let live = true;
     void load().then((m) => {
       if (!live) return;
-      if (m) setManifest(m);
+      if (m) { showing.current = m.version; setManifest(m); latest.current = { choices: m.choices, lines: generation.headline ?? null }; }
       else note('The layers could not be loaded.');
     });
     return () => { live = false; };
+    // The headline is read once, as the studio opens; after that it comes back with each change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [load, note]);
+
+  // Other headlines, fetched once the headline step is open: read from what CIP holds, nothing spent.
+  const onWords = STUDIO_STEPS[step]?.id === 'words';
+  useEffect(() => {
+    if (!onWords || options) return;
+    let live = true;
+    void fetch(`/api/media/generations/${generation.id}/headlines`, { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : { options: [] }))
+      .then((b: { options?: HeadlineOption[]; inks?: string[] }) => { if (live) { setOptions(b.options ?? []); setInks(b.inks ?? []); } })
+      .catch(() => { if (live) setOptions([]); });
+    return () => { live = false; };
+  }, [onWords, options, generation.id]);
 
   /**
    * Sends a change and shows the post as it then stands - one change at a
@@ -1172,37 +1404,85 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
   const pending = useRef(0);
   /** How many times each piece was dropped: a drop still saving is not undone by an earlier one landing. */
   const drops = useRef<Partial<Record<Piece, number>>>({});
-  const arrange = (body: { choices?: Record<string, unknown>; lines?: HeadlineLine[] }, settles: Piece[] = []): Promise<boolean> => {
+  /**
+   * The change waiting its turn while another is on its way. A change made
+   * then joins it, so five quick drags are one save, not five in a row.
+   */
+  const waiting = useRef<{ body: Change; seen: Map<Piece, number>; run: Promise<boolean> } | null>(null);
+  /** The arrangement on the page: sent with a change, so the server need not read the post again. */
+  const showing = useRef<string | null>(null);
+  /** A look being slid: shown on the picture at once, and set into the post when let go. */
+  const [drafts, setDrafts] = useState<Partial<Record<SlideKey, number>>>({});
+  const arrange = (
+    given: Change | null,
+    settles: Piece[] = [],
+    /** A change made here, or a step back or forward through the ones made. */
+    mode: 'do' | 'undo' | 'redo' = 'do',
+  ): Promise<boolean> => {
+    const dropped = (p: Piece) => (drops.current[p] = (drops.current[p] ?? 0) + 1);
+    if (mode === 'do' && given && waiting.current) {
+      const w = waiting.current;
+      w.body = mergeChange(w.body, given);
+      for (const p of settles) w.seen.set(p, dropped(p));
+      return w.run;
+    }
     pending.current += 1;
     setSaving(true);
-    const seen = settles.map((p) => [p, (drops.current[p] = (drops.current[p] ?? 0) + 1)] as const);
+    const seen = new Map(settles.map((p) => [p, dropped(p)] as const));
+    let mine: { body: Change; seen: Map<Piece, number>; run: Promise<boolean> } | null = null;
     const settle = () => {
-      const done = seen.filter(([p, n]) => drops.current[p] === n).map(([p]) => p);
+      const done = [...seen].filter(([p, n]) => drops.current[p] === n).map(([p]) => p);
       setMoved((m) => { const left = { ...m }; for (const p of done) delete left[p]; return left; });
       pending.current -= 1;
       if (pending.current === 0) { setSaving(false); setWant({}); }
+      showHistory();
     };
     const run = queue.current.then(async () => {
+      // On its way now: what is made from here waits for the next turn.
+      if (mine && waiting.current === mine) waiting.current = null;
+      // Taken here, in turn, so each step back is to the post as the change before left it.
+      const was = latest.current;
+      let body = mine ? mine.body : given;
+      const from = mode === 'undo' ? undos.current : redos.current;
+      const to = mode === 'undo' ? redos.current : undos.current;
+      let target: Snapshot | undefined;
+      if (mode === 'do') {
+        if (was) undos.current.push(was);
+        redos.current = [];
+      } else {
+        target = from.pop();
+        if (!target || !was) { if (target) from.push(target); settle(); return false; }
+        to.push(was);
+        body = restoring(target);
+      }
       const res = await fetch(`/api/media/generations/${generation.id}/layers`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ ...body, version: showing.current }),
       }).catch(() => null);
       if (!res?.ok) {
         const message = (await res?.json().catch(() => null) as { message?: string } | null)?.message;
         note(message ?? 'That change could not be made.');
+        // Nothing changed, so nothing is kept to go back to.
+        if (mode === 'do') undos.current.pop();
+        else { to.pop(); from.push(target!); }
         settle();
         return false;
       }
       // The post and its layers come back together; only the layers that changed are fetched.
-      const next = (await res.json()) as { generation: MediaGenerationDTO; layers: Manifest };
+      const next = (await res.json()) as { generation: MediaGenerationDTO; layers: Manifest; fresh?: Partial<Record<LayerName, string>> };
+      latest.current = { choices: next.layers.choices, lines: next.generation.headline ?? null };
+      keepHanded(generation.id, next.layers, next.fresh);
       await preload(generation.id, next.layers);
+      showing.current = next.layers.version;
       setManifest(next.layers);
       onChanged(next.generation);
       settle();
       return true;
     });
     queue.current = run.catch(() => undefined);
+    // A change can be joined until its turn; a step back or forward never is, nor what came before it.
+    if (mode === 'do' && given) { mine = { body: given, seen, run }; waiting.current = mine; } else waiting.current = null;
     return run;
   };
 
@@ -1210,13 +1490,18 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
    * A new background, painted with what the person asked for - the one call
    * here that is paid for - or the one before it back, which is not.
    */
-  const paint = async (which: 'new' | 'previous') => {
+  const paint = async (which: 'new' | 'previous' | 'own', own?: File) => {
     setPainting(true);
-    const res = await fetch(`/api/media/generations/${generation.id}/background`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(which === 'previous' ? { action: 'previous' } : { note: backgroundNote }),
-    }).catch(() => null);
+    // A picture brought from here goes as itself; nothing is painted for it.
+    const form = new FormData();
+    if (own) form.append('file', own);
+    const res = await fetch(`/api/media/generations/${generation.id}/background`, which === 'own'
+      ? { method: 'POST', body: form }
+      : {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(which === 'previous' ? { action: 'previous' } : { note: backgroundNote }),
+        }).catch(() => null);
     if (!res?.ok) {
       setPainting(false);
       const message = (await res?.json().catch(() => null) as { message?: string } | null)?.message;
@@ -1226,11 +1511,11 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
     const next = ((await res.json()) as { generation: MediaGenerationDTO }).generation;
     const fresh = await load();
     if (fresh) await preload(generation.id, fresh);
-    if (fresh) setManifest(fresh);
+    if (fresh) { showing.current = fresh.version; setManifest(fresh); latest.current = { choices: fresh.choices, lines: next.headline ?? null }; }
     setMoved({});
     setPainting(false);
     onChanged(next);
-    note(which === 'previous' ? 'Back to the background before' : 'New background in place');
+    note(which === 'previous' ? 'Back to the background before' : which === 'own' ? 'Your picture is the background now' : 'New background in place');
   };
 
   // What the steps so far have put on the canvas, less what was hidden by hand.
@@ -1244,25 +1529,37 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
   const shows = (name: LayerName) => reached.has(name) && present.has(name) && !hidden.has(name);
   const current = STUDIO_STEPS[step]!;
 
-  const boxOf = (piece: Piece): Frac | null => moved[piece] ?? manifest?.boxes[piece] ?? null;
+  /** A piece where the post has it, turned as it was left. */
+  const setBox = (piece: Piece): Frac | null => {
+    const b = manifest?.boxes[piece];
+    if (!b) return null;
+    const r = piece === 'bottle' ? manifest?.choices.place?.bottle?.rotate
+      : FROM_FOOT.has(piece) ? manifest?.choices.place?.[piece as FromFoot]?.rotate : 0;
+    const pivot = piece === 'shadow' ? manifest?.boxes.shadowPivot : piece === 'reflection' ? manifest?.boxes.reflectionPivot : null;
+    return { ...b, r: r ?? 0, ...(pivot ? { px: pivot.x, py: pivot.y } : {}) };
+  };
+  const boxOf = (piece: Piece): Frac | null => moved[piece] ?? setBox(piece);
   const draggable = (piece: Piece) => PIECE_LAYERS[piece].some((n) => shows(n)) && Boolean(manifest?.boxes[piece]);
 
-  /** The transform that carries a piece's picture from where it was set to where it is shown. */
+  /**
+   * The transform that carries a piece's picture from where it was set to
+   * where it is shown - moved, sized and turned about its middle. The shadow
+   * goes with the bottle, unless it is the one being moved.
+   */
+  const pieceShowing = (name: LayerName): Piece | undefined =>
+    name === 'shadow' || name === 'reflection' ? (moved[name] ? name : moved.bottle ? 'bottle' : undefined) : PIECE_OF[name];
   const transformFor = (name: LayerName): string | undefined => {
-    const piece = PIECE_OF[name];
-    const from = piece ? manifest?.boxes[piece] : null;
+    const piece = pieceShowing(name);
+    const from = piece ? setBox(piece) : null;
     const to = piece ? moved[piece] : null;
     if (!from || !to) return undefined;
-    const k = to.h / from.h;
-    return `translate(${(to.x - from.x) * 100}%, ${(to.y - from.y) * 100}%) scale(${k})`;
+    const a = pivotOf(from);
+    const b = pivotOf(to);
+    return `translate(${b.x * 100}%, ${b.y * 100}%) rotate(${(to.r ?? 0) - (from.r ?? 0)}deg) scale(${to.h / from.h}) translate(${-a.x * 100}%, ${-a.y * 100}%)`;
   };
-  const originFor = (name: LayerName): string | undefined => {
-    const piece = PIECE_OF[name];
-    const from = piece ? manifest?.boxes[piece] : null;
-    return from ? `${from.x * 100}% ${from.y * 100}%` : undefined;
-  };
+  const originFor = (name: LayerName): string | undefined => (pieceShowing(name) ? '0 0' : undefined);
 
-  const startDrag = (piece: Piece, mode: 'move' | 'resize') => (e: React.PointerEvent) => {
+  const startDrag = (piece: Piece, mode: 'move' | 'resize' | 'turn') => (e: React.PointerEvent) => {
     const from = boxOf(piece);
     if (!from) return;
     e.preventDefault();
@@ -1279,36 +1576,107 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
     const dx = (e.clientX - d.x) / rect.width;
     const dy = (e.clientY - d.y) / rect.height;
     const f = d.from;
-    const box = d.mode === 'move'
+    if (d.mode === 'turn') {
+      // Turned about its middle, by the angle the pointer went round it; it settles upright, or on its side, when near.
+      const pivot = pivotOf(f);
+      const cx = rect.left + pivot.x * rect.width;
+      const cy = rect.top + pivot.y * rect.height;
+      const by = Math.atan2(e.clientY - cy, e.clientX - cx) - Math.atan2(d.y - cy, d.x - cx);
+      let r = (f.r ?? 0) + (by * 180) / Math.PI;
+      r = ((((r + 180) % 360) + 360) % 360) - 180;
+      if (!e.altKey) for (const at of [0, 90, -90, 180, -180]) if (Math.abs(r - at) < 4) r = at;
+      setGuides({ x: [], y: [] });
+      setMoved((m) => ({ ...m, [d.piece]: { ...f, r: Math.round(r * 10) / 10 } }));
+      return;
+    }
+    // Moved: it settles on the middle or a margin when it comes near, and a line shows it.
+    // Held with Alt, it goes exactly where it is put.
+    const raw = d.mode === 'move'
       ? { ...f, x: f.x + dx, y: f.y + dy }
       : (() => {
           // From the corner, keeping its shape: whichever way was pulled further.
           const k = Math.max(0.25, Math.min(4, Math.max((f.w + dx) / f.w, (f.h + dy) / f.h)));
-          return { x: f.x, y: f.y, w: f.w * k, h: f.h * k };
+          if (f.px === undefined || f.py === undefined) return { x: f.x, y: f.y, w: f.w * k, h: f.h * k, r: f.r };
+          // Grown out from its pivot, which stays where it is.
+          return { ...f, x: f.px + (f.x - f.px) * k, y: f.py + (f.y - f.py) * k, w: f.w * k, h: f.h * k };
         })();
+    const settled = d.mode === 'move' && !e.altKey ? snapped(raw, d.piece) : { box: raw, guides: { x: [], y: [] } };
+    const box: Frac = { ...settled.box };
+    if (f.px !== undefined && f.py !== undefined && d.mode === 'move') { box.px = f.px + (box.x - f.x); box.py = f.py + (box.y - f.y); }
+    setGuides(settled.guides);
     setMoved((m) => ({ ...m, [d.piece]: box }));
+  };
+
+  /** Where a piece was left, set into the post. */
+  const commit = (piece: Piece, to: Frac | undefined) => {
+    if (!manifest) return;
+    const from = setBox(piece);
+    const same = to && from && Math.abs(to.x - from.x) < 0.002 && Math.abs(to.y - from.y) < 0.002 && Math.abs(to.h - from.h) < 0.002
+      && Math.abs((to.r ?? 0) - (from.r ?? 0)) < 0.5;
+    if (!to || !from || same) {
+      setMoved((m) => { const next = { ...m }; delete next[piece]; return next; });
+      return;
+    }
+    const place: Placement = {};
+    if (piece === 'bottle') place.bottle = { cx: to.x + to.w / 2, base: to.y + to.h, height: to.h, rotate: to.r ?? 0 };
+    if (piece === 'shadow' || piece === 'reflection') {
+      // Moved, sized and turned from where it was: the server keeps it against where the scene casts it.
+      const was = manifest.choices.place?.[piece] ?? { dx: 0, dy: 0, scale: 1, rotate: 0 };
+      const a = pivotOf(from);
+      const b = pivotOf(to);
+      place[piece] = { dx: was.dx + (b.x - a.x), dy: was.dy + (b.y - a.y), scale: was.scale * (to.h / from.h), rotate: to.r ?? 0 };
+    }
+    if (piece === 'logo') place.logo = { x: to.x, y: to.y, w: to.w };
+    if (piece === 'text') {
+      const was = manifest.choices.place?.text?.scale ?? 1;
+      const anchor = manifest.boxes.textAnchor?.x ?? from.x;
+      place.text = { x: anchor + (to.x - from.x), y: to.y, scale: was * (to.h / from.h) };
+    }
+    void arrange({ choices: { place } }, [piece]);
   };
 
   const onDrop = () => {
     const d = drag.current;
     drag.current = null;
-    if (!d || !manifest) return;
-    const to = moved[d.piece];
-    const from = manifest.boxes[d.piece];
-    if (!to || !from || (Math.abs(to.x - from.x) < 0.002 && Math.abs(to.y - from.y) < 0.002 && Math.abs(to.h - from.h) < 0.002)) {
-      setMoved((m) => { const next = { ...m }; delete next[d.piece]; return next; });
+    setGuides({ x: [], y: [] });
+    if (!d) return;
+    commit(d.piece, moved[d.piece]);
+  };
+
+  // The keyboard, as an editor has it: Ctrl+Z, Ctrl+Shift+Z or Ctrl+Y, and the
+  // arrows to nudge the chosen piece - Shift for a bigger step. A run of
+  // nudges is saved once, when they stop.
+  const nudge = useRef<{ piece: Piece; box: Frac; timer: ReturnType<typeof setTimeout> } | null>(null);
+  const keys = useRef<(e: KeyboardEvent) => void>(() => undefined);
+  keys.current = (e: KeyboardEvent) => {
+    const typing = e.target instanceof HTMLElement && (e.target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName));
+    if (typing || !manifest) return;
+    const k = e.key.toLowerCase();
+    if ((e.ctrlKey || e.metaKey) && (k === 'z' || k === 'y')) {
+      e.preventDefault();
+      const back = k === 'z' && !e.shiftKey;
+      if ((back ? undos : redos).current.length) void arrange(null, [], back ? 'undo' : 'redo');
       return;
     }
-    const place: Placement = {};
-    if (d.piece === 'bottle') place.bottle = { cx: to.x + to.w / 2, base: to.y + to.h, height: to.h };
-    if (d.piece === 'logo') place.logo = { x: to.x, y: to.y, w: to.w };
-    if (d.piece === 'text') {
-      const was = manifest.choices.place?.text?.scale ?? 1;
-      const anchor = manifest.boxes.textAnchor?.x ?? from.x;
-      place.text = { x: anchor + (to.x - from.x), y: to.y, scale: was * (to.h / from.h) };
-    }
-    void arrange({ choices: { place } }, [d.piece]);
+    const d = e.shiftKey ? 0.02 : 0.004;
+    const by = ({ arrowleft: [-d, 0], arrowright: [d, 0], arrowup: [0, -d], arrowdown: [0, d] } as Record<string, [number, number]>)[k];
+    if (!by || !selected || !draggable(selected)) return;
+    e.preventDefault();
+    const piece = selected;
+    const start = nudge.current?.piece === piece ? nudge.current.box : boxOf(piece);
+    if (!start) return;
+    const box: Frac = { ...start, x: start.x + by[0], y: start.y + by[1] };
+    // A pivot goes with the piece it belongs to.
+    if (box.px !== undefined && box.py !== undefined) { box.px += by[0]; box.py += by[1]; }
+    if (nudge.current) clearTimeout(nudge.current.timer);
+    nudge.current = { piece, box, timer: setTimeout(() => { nudge.current = null; commit(piece, box); }, 450) };
+    setMoved((m) => ({ ...m, [piece]: box }));
   };
+  useEffect(() => {
+    const on = (e: KeyboardEvent) => keys.current(e);
+    window.addEventListener('keydown', on);
+    return () => window.removeEventListener('keydown', on);
+  }, []);
 
   const choice = <K extends 'bottle' | 'size' | 'logo'>(key: K, options: { value: Layers[K]; label: string }[]) => (
     <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
@@ -1325,6 +1693,103 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
       ))}
     </div>
   );
+
+  const style: PostStyle = manifest?.choices.style ?? {};
+  /** Where a look stands: as it is being slid, else as it was set, else as designed. */
+  const valueOf = (key: SlideKey): number | null => drafts[key] ?? style[key] ?? SLIDES[key].plain;
+  const setLook = (key: SlideKey, v: number | null) => {
+    const plain = SLIDES[key].plain;
+    const was = style[key] ?? plain;
+    if (v === was) { setDrafts((d) => { const n = { ...d }; delete n[key]; return n; }); return; }
+    void arrange({ choices: { style: { [key]: v === plain ? null : v } } }).then(() =>
+      // Let go of the slid value once the post shows it - unless it was slid on since.
+      setDrafts((d) => { if (d[key] !== v) return d; const n = { ...d }; delete n[key]; return n; }));
+  };
+  const slide = (key: SlideKey, extra?: React.ReactNode) => {
+    const k = SLIDES[key];
+    const v = valueOf(key);
+    const shown = v ?? 0;
+    const let_go = () => { const d = drafts[key]; if (d !== undefined) setLook(key, d); };
+    return (
+      <div className="studio-slide">
+        <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
+          <span className="tiny muted">{k.label}</span>
+          <span className="row" style={{ gap: 6, alignItems: 'center' }}>
+            <span className="tiny">{v === null ? 'Away from the light' : k.shows(v)}</span>
+            {extra}
+            {v !== k.plain && (
+              <button type="button" className="studio-reset" onClick={() => setLook(key, k.plain)} title="Back to as designed">
+                Reset
+              </button>
+            )}
+          </span>
+        </div>
+        <input
+          type="range"
+          min={k.min}
+          max={k.max}
+          step={k.step}
+          value={shown}
+          aria-label={k.label}
+          onChange={(e) => { const n = Number(e.target.value); setDrafts((d) => ({ ...d, [key]: n })); }}
+          onPointerUp={let_go}
+          onKeyUp={let_go}
+          onBlur={let_go}
+          onDoubleClick={() => setLook(key, k.plain)}
+        />
+      </div>
+    );
+  };
+  /**
+   * What sliding shows before the post catches up: the bottle lighter or
+   * darker, the shadow fainter or softer, the words bigger or smaller - by CSS,
+   * on the layers already here. The post itself is set when the slider is let go.
+   */
+  const previewOf = (name: LayerName): React.CSSProperties => {
+    const set = (key: SlideKey) => style[key] ?? SLIDES[key].plain ?? 0;
+    const now = (key: SlideKey) => drafts[key];
+    const out: React.CSSProperties = {};
+    const filters: string[] = [];
+    if (name === 'bottle' && now('bright') !== undefined) filters.push(`brightness(${((1 + now('bright')!) / (1 + set('bright'))).toFixed(3)})`);
+    if (name === 'shadow') {
+      const strength = now('shadow');
+      if (strength !== undefined && set('shadow') > 0) out.opacity = Math.min(1, strength / set('shadow'));
+      const soft = now('shadowSoft');
+      if (soft !== undefined && soft > set('shadowSoft')) filters.push(`blur(${((soft - set('shadowSoft')) * 4).toFixed(1)}px)`);
+    }
+    if (name === 'reflection') {
+      const strength = now('reflection');
+      if (strength !== undefined && set('reflection') > 0) out.opacity = Math.min(1, strength / set('reflection'));
+      const soft = now('reflectionSoft');
+      if (soft !== undefined && soft > set('reflectionSoft')) filters.push(`blur(${((soft - set('reflectionSoft')) * 3).toFixed(1)}px)`);
+    }
+    if (filters.length) out.filter = filters.join(' ');
+    if (name === 'headline' && now('textSize') !== undefined && !moved.text && manifest?.boxes.text) {
+      const b = manifest.boxes.text;
+      out.transform = `scale(${(now('textSize')! / set('textSize')).toFixed(3)})`;
+      out.transformOrigin = `${b.x * 100}% ${b.y * 100}%`;
+    }
+    return out;
+  };
+  /** One look of the post, chosen from a few: the one it has is lit, and choosing what it is already sends nothing. */
+  const looks = <K extends keyof PostStyle>(key: K, options: { value: PostStyle[K] | null; label: string }[], plain: PostStyle[K] | null) => {
+    const now = style[key] ?? plain;
+    return (
+      <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+        {options.map((o) => (
+          <button
+            key={o.label}
+            type="button"
+            className={`chip ${now === o.value ? 'on' : ''}`}
+            aria-pressed={now === o.value}
+            onClick={() => now !== o.value && void arrange({ choices: { style: { [key]: o.value === plain ? null : o.value } } })}
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
+    );
+  };
 
   /** On or off: a piece on the post, or left off it. */
   const toggle = (on: boolean, labels: [string, string], set: (on: boolean) => void) => (
@@ -1343,7 +1808,8 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
     </div>
   );
 
-  const handles = (['bottle', 'text', 'logo'] as Piece[]).filter(draggable);
+  // The shadow and the reflection first, so the bottle's box lies over them where they meet.
+  const handles = (['shadow', 'reflection', 'bottle', 'text', 'logo'] as Piece[]).filter(draggable);
 
   return (
     <div className="studio">
@@ -1369,7 +1835,7 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
                   alt=""
                   draggable={false}
                   className={`studio-layer ${shows(l.name) ? '' : 'is-hidden'}`}
-                  style={{ transform: transformFor(l.name), transformOrigin: originFor(l.name) }}
+                  style={{ transform: transformFor(l.name), transformOrigin: originFor(l.name), ...previewOf(l.name) }}
                 />
               ))
             : <div className="studio-wait">Laying out the layers…</div>}
@@ -1381,23 +1847,123 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
               <div
                 key={piece}
                 className={`studio-box ${selected === piece ? 'is-on' : ''}`}
-                style={{ left: `${b.x * 100}%`, top: `${b.y * 100}%`, width: `${b.w * 100}%`, height: `${b.h * 100}%` }}
+                style={{
+                  left: `${b.x * 100}%`, top: `${b.y * 100}%`, width: `${b.w * 100}%`, height: `${b.h * 100}%`,
+                  ...(b.r ? {
+                    transform: `rotate(${b.r}deg)`,
+                    transformOrigin: `${((pivotOf(b).x - b.x) / b.w) * 100}% ${((pivotOf(b).y - b.y) / b.h) * 100}%`,
+                  } : {}),
+                }}
                 onPointerDown={startDrag(piece, 'move')}
-                title={`Drag the ${PIECE_LABEL[piece].toLowerCase()}; pull its corner to resize`}
+                onDoubleClick={piece === 'text' && generation.headline ? () => setInline(generation.headline!.map((l) => ({ ...l }))) : undefined}
+                title={piece === 'text'
+                  ? 'Drag the headline; pull its corner to resize; double-click to change its words'
+                  : TURNS.has(piece)
+                    ? `Drag the ${PIECE_LABEL[piece].toLowerCase()}; pull its corner to resize; turn it by the round handle`
+                    : `Drag the ${PIECE_LABEL[piece].toLowerCase()}; pull its corner to resize`}
               >
-                <span className="studio-box-label">{PIECE_LABEL[piece]}</span>
-                <span className="studio-box-grip" onPointerDown={startDrag(piece, 'resize')} aria-label={`Resize the ${PIECE_LABEL[piece].toLowerCase()}`} />
+                <span className="studio-box-label" style={b.r ? { transform: `rotate(${-b.r}deg)` } : undefined}>{PIECE_LABEL[piece]}{b.r ? ` · ${Math.round(b.r)}°` : ''}</span>
+                {b.px !== undefined && b.py !== undefined && (
+                  <span
+                    className="studio-box-pivot"
+                    style={{ left: `${((b.px - b.x) / b.w) * 100}%`, top: `${((b.py - b.y) / b.h) * 100}%` }}
+                    title="It turns about here - the bottle's foot"
+                  />
+                )}
+                {TURNS.has(piece) && (
+                  <span
+                    // The reflection hangs below the foot: its handle goes below it, clear of the bottle.
+                    className={`studio-box-turn ${piece === 'reflection' ? 'is-below' : ''}`}
+                    onPointerDown={startDrag(piece, 'turn')}
+                    aria-label={`Turn the ${PIECE_LABEL[piece].toLowerCase()}`}
+                    title="Drag round to turn; Alt for any angle"
+                  >
+                    <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true">
+                      <path d="M13 8a5 5 0 1 1-1.6-3.7" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                      <path d="M13.2 1.8v3.4H9.8" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  </span>
+                )}
+                <span className="studio-box-grip" onPointerDown={startDrag(piece, 'resize')} aria-label={`Resize the ${PIECE_LABEL[piece].toLowerCase()}`} title="Pull to make it bigger or smaller">
+                  <svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true">
+                    <path d="M4 12L12 4M7.5 4H12v4.5M4 7.5V12h4.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </span>
               </div>
             );
           })}
+          {inline && manifest?.boxes.text && (() => {
+            const b = boxOf('text')!;
+            const save = () => {
+              const lines = inline.filter((l) => l.text.trim());
+              setInline(null);
+              if (lines.length && lines.map((l) => l.text).join('|') !== (generation.headline ?? []).map((l) => l.text).join('|')) void arrange({ lines });
+            };
+            return (
+              <div
+                className="studio-inline"
+                style={{ left: `${Math.min(b.x, 0.6) * 100}%`, top: `${b.y * 100}%`, minWidth: `${Math.max(b.w, 0.3) * 100}%` }}
+                onPointerDown={(e) => e.stopPropagation()}
+              >
+                {inline.map((line, i) => (
+                  <input
+                    key={i}
+                    className="field-input"
+                    value={line.text}
+                    maxLength={80}
+                    autoFocus={i === 0}
+                    aria-label={`Headline line ${i + 1}`}
+                    onChange={(e) => setInline((all) => all!.map((l, n) => (n === i ? { ...l, text: e.target.value } : l)))}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') { e.preventDefault(); save(); }
+                      if (e.key === 'Escape') { e.preventDefault(); setInline(null); }
+                    }}
+                  />
+                ))}
+                <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                  <button type="button" className="btn btn-primary btn-sm" onClick={save}>Set</button>
+                  <button type="button" className="btn btn-ghost btn-sm" onClick={() => setInline(null)}>Cancel</button>
+                  <span className="tiny muted">Enter to set, Esc to leave it</span>
+                </div>
+              </div>
+            );
+          })()}
+          {guides.x.map((x) => <span key={`x${x}`} className="studio-guide is-v" style={{ left: `${x * 100}%` }} />)}
+          {guides.y.map((y) => <span key={`y${y}`} className="studio-guide is-h" style={{ top: `${y * 100}%` }} />)}
         </div>
-        <p className="tiny muted" style={{ margin: '10px 0 0', textAlign: 'center' }}>
-          {saving
-            ? 'Saving where you put it…'
-            : handles.length
-              ? 'Drag a piece to move it; pull its corner to make it bigger or smaller. All free.'
-              : 'The background alone. Add the bottle next.'}
-        </p>
+        <div className="row" style={{ gap: 8, justifyContent: 'center', alignItems: 'center', marginTop: 10, flexWrap: 'wrap' }}>
+          <button type="button" className="btn btn-ghost btn-sm" disabled={!undos.current.length} onClick={() => void arrange(null, [], 'undo')} title="Undo (Ctrl+Z)">
+            Undo
+          </button>
+          <button type="button" className="btn btn-ghost btn-sm" disabled={!redos.current.length} onClick={() => void arrange(null, [], 'redo')} title="Redo (Ctrl+Shift+Z)">
+            Redo
+          </button>
+          <span className="tiny muted">
+            {saving
+              ? 'Saving where you put it…'
+              : handles.length
+                ? 'Drag to move, pull a corner to resize, arrow keys to nudge. All free.'
+                : 'The background alone. Add the bottle next.'}
+          </span>
+        </div>
+        {/* What a designer would point at - measured on the post, nothing spent. */}
+        {Boolean(manifest?.checks?.length) && step > 0 && (
+          <ul className="studio-checks">
+            {manifest!.checks!.map((given) => {
+              const c = typeof given === 'string' ? { text: given } : given;
+              return (
+                <li key={c.text}>
+                  <Icon name="alert" size={13} /> <span className="grow">{c.text}</span>
+                  {c.fix && (
+                    <button type="button" className="btn btn-ghost btn-sm" onClick={() => void arrange(c.fix!.choices)} title="Put it right - free">
+                      Fix it
+                    </button>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        )}
       </div>
 
       <aside className="studio-panel">
@@ -1430,9 +1996,97 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
 
           {current.id === 'bottle' && (
             <>
-              <p className="studio-q">Where should the bottle stand?</p>
-              <p className="tiny muted">Drag it on the picture, and pull its corner to make it bigger or smaller - or start from a place:</p>
-              {choice('bottle', BOTTLE_PLACES)}
+              <p className="studio-q">The bottle, its shadow and its reflection</p>
+              {/* With no bottle, where it would stand is all there is to set. */}
+              {layers.bottle === 'none' && (
+                <>
+                  <p className="tiny muted">Drag it on the picture, and pull its corner to make it bigger or smaller - or start from a place:</p>
+                  {choice('bottle', BOTTLE_PLACES)}
+                </>
+              )}
+              {layers.bottle !== 'none' && (
+                <>
+                  {((part === 'bottle' && Boolean(manifest?.choices.place?.bottle?.rotate))
+                    || (part === 'shadow' && manifest?.choices.place?.shadow)
+                    || (part === 'reflection' && manifest?.choices.place?.reflection)) && (
+                    <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                      {part === 'bottle' && Boolean(manifest?.choices.place?.bottle?.rotate) && (
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-sm"
+                          onClick={() => void arrange({ choices: { place: { bottle: { ...manifest!.choices.place!.bottle!, rotate: 0 } } } })}
+                        >
+                          Stand the bottle straight
+                        </button>
+                      )}
+                      {part === 'shadow' && manifest?.choices.place?.shadow && (
+                        <button type="button" className="btn btn-ghost btn-sm" onClick={() => void arrange({ choices: { place: { shadow: null } } })}>
+                          Shadow back where it falls
+                        </button>
+                      )}
+                      {part === 'reflection' && manifest?.choices.place?.reflection && (
+                        <button type="button" className="btn btn-ghost btn-sm" onClick={() => void arrange({ choices: { place: { reflection: null } } })}>
+                          Reflection back under the bottle
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  <p className="tiny muted" style={{ margin: 0 }}>
+                    Click the bottle, its shadow or its reflection on the picture - or choose one here - to set it on its own.
+                  </p>
+                  <div className="studio-parts" role="tablist" aria-label="What to set">
+                    {(['bottle', 'shadow', 'reflection'] as const)
+                      .filter((piece) => piece !== 'reflection' || Boolean(manifest?.boxes.reflection))
+                      .map((piece) => (
+                        <button
+                          key={piece}
+                          type="button"
+                          role="tab"
+                          aria-selected={part === piece}
+                          className={`studio-part ${part === piece ? 'is-on' : ''}`}
+                          onClick={() => { setPart(piece); setSelected(piece); }}
+                        >
+                          {PIECE_LABEL[piece]}
+                        </button>
+                      ))}
+                  </div>
+                  {part === 'bottle' && (
+                    <div className="studio-group">
+                      <p className="studio-group-title">Bottle</p>
+                      <span className="tiny muted">Where it stands</span>
+                      {choice('bottle', BOTTLE_PLACES)}
+                      {slide('bright')}
+                      <p className="tiny muted" style={{ margin: 0 }}>Drag it to move, pull its corner to size it, the round handle to turn it.</p>
+                    </div>
+                  )}
+                  {part === 'shadow' && (
+                    <div className="studio-group">
+                      <p className="studio-group-title">Shadow</p>
+                      {slide('shadow')}
+                      {slide('shadowSoft')}
+                      {slide('shadowAngle', valueOf('shadowAngle') === null ? null : (
+                        <button type="button" className="studio-reset" onClick={() => setLook('shadowAngle', null)} title="Fall away from the scene's light">
+                          Auto
+                        </button>
+                      ))}
+                      {slide('shadowLength')}
+                      <p className="tiny muted" style={{ margin: 0 }}>
+                        Drag it on the picture to move it, its corner to size it, the round handle to turn it about the bottle&apos;s foot.
+                      </p>
+                    </div>
+                  )}
+                  {part === 'reflection' && manifest?.boxes.reflection && (
+                    <div className="studio-group">
+                      <p className="studio-group-title">Reflection</p>
+                      {slide('reflection')}
+                      {slide('reflectionSoft')}
+                      <p className="tiny muted" style={{ margin: 0 }}>
+                        Drag it on the picture to move it, its corner to size it, the round handle to turn it about the bottle&apos;s foot.
+                      </p>
+                    </div>
+                  )}
+                </>
+              )}
             </>
           )}
 
@@ -1469,15 +2123,88 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
                 onDone={() => note('Headline set')}
               />
               )}
+              {headlineOn && (
+                <div className="stack" style={{ gap: 6 }}>
+                  {inks.length > 0 && (
+                    <>
+                      <p className="tiny muted" style={{ margin: 0 }}>Colour - the brand&apos;s own</p>
+                      <div className="row" style={{ gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                        <button
+                          type="button"
+                          className={`chip ${!style.ink ? 'on' : ''}`}
+                          aria-pressed={!style.ink}
+                          onClick={() => style.ink && void arrange({ choices: { style: { ink: null } } })}
+                        >
+                          As designed
+                        </button>
+                        {inks.map((ink) => (
+                          <button
+                            key={ink}
+                            type="button"
+                            className={`studio-swatch ${style.ink === ink ? 'is-on' : ''}`}
+                            style={{ background: ink }}
+                            aria-label={`Set the headline in ${ink}`}
+                            aria-pressed={style.ink === ink}
+                            title={ink}
+                            onClick={() => style.ink !== ink && void arrange({ choices: { style: { ink } } })}
+                          />
+                        ))}
+                      </div>
+                    </>
+                  )}
+                  <p className="tiny muted" style={{ margin: 0 }}>Line up</p>
+                  {looks('align', ALIGNS, null)}
+                  {slide('textSize')}
+                  <p className="tiny muted" style={{ margin: 0 }}>Or double-click the headline on the picture to change its words there.</p>
+                </div>
+              )}
+              {headlineOn && Boolean(options?.length) && (
+                <div className="stack" style={{ gap: 6 }}>
+                  <p className="tiny muted" style={{ margin: 0 }}>Try another - free, from these words and the brand&apos;s own posts:</p>
+                  <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                    {options!.map((o) => (
+                      <button
+                        key={o.lines.map((l) => `${l.role}:${l.text}`).join('|')}
+                        type="button"
+                        className="chip"
+                        title={o.from === 'brand' ? 'A headline from the brand\'s own posts' : 'The same words, broken another way'}
+                        onClick={() => void arrange({ lines: o.lines })}
+                      >
+                        {o.lines.map((l) => l.text).join(' / ')}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </>
           )}
 
           {current.id === 'download' && (
             <>
               <p className="studio-q">Take it to your editor</p>
+              <p className="tiny muted" style={{ margin: 0 }}>Size</p>
+              <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                {SHAPES.map((s) => (
+                  <button
+                    key={s.label}
+                    type="button"
+                    className={`chip ${exportShape === s.value ? 'on' : ''}`}
+                    aria-pressed={exportShape === s.value}
+                    onClick={() => setExportShape(s.value)}
+                  >
+                    {s.label}
+                  </button>
+                ))}
+              </div>
+              {exportShape && (
+                <p className="tiny muted" style={{ margin: 0 }}>
+                  Laid out again for this size on the same background - free. Where the size needs more background
+                  than was painted, its own edges are carried out softly.
+                </p>
+              )}
               <div className="stack" style={{ gap: 6 }}>
                 {EXPORTS.map((e) => (
-                  <a key={e.format} className="studio-export" href={exportUrl(generation.id, e.format)} download>
+                  <a key={e.format} className="studio-export" href={exportUrl(generation.id, e.format, exportShape)} download>
                     <span className="btn btn-ghost btn-sm"><Icon name="download" size={14} /> {e.label}</span>
                     <span className="tiny muted">{e.note}</span>
                   </a>
@@ -1526,7 +2253,27 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
         </div>
 
         <div className="studio-redesign">
-          <p className="insp-label">Redesign the background</p>
+          <p className="insp-label">Your own background</p>
+          <p className="tiny muted" style={{ margin: 0 }}>
+            Bring any picture - the bottle, the logo and the headline are set on it just where they are. Free: nothing is painted.
+          </p>
+          <label className={`btn btn-ghost btn-sm studio-upload ${painting || saving ? 'is-off' : ''}`}>
+            <Icon name="upload" size={14} /> {painting ? 'Setting it on your picture…' : 'Use my own picture'}
+            <input
+              type="file"
+              accept="image/png,image/jpeg,image/webp"
+              hidden
+              disabled={painting || saving}
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                e.target.value = '';
+                if (!file) return;
+                if (file.size > 15 * 1024 * 1024) { note('That picture is over 15 MB. Bring a smaller one.'); return; }
+                void paint('own', file);
+              }}
+            />
+          </label>
+          <p className="insp-label" style={{ marginTop: 6 }}>Redesign the background</p>
         <textarea
           className="field-input"
           rows={3}
@@ -1548,8 +2295,9 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
           )}
         </div>
         <p className="tiny muted">
-          A new background uses credits for one picture - the only step here that does. The bottle, logo and
-          headline stay where you put them. Going back to the one before is free.
+          A new background uses credits for one picture, painted at the lowest quality - the least it costs, and
+          the only step here that spends anything. The bottle, logo and headline stay where you put them. Going
+          back to the one before is free, and so is your own picture.
         </p>
         </div>
       </aside>

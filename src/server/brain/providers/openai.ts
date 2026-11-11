@@ -1314,6 +1314,14 @@ export class OpenAIBrainProvider implements BrainProvider {
           'that applies only to surrogate creatives does not apply to it. human_review: report it as a warning for a person to ' +
           'decide, never as critical. A rule may list what it allows and what it forbids; the ' +
           'lists are the boundary.\n\n' +
+          // Diyas on a Diwali post were flagged as religious every time: the
+          // team's own festival posts are made of exactly these.
+          'A festival celebrated with its everyday decorations is cultural, not religious, and ' +
+          'not sensitive: diyas, oil lamps, candles, fairy lights, lanterns, rangoli, marigolds and ' +
+          'other flowers, fireworks, gifts, sweets, colours for Holi, a Christmas tree. Do not flag ' +
+          'them under a religious or cultural rule. Religious means a deity, an idol, a temple, ' +
+          'church, mosque or shrine, a holy text, a priest, or a religious symbol such as an Om, ' +
+          'a cross or a crescent - only those are flagged.\n\n' +
           // Radico's QC document v1.1, section 39: where something "is" is
           // decided on a grid, not by eye. Without it a logo plainly in the
           // middle of an end card was called "not centred".

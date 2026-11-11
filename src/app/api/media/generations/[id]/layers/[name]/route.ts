@@ -14,11 +14,11 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
   const { id, name } = await context.params;
   const v = new URL(request.url).searchParams.get('v');
   return withMediaScope(async (scope) => {
-    const bytes = await layerFile(scope, id, name, v);
+    const { bytes, exact } = await layerFile(scope, id, name, v);
     return new Response(new Uint8Array(bytes), {
       headers: {
-        // Kept by this browser only, and only under this version of the layer.
-        ...(v ? { 'cache-control': 'private, max-age=31536000, immutable' } : noStore),
+        // Kept by this browser only, and only when it is that version of the layer.
+        ...(exact ? { 'cache-control': 'private, max-age=31536000, immutable' } : noStore),
         'content-type': 'image/png',
         'content-length': String(bytes.byteLength),
       },

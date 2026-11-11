@@ -35,7 +35,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
   const download = url.searchParams.get('download') === '1';
 
   return withMediaScope(async (scope) => {
-    const asset = await readAsset(scope, id, assetId);
+    const asset = await readAsset(scope, id, assetId, url.searchParams.get('v'));
 
     // Named from what it is and which generation made it, so a folder of
     // downloads is still readable a week later. The id is this company's own
@@ -45,7 +45,8 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
 
     return new Response(new Uint8Array(asset.bytes), {
       headers: {
-        ...noStore,
+        // Kept by this browser only, and only when it is certainly this picture: not downloaded again.
+        ...(asset.lasting ? { 'cache-control': 'private, max-age=31536000, immutable' } : noStore),
         'content-type': asset.mimeType,
         'content-length': String(asset.fileSize),
         // Inline by default: these are meant to be looked at. Attachment only

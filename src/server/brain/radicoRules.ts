@@ -277,9 +277,10 @@ export const RADICO_QC_RULES: QcRuleSeed[] = [
     severity: 'major',
     rule: 'Flag politically, religiously or culturally sensitive references for a person to look at.',
     rationale:
-      'Political references, religious symbolism, figures or places, national symbols and sensitive social issues, unless explicitly approved for the campaign.',
-    allowed: [],
-    prohibited: [],
+      'Political references, religious symbolism, figures or places, national symbols and sensitive social issues, unless explicitly approved for the campaign. ' +
+      'A festival shown through its everyday decorations is not religious and is not flagged.',
+    allowed: ['Diyas, oil lamps, candles, fairy lights and lanterns', 'Rangoli, marigolds and other flowers', 'Fireworks, gifts, sweets, Holi colours, a Christmas tree'],
+    prohibited: ['Deities, idols or religious figures', 'Temples, churches, mosques or shrines', 'Religious symbols such as an Om, a cross or a crescent'],
     humanReview: true,
     requirement: 'forbidden',
     category: 'other',

@@ -164,8 +164,12 @@ export async function withCompanyScope<T>(
   // transaction never began and there is nothing half-done to repeat.
   const result = await withConnectionRetry(() =>
     sql.begin(async (tx) => {
-      await tx`select set_config('cip.company_id', ${scope.companyId}, true)`;
-      return fn(tx);
+      // Sent before anything the caller asks, on the same connection, so every
+      // query runs scoped - but not waited for on its own: a trip to the
+      // database saved on every request.
+      const scoped = tx`select set_config('cip.company_id', ${scope.companyId}, true)`.execute();
+      const [, result] = await Promise.all([scoped, fn(tx)]);
+      return result;
     }),
   );
   return result as T;
