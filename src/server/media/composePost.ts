@@ -4,11 +4,11 @@ import type { Canvas } from '@napi-rs/canvas';
 import { withCompanyScope, type CompanyScope } from '../db';
 import { planPost, type BenchPlan } from '../brain/bench';
 import { brandAssets, type BrandAsset } from '../brain/brandAssets';
-import { adaptLayout, arrangeLayout, choicesOf, fitLayout, placeLayout, type FittedLayout, type LayoutSpec, type Placement, type PostChoices, type PostStyle } from '../brain/layouts';
+import { adaptLayout, arrangeLayout, choicesOf, fitLayout, placeLayout, type FittedLayout, type LayoutSpec, type Placement, type PostChoices, type PostStyle, STACK, type StackGroup } from '../brain/layouts';
 import { readFile } from '../drive/service';
 import { placeBottle } from './bottleComposite';
 import { imageGenerationProvider } from './providers';
-import { measureHeadline, setHeadline, type Casing, type HeadlineLine, type SetLine } from './typography';
+import { measureHeadline, setHeadline, setTextBlocks, withHeadlineFont, type Casing, type HeadlineFontId, type HeadlineLine, type SetLine, type TextBlock } from './typography';
 import { reviewAndFix, type ReviewRound } from './postReview';
 import { brain } from '../brain/providers';
 import { readPalette } from '../brain/palette';
@@ -214,6 +214,10 @@ export type PostLayers = {
   reflection?: Buffer | null;
   bottle: Buffer | null;
   headline: Buffer;
+  /** The text a person added besides the headline, all its blocks on one layer. Absent when there is none. */
+  texts?: Buffer | null;
+  /** Which piece lies over which, from the bottom up, when not the usual. */
+  order?: StackGroup[];
   logo: Buffer | null;
   lines: SetLine[];
 };
@@ -232,6 +236,8 @@ export type PostBoxes = {
   text: Frac | null;
   /** The left edge the words are laid out from, which their box may sit inside of. */
   textAnchor: { x: number } | null;
+  /** Where each added text block landed - what a person drags. */
+  texts?: { id: string; x: number; y: number; w: number; h: number }[];
 };
 
 export type BuiltPost = {
@@ -367,8 +373,12 @@ export async function buildPost(input: {
   flatLater?: boolean;
   /** How a person set the headline and the bottle to look. */
   style?: PostStyle;
-  /** The bottle turned, and the shadow moved, as a person left them. */
-  turn?: { bottle?: number; shadow?: Placement['shadow']; reflection?: Placement['reflection'] };
+  /** Text added besides the headline, laid over it. */
+  texts?: TextBlock[];
+  /** The bottle and the logo turned, and the shadow and reflection moved, as a person left them. */
+  turn?: { bottle?: number; logo?: number; shadow?: Placement['shadow']; reflection?: Placement['reflection'] };
+  /** Which piece lies over which, from the bottom up. */
+  order?: StackGroup[];
 }): Promise<BuiltPost> {
   const { width: W, height: H } = postSize(input.ratio);
   const tweaks = input.tweaks ?? NO_TWEAKS;
@@ -380,14 +390,32 @@ export async function buildPost(input: {
   const canvas = createCanvas(W, H);
   const ctx = canvas.getContext('2d');
   drawScene(ctx, scene, W, H);
+  // Lighter or darker, and softened, as a person asked: the bottle and the words stand out against it.
+  const bgBright = input.style?.bgBright ?? 0;
+  const bgBlur = input.style?.bgBlur ?? 0;
+  // One filter at a time: given both at once, the canvas kept only the first.
+  for (const filter of [
+    bgBlur > 0.005 ? `blur(${(bgBlur * 0.02 * Math.min(W, H)).toFixed(1)}px)` : null,
+    Math.abs(bgBright) > 0.005 ? `brightness(${(1 + bgBright).toFixed(3)})` : null,
+  ]) {
+    if (!filter) continue;
+    const copy = createCanvas(W, H);
+    copy.getContext('2d').drawImage(canvas, 0, 0);
+    ctx.save();
+    ctx.filter = filter;
+    // Over the picture as it was, so a softened edge blends into it rather than into nothing.
+    ctx.drawImage(copy, 0, 0);
+    ctx.restore();
+  }
 
   // The words' ground: a scene that left it busy or bright gets the soft
   // shading a designer paints behind words, fading out towards the bottle.
-  if (layout.textBox && layout.text) {
+  // Left to CIP unless the person said otherwise: nothing behind the words, or a box of their own.
+  if (layout.textBox && layout.text && !input.style?.backing) {
     const t = layout.textBox;
     const area = ctx.getImageData(Math.round(t.x * W), Math.round(t.y * H), Math.max(1, Math.round(t.w * W)), Math.max(1, Math.round(t.h * H)));
     const { mean, spread } = toneOf(area.data);
-    const lightInk = luminanceOf(layout.text.ink) > 0.5;
+    const lightInk = luminanceOf(input.style?.ink ?? layout.text.ink) > 0.5;
     const need = lightInk ? Math.max(mean - 0.3, 0) * 1.4 + Math.max(spread - 0.12, 0) * 1.6 : Math.max(0.6 - mean, 0) * 1.4;
     const alpha = Math.min(0.75, Math.min(0.6, need) + tweaks.scrim);
     if (alpha > 0.05) {
@@ -431,8 +459,23 @@ export async function buildPost(input: {
   // The headline.
   // Lined up and coloured as the person chose, when they did.
   const align = input.style?.align;
-  const wordsLayout = align && layout.text ? { ...layout, text: { ...layout.text, align } } : layout;
-  const set = await setHeadline({ image: picture, layout: wordsLayout, lines: input.plan.headline, casing: input.plan.casing, keep: input.plan.keep, scale: tweaks.textScale, colours: input.style?.ink ? { ink: input.style.ink } : undefined });
+  const backing = input.style?.backing;
+  const boxFill = backing === 'box' ? input.style?.backingInk ?? '#ffffff' : null;
+  const wordsLayout = (align || backing) && layout.text
+    ? {
+        ...layout,
+        text: {
+          ...layout.text,
+          ...(align ? { align } : {}),
+          // 'none' takes off any box the layout had; 'box' gives every line one.
+          ...(backing ? { lines: layout.text.lines.map((l) => ({ ...l, box: boxFill })) } : {}),
+        },
+      }
+    : layout;
+  // Words in a box read in the colour chosen for them - else whichever of near-black and white reads on it.
+  const boxInk = boxFill ? input.style?.ink ?? (luminanceOf(boxFill) > 0.5 ? '#141414' : '#ffffff') : undefined;
+  const set = await setHeadline({ image: picture, layout: wordsLayout, lines: input.plan.headline, casing: input.plan.casing, keep: input.plan.keep, scale: tweaks.textScale,
+    colours: input.style?.ink || boxInk ? { ...(input.style?.ink ? { ink: input.style.ink } : {}), ...(boxInk ? { boxInk } : {}) } : undefined });
   // A line of the plan broken down to a lone word means the block was too
   // narrow for it: set again, wider, as far as the bottle allows.
   const planned = new Set(input.plan.headline.map((l) => l.text.trim().toLowerCase()));
@@ -440,8 +483,13 @@ export async function buildPost(input: {
   if (lone && tweaks.textWidth < 1.5) return buildPost({ ...input, tweaks: { ...tweaks, textWidth: tweaks.textWidth * 1.25, textScale: Math.max(0.85, tweaks.textScale * 0.95) } });
   picture = set.canvas;
 
+  // The text a person added besides the headline, over it and under the logo.
+  const added = input.texts?.length ? setTextBlocks(input.texts, W, H) : null;
+  if (added) picture.getContext('2d').drawImage(added.canvas, 0, 0);
+
   // The logo: the version that stands out against where it lands.
   let logoName: string | null = null;
+  let markCanvas: Canvas | null = null;
   let logoLayer: Canvas | null = null;
   let logoBox: Frac | null = null;
   if (layout.logoBox && input.logos.length) {
@@ -476,11 +524,41 @@ export async function buildPost(input: {
       c.fillStyle = glow;
       c.fillRect(cx - r, cy - r, r * 2, r * 2);
     }
-    c.drawImage(pic, lx * pic.width, ly * pic.height, lw * pic.width, lh * pic.height, box.x * W, box.y * H, w, h);
+    c.save();
+    const look = input.style;
+    if ((look?.logoShadow ?? 0) > 0.01) {
+      const k = look!.logoShadow!;
+      c.shadowColor = `rgba(0,0,0,${Math.min(0.85, 0.45 * k).toFixed(2)})`;
+      c.shadowBlur = w * 0.06 * k;
+      c.shadowOffsetY = w * 0.02 * k;
+    }
+    c.globalAlpha = look?.logoOpacity ?? 1;
+    if (Math.abs(look?.logoBright ?? 0) > 0.005) c.filter = `brightness(${(1 + look!.logoBright!).toFixed(3)})`;
+    // Turned about its middle, as a person turned it.
+    c.translate(box.x * W + w / 2, box.y * H + h / 2);
+    c.rotate(((input.turn?.logo ?? 0) * Math.PI) / 180);
+    c.drawImage(pic, lx * pic.width, ly * pic.height, lw * pic.width, lh * pic.height, -w / 2, -h / 2, w, h);
+    c.restore();
     logoBox = { x: box.x, y: box.y, w: box.w, h: h / H };
     out.getContext('2d').drawImage(mark, 0, 0);
     logoName = logo.name;
     if (input.layers) logoLayer = mark;
+    markCanvas = mark;
+  }
+
+  // Laid together again in the order a person put the pieces, when it is not the usual one.
+  const order = input.order;
+  if (order && order.join() !== STACK.join()) {
+    const flat = createCanvas(W, H);
+    const f = flat.getContext('2d');
+    f.drawImage(background, 0, 0);
+    for (const group of order) {
+      if (group === 'bottle' && packLayers) for (const c of [packLayers.shadow, packLayers.reflection, packLayers.bottle]) f.drawImage(c, 0, 0);
+      if (group === 'headline') f.drawImage(set.layerCanvas, 0, 0);
+      if (group === 'texts' && added) f.drawImage(added.canvas, 0, 0);
+      if (group === 'logo' && markCanvas) f.drawImage(markCanvas, 0, 0);
+    }
+    picture = flat;
   }
 
   const substitutes = [...new Set(set.lines.filter((l) => l.substitute).map((l) => l.face))];
@@ -491,7 +569,7 @@ export async function buildPost(input: {
   // The flat post, when it can follow the answer, is encoded only when asked for.
   let flatPng: Promise<Buffer> | null = input.flatLater ? null : picture.encode('png');
   const flat = () => (flatPng ??= picture.encode('png'));
-  const [bytes, bg, shadow, mirror, pack, words, mark] = await Promise.all([
+  const [bytes, bg, shadow, mirror, pack, words, extra, mark] = await Promise.all([
     input.flatLater ? null : flatPng,
     input.layers ? png(background) : null,
     input.layers ? png(packLayers?.shadow ?? null) : null,
@@ -499,10 +577,11 @@ export async function buildPost(input: {
     input.layers && reflectionBox ? png(packLayers?.reflection ?? null) : null,
     input.layers ? png(packLayers?.bottle ?? null) : null,
     input.layers ? png(set.layerCanvas) : null,
+    input.layers && added ? png(added.canvas) : null,
     input.layers ? png(logoLayer) : null,
   ]);
   const layers: PostLayers | undefined = input.layers
-    ? { background: bg!, shadow, reflection: mirror, bottle: pack, headline: words!, logo: mark, lines: set.lines }
+    ? { background: bg!, shadow, reflection: mirror, bottle: pack, headline: words!, texts: extra, logo: mark, lines: [...set.lines, ...(added?.lines ?? [])], order: input.order }
     : undefined;
   // The words' box is where they were set, not where the layout meant them.
   const set_ = set.lines;
@@ -513,7 +592,7 @@ export async function buildPost(input: {
         return { x: x0 / W, y: y0 / H, w: (x1 - x0) / W, h: (y1 - y0) / H };
       })()
     : null;
-  const boxes: PostBoxes = { bottle: packLayers ? layout.bottleBox : null, shadow: packLayers ? shadowBox : null, shadowPivot: packLayers ? shadowPivot : null,
+  const boxes: PostBoxes = { texts: added?.boxes ?? [], bottle: packLayers ? layout.bottleBox : null, shadow: packLayers ? shadowBox : null, shadowPivot: packLayers ? shadowPivot : null,
     reflection: packLayers ? reflectionBox : null, reflectionPivot: packLayers ? reflectionPivot : null, logo: logoBox, text, textAnchor: layout.text ? { x: layout.text.x } : null };
   const post: BuiltPost = { bytes: bytes!, flat, width: W, height: H, logo: logoName, substitutes, tweaks, layers, boxes };
   if (input.flatLater) {
@@ -606,7 +685,9 @@ async function assemble(
   given: Pick<PostRecipe, 'brand' | 'variant' | 'bottleFileId' | 'spec' | 'ratio' | 'casing' | 'keep' | 'surface' | 'choices'> & { headline: HeadlineLine[] },
 ) {
   // The layout as a person arranged it, when they have.
-  const r = given.choices ? { ...given, spec: arrangeLayout(given.spec, given.choices) } : given;
+  // The face a person chose for the headline, set before anything is measured: a wider face takes more room.
+  const chosen = given.choices ? { ...given, spec: arrangeLayout(withHeadlineFont(given.spec, given.choices.style?.font as HeadlineFontId | undefined), given.choices) } : given;
+  const r = chosen;
   const [bottle, allLogos, bottles] = await Promise.all([
     r.bottleFileId && r.spec.bottle ? brandFile(scope, r.bottleFileId) : Promise.resolve(null),
     held(`logos:${scope.companyId}:${r.brand}:${r.variant ?? ''}`, () => logosFor(scope, r.brand, r.variant)),
@@ -630,8 +711,9 @@ async function assemble(
     bottle,
     layout,
     build: (scene: Buffer, tweaks: PostTweaks, options: { layers?: boolean; flatLater?: boolean } = {}) =>
-      buildPost({ scene, ratio: r.ratio, layout, plan, bottle: bottle?.body ?? null, logos: sameShape.length ? sameShape : logos, tweaks, layers: options.layers, flatLater: options.flatLater, style: r.choices?.style,
-        turn: { bottle: r.choices?.place?.bottle?.rotate, shadow: r.choices?.place?.shadow, reflection: r.choices?.place?.reflection } }),
+      buildPost({ scene, ratio: r.ratio, layout, plan, bottle: bottle?.body ?? null, logos: sameShape.length ? sameShape : logos, tweaks, layers: options.layers, flatLater: options.flatLater, style: r.choices?.style, texts: r.choices?.texts,
+        turn: { bottle: r.choices?.place?.bottle?.rotate, logo: r.choices?.place?.logo?.rotate, shadow: r.choices?.place?.shadow, reflection: r.choices?.place?.reflection },
+        order: r.choices?.order }),
   };
 }
 
@@ -659,14 +741,45 @@ export async function rebuildPost(
  * designer set its words in, the colours of its own pack, and white and
  * near-black, which read on anything. Measured from files CIP holds; nothing is spent.
  */
-export async function headlineInks(scope: CompanyScope, recipe: Pick<PostRecipe, 'spec' | 'bottleFileId'>): Promise<string[]> {
+export async function headlineInks(scope: CompanyScope, recipe: Pick<PostRecipe, 'spec' | 'bottleFileId' | 'brand'>): Promise<string[]> {
   const own = [recipe.spec.text?.ink, recipe.spec.text?.accent].filter((c): c is string => Boolean(c));
   const pack = recipe.bottleFileId
     ? await held(`inks:${scope.companyId}:${recipe.bottleFileId}`, async () =>
         (await readPalette((await brandFile(scope, recipe.bottleFileId!)).body, 'image/png')).filter((c) => c.share >= 0.05).slice(0, 4).map((c) => c.hex))
         .catch(() => [] as string[])
     : [];
-  return [...new Set([...own, ...pack, '#ffffff', '#141414'].map((c) => c.toLowerCase()))].filter((c) => /^#[0-9a-f]{6}$/.test(c)).slice(0, 8);
+  const learned = await held(`palette:${scope.companyId}:${recipe.brand}`, () => brandPalette(scope, recipe.brand)).catch(() => [] as string[]);
+  const all = [...own, ...pack, ...learned, '#ffffff', '#141414'].map((c) => c.toLowerCase()).filter((c) => /^#[0-9a-f]{6}$/.test(c));
+  // Each colour once - two a person would call the same are one.
+  const out: string[] = [];
+  for (const c of all) if (!out.some((o) => near(o, c))) out.push(c);
+  return out.slice(0, 12);
+}
+
+/** The colours CIP learned from a brand's posts, the most seen first: a choice, not a white background. */
+async function brandPalette(scope: CompanyScope, brand: string): Promise<string[]> {
+  const rows = await withCompanyScope(scope, (tx) => tx<{ value: string }[]>`
+    select lower(value) as value from brand_dna_facts
+     where company_id = ${scope.companyId} and brand = ${brand} and status = 'active'
+       and attribute ~ 'palette|colou?r' and value ~* '^#[0-9a-f]{6}$'
+     group by lower(value) order by sum(evidence_count) desc limit 40
+  `);
+  const out: string[] = [];
+  for (const { value } of rows) {
+    const [r, g, b] = [1, 3, 5].map((i) => parseInt(value.slice(i, i + 2), 16));
+    // A near-white or near-black is the page, not the brand.
+    if (Math.max(r!, g!, b!) - Math.min(r!, g!, b!) <= 12 && (Math.min(r!, g!, b!) >= 225 || Math.max(r!, g!, b!) <= 30)) continue;
+    if (!out.some((o) => near(o, value))) out.push(value);
+    if (out.length === 6) break;
+  }
+  return out;
+}
+
+/** Two colours a person would call the same. */
+function near(a: string, b: string): boolean {
+  const rgb = (h: string) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+  const [x, y] = [rgb(a), rgb(b)];
+  return Math.hypot(x[0]! - y[0]!, x[1]! - y[1]!, x[2]! - y[2]!) < 40;
 }
 
 /**

@@ -1,4 +1,5 @@
 import 'server-only';
+import type { TextBlock } from '../media/typography';
 import { withCompanyScope } from '../db';
 import type { CompanyScope } from '../db';
 
@@ -269,14 +270,20 @@ export function adaptLayout(spec: LayoutSpec, ratio: number): LayoutSpec {
 
   // A bottle a person put on the left of a wide post keeps the left, and the words take the right.
   const leftInWide = ratio > 1.4 && Boolean(spec.bottle?.chosen) && spec.bottle!.cx < 0.4;
+  // A banner - a Jumia strip, a shelf header - is all width and little height: the words are
+  // set larger against that height, and given room across, or they shrink to a line of print.
+  const banner = ratio > 2.2;
+  const grow = banner ? Math.min(2, ratio / 1.9) : ratio < 0.7 ? 1.15 : 1;
   const text = spec.text
     ? {
         ...spec.text,
-        lines: spec.text.lines.map((l) => ({ ...l, size: byHeight(l.size) * (ratio < 0.7 ? 1.15 : 1) })),
+        lines: spec.text.lines.map((l) => ({ ...l, size: byHeight(l.size) * grow })),
         x: leftInWide ? 0.56 : byWidth(spec.text.x),
         // A story stacks the bottle below the words, so they may run the full width.
-        width: ratio < 0.7 ? 1 - 2 * byWidth(spec.text.x) : Math.min(ratio > 1.4 ? 0.36 : 0.62, byWidth(spec.text.width)),
-        y: ratio < 0.7 ? STORY_SAFE.top + 0.04 : ratio > 1.4 ? Math.max(0.12, spec.text.y) : spec.text.y * (spec.ratio / Math.max(ratio, 0.01)) ** 0.25,
+        width: ratio < 0.7
+          ? 1 - 2 * byWidth(spec.text.x)
+          : banner ? Math.min(0.45, 1.7 / ratio) : Math.min(ratio > 1.4 ? 0.36 : 0.62, byWidth(spec.text.width)),
+        y: ratio < 0.7 ? STORY_SAFE.top + 0.04 : banner ? 0.2 : ratio > 1.4 ? Math.max(0.12, spec.text.y) : spec.text.y * (spec.ratio / Math.max(ratio, 0.01)) ** 0.25,
       }
     : null;
 
@@ -337,13 +344,37 @@ export type PostChoices = {
   place?: Placement;
   /** How the headline and the bottle look, as a person set them. Absent: as the layout has them. */
   style?: PostStyle;
+  /** Text a person added besides the headline, each block placed and styled on its own. */
+  texts?: TextBlock[];
+  /** Which piece lies over which, from the bottom up. Absent: bottle, headline, text, logo. */
+  order?: StackGroup[];
 };
+
+/** The pieces that can be put over or under one another; the background is always at the bottom. */
+export const STACK = ['bottle', 'headline', 'texts', 'logo'] as const;
+export type StackGroup = (typeof STACK)[number];
 
 export type PostStyle = {
   /** The headline's colour - one of the brand's own. */
   ink?: string;
   /** The headline's lines against each other. */
   align?: 'left' | 'center' | 'right';
+  /** The face the headline is set in, chosen from the brand's list. Absent: the layout's own. */
+  font?: string;
+  /**
+   * What is behind the words. Absent: a soft shade where the scene is too busy
+   * for them, as a designer paints one. 'none': nothing at all. 'box': a solid
+   * box behind each line, in backingInk.
+   */
+  backing?: 'none' | 'box';
+  backingInk?: string;
+  /** The logo lighter or darker, its shadow, and how see-through it is. */
+  logoBright?: number;
+  logoShadow?: number;
+  logoOpacity?: number;
+  /** The background lighter or darker, and softened. */
+  bgBright?: number;
+  bgBlur?: number;
   /** The headline's size against the layout's. */
   textSize?: number;
   /** How strong the bottle's shadow is: 0 none, 1 as the scene casts it. */
@@ -373,8 +404,8 @@ export type Placement = {
   shadow?: { dx: number; dy: number; scale: number; rotate: number };
   /** The reflection moved, sized and turned the same way, on its own. */
   reflection?: { dx: number; dy: number; scale: number; rotate: number };
-  /** The logo's left edge, top edge and width. */
-  logo?: { x: number; y: number; w: number };
+  /** The logo's left edge, top edge and width, and how far it is turned (degrees, clockwise). */
+  logo?: { x: number; y: number; w: number; rotate?: number };
   /** The headline's left edge and top, and its size against the layout's. */
   text?: { x: number; y: number; scale: number };
 };

@@ -17,7 +17,8 @@ import type { FittedLayout, LayoutLine, LayoutSpec } from '../brain/layouts';
  * and the names of occasions are always written as they are written.
  */
 
-export type HeadlineLine = { text: string; role: LayoutLine['role'] };
+/** A line of the headline: its words, its part, and - when a person chose one for it alone - its own face. */
+export type HeadlineLine = { text: string; role: LayoutLine['role']; font?: string; ink?: string };
 export type Casing = 'sentence' | 'title' | 'upper' | 'as-written';
 
 // --- faces ---------------------------------------------------------------------------
@@ -40,10 +41,112 @@ const LOOK_ALIKES: [RegExp, string][] = [
   [/^constantia/i, 'CrimsonText-Regular'],
   [/blacksword|ananda|swash|brush|script/i, 'BerkshireSwash-Regular'],
 ];
-/** Constantia is part of Windows and Office; where it is installed, it is the face itself. */
+/** Constantia and Georgia are part of Windows and Office; where they are installed, they are the faces themselves. */
 const SYSTEM_FACES: Record<string, string> = {
   'constantia': 'constan.ttf', 'constantia-bold': 'constanb.ttf', 'constantia-italic': 'constani.ttf', 'constantia-bolditalic': 'constanz.ttf',
+  'georgia': 'georgia.ttf', 'georgia-bold': 'georgiab.ttf', 'georgia-italic': 'georgiai.ttf', 'georgia-bolditalic': 'georgiaz.ttf',
 };
+
+// --- the faces a person may choose for a headline ---------------------------------------
+
+/**
+ * The faces a headline may be set in, as the brand team named them. Three are
+ * free and ship with CIP; Georgia is the machine's own where it has it; the
+ * rest are the brand's licensed faces, used from their files once given (in
+ * the brand fonts folder) - until then, the nearest free face stands in and
+ * the page says so.
+ */
+export const HEADLINE_FONTS = [
+  { id: 'poppins', label: 'Poppins' },
+  { id: 'brittany-signature', label: 'Brittany Signature' },
+  { id: 'instrument-serif', label: 'Instrument Serif' },
+  { id: 'playfair-display', label: 'Playfair Display' },
+  { id: 'butler', label: 'Butler' },
+  { id: 'georgia', label: 'Georgia' },
+  { id: 'miller-banner', label: 'Miller Banner' },
+  { id: 'andrade-pro', label: 'Andrade Pro' },
+] as const;
+export type HeadlineFontId = (typeof HEADLINE_FONTS)[number]['id'];
+
+type Cut = { weight: LayoutLine['weight']; italic: boolean };
+
+/** A free face of CIP's own, by weight: what a family without a file of its own is set in. */
+const SHIPPED: Record<string, (c: Cut) => string> = {
+  poppins: (c) => (c.weight === 'black' ? 'Poppins-Black' : c.weight === 'bold' ? (c.italic ? 'Poppins-SemiBoldItalic' : 'Poppins-SemiBold') : c.italic ? 'Poppins-Italic' : 'Poppins-Regular'),
+  playfair: (c) => (c.italic ? 'PlayfairDisplay-Italic' : c.weight === 'black' ? 'PlayfairDisplay-Black' : c.weight === 'bold' ? 'PlayfairDisplay-Bold' : 'PlayfairDisplay-Regular'),
+  instrument: (c) => (c.italic ? 'InstrumentSerif-Italic' : 'InstrumentSerif-Regular'),
+  gelasio: (c) => (c.italic ? 'Gelasio-Italic' : c.weight === 'regular' ? 'Gelasio-Regular' : 'Gelasio-Bold'),
+  vibes: () => 'GreatVibes-Regular',
+};
+
+/** For each face: the start of its own files' names, and the free face that stands in without them. */
+const CHOICES: Record<HeadlineFontId, { own?: string; system?: boolean; standIn: string }> = {
+  'poppins': { standIn: 'poppins' },
+  'instrument-serif': { standIn: 'instrument' },
+  'playfair-display': { standIn: 'playfair' },
+  'georgia': { system: true, standIn: 'gelasio' },
+  'brittany-signature': { own: 'brittany', standIn: 'vibes' },
+  'butler': { own: 'butler', standIn: 'playfair' },
+  'miller-banner': { own: 'millerbanner', standIn: 'playfair' },
+  'andrade-pro': { own: 'andrade', standIn: 'gelasio' },
+};
+
+/** The brand's own file for a face, nearest the weight asked for: "Butler_Black.otf", "MillerBanner-Italic.ttf". */
+function ownFile(start: string, cut: Cut): string | null {
+  if (!existsSync(BRAND_FONTS)) return null;
+  const files = readdirSync(BRAND_FONTS).filter((f) => /\.(ttf|otf)$/i.test(f) && key(f).replace(/[^a-z0-9]/g, '').startsWith(start));
+  if (!files.length) return null;
+  const score = (f: string) => {
+    const n = key(f);
+    const italic = /italic|oblique/.test(n) === cut.italic ? 4 : 0;
+    const weight = cut.weight === 'black' ? (/black|heavy|ultra/.test(n) ? 3 : /extrabold|bold/.test(n) ? 2 : 0)
+      : cut.weight === 'bold' ? (/semibold|bold/.test(n) && !/extra|black/.test(n) ? 3 : /medium/.test(n) ? 1 : 0)
+      : /regular|roman|book|light/.test(n) || !/bold|black|medium|heavy/.test(n) ? 3 : 0;
+    return italic + weight;
+  };
+  return join(BRAND_FONTS, files.sort((a, b) => score(b) - score(a))[0]!);
+}
+
+/** Whether a face is set from its own file here, or stands in with a free one. */
+export function headlineFontIsOwn(id: HeadlineFontId): boolean {
+  const c = CHOICES[id];
+  if (!c.own && !c.system) return true;
+  if (c.system) return existsSync(join(SYSTEM, SYSTEM_FACES.georgia!));
+  return ownFile(c.own!, { weight: 'regular', italic: false }) !== null;
+}
+
+/**
+ * The name to set a line in, for a face a person chose: a name faceFor finds
+ * - the brand's own file, the machine's, or the free face standing in.
+ */
+export function headlineFontName(id: HeadlineFontId, cut: Cut): string {
+  const c = CHOICES[id];
+  if (c.own) {
+    const own = ownFile(c.own, cut);
+    if (own) return own.split(/[\\/]/).pop()!.replace(/\.(ttf|otf)$/i, '');
+  }
+  if (c.system) {
+    const name = `georgia${cut.weight !== 'regular' ? '-bold' : ''}${cut.italic ? (cut.weight !== 'regular' ? 'italic' : '-italic') : ''}`;
+    if (SYSTEM_FACES[name] && existsSync(join(SYSTEM, SYSTEM_FACES[name]!))) return name;
+  }
+  return SHIPPED[c.standIn]!(cut);
+}
+
+/** A line's style in the face a person chose for that line alone, at the line's own weight; as it was without one. */
+function inOwnFace(style: LayoutLine, font: string | undefined): LayoutLine {
+  if (!font || !(font in CHOICES)) return style;
+  const id = font as HeadlineFontId;
+  return { ...style, font: headlineFontName(id, { weight: style.weight, italic: style.italic }), script: id === 'brittany-signature' ? true : style.script };
+}
+
+/** A layout's headline set in the face a person chose, each line at its own weight. */
+export function withHeadlineFont(spec: LayoutSpec, id: HeadlineFontId | null | undefined): LayoutSpec {
+  if (!id || !spec.text || !(id in CHOICES)) return spec;
+  return {
+    ...spec,
+    text: { ...spec.text, lines: spec.text.lines.map((l) => ({ ...l, font: headlineFontName(id, { weight: l.weight, italic: l.italic }), script: id === 'brittany-signature' })) },
+  };
+}
 
 const registered = new Map<string, string>();
 function register(path: string): string {
@@ -282,6 +385,8 @@ export type SetLine = {
   /** The solid box behind it, when it has one. */
   boxFill: string | null;
   shadow: boolean;
+  /** Which layer its pixels are on: the headline's, or the added text's. */
+  layer?: 'headline' | 'texts';
 };
 
 /**
@@ -311,7 +416,7 @@ export function measureHeadline(
   const cased = caseLines(lines.map((l) => l.text), casing, keep);
   let widest = 0;
   lines.forEach((line, i) => {
-    const style = text.lines.find((l) => l.role === line.role) ?? text.lines[0]!;
+    const style = inOwnFace(text.lines.find((l) => l.role === line.role) ?? text.lines[0]!, line.font);
     setFont(ctx, faceFor(style).family, style.size * H, style);
     const words = style.upper || casing === 'upper' ? cased[i]!.toUpperCase() : cased[i]!;
     widest = Math.max(widest, ctx.measureText(words).width + (style.box ? style.size * H * 0.4 : 0));
@@ -371,11 +476,11 @@ export async function setHeadline(input: {
 
   // Fit: the lines as the planner wrote them, a little smaller if need be;
   // only then broken, evenly, and smaller again if the block still will not fit.
-  type Placed = { text: string; role: LayoutLine['role']; style: LayoutLine; face: Face; px: number };
+  type Placed = { text: string; role: LayoutLine['role']; style: LayoutLine; face: Face; px: number; ink?: string };
   const glue = [...(input.keep ?? []), ...OCCASIONS];
   const lay = (scale: number, mayBreak: boolean): Placed[] =>
     input.lines.flatMap((line, i) => {
-      const style = styleFor(line.role);
+      const style = inOwnFace(styleFor(line.role), line.font);
       const face = faceFor(style);
       let px = Math.max(8, style.size * H * scale * (input.scale ?? 1));
       const words = style.upper || casing === 'upper' ? cased[i]!.toUpperCase() : cased[i]!;
@@ -387,10 +492,10 @@ export async function setHeadline(input: {
       const alone = input.lines.filter((l) => l.role === line.role).length === 1 && words.split(/\s+/).length <= 4;
       if ((style.box || alone) && over < 1 && over >= (style.box ? 0.7 : 0.75)) {
         px *= over * 0.99;
-        return [{ text: words, role: line.role, style, face, px }];
+        return [{ text: words, role: line.role, style, face, px, ink: line.ink }];
       }
       const broken = mayBreak ? balancedLines(words, maxWidth, (s) => ctx.measureText(s).width, 4, glue) : [words];
-      return broken.map((t) => ({ text: t, role: line.role, style, face, px }));
+      return broken.map((t) => ({ text: t, role: line.role, style, face, px, ink: line.ink }));
     });
   const fits = (p: Placed[]) => p.length <= 6 && p.every((l) => { setFont(ctx, l.face.family, l.px, l.style); return ctx.measureText(l.text).width <= maxWidth; });
   let placed: Placed[] | null = null;
@@ -420,7 +525,8 @@ export async function setHeadline(input: {
     const pad = padOf(line);
     const top = y + pad.y;
 
-    const colour = line.style.box ? boxInk : line.style.accent ? accent : ink;
+    // A colour a person gave this line alone comes first; a boxed line keeps the ink its box reads with.
+    const colour = line.style.box ? boxInk : line.ink ?? (line.style.accent ? accent : ink);
     let shadow = false;
     if (line.style.box) {
       wctx.save();
@@ -480,4 +586,93 @@ function luminanceIn(data: Uint8ClampedArray, W: number, H: number, box: { x: nu
     n += 1;
   }
   return n ? sum / n : 0;
+}
+
+// --- more text, beside the headline ----------------------------------------------------
+
+/**
+ * A block of text a person added to the post besides its headline - a line
+ * under it, an offer, a call to act - placed, sized and styled on its own.
+ * Positions are shares of the post; the size is a share of its short side,
+ * so a block keeps its look on a banner as on a square.
+ */
+export type TextBlock = {
+  id: string;
+  lines: HeadlineLine[];
+  /** Its top-left corner, and how wide it may run. */
+  x: number;
+  y: number;
+  width: number;
+  /** A plain line's type size. A highlighted line is set larger, a closing one smaller. */
+  size: number;
+  align: 'left' | 'center' | 'right';
+  weight: LayoutLine['weight'];
+  italic: boolean;
+  upper: boolean;
+  shadow: boolean;
+  font?: HeadlineFontId;
+  ink?: string;
+};
+
+const PART_SCALE: Record<LayoutLine['role'], number> = { lead: 1, key: 1.4, tail: 0.75 };
+
+/**
+ * The added blocks, each on the one layer laid over the headline: its lines
+ * in its face and colours - or each line's own - fitted to its width. Says
+ * where each block and each line landed, for dragging and for the editors.
+ */
+export function setTextBlocks(blocks: TextBlock[], W: number, H: number): {
+  canvas: Canvas; lines: SetLine[]; boxes: { id: string; x: number; y: number; w: number; h: number }[];
+} {
+  const canvas = createCanvas(W, H);
+  const ctx = canvas.getContext('2d');
+  const short = Math.min(W, H);
+  const lines: SetLine[] = [];
+  const boxes: { id: string; x: number; y: number; w: number; h: number }[] = [];
+  for (const block of blocks) {
+    const maxWidth = Math.max(0.05, block.width) * W;
+    const x0 = block.x * W;
+    let y = block.y * H;
+    let left = Infinity; let right = -Infinity;
+    for (const line of block.lines) {
+      const cut = { weight: block.weight, italic: block.italic };
+      const own = (line.font ?? block.font) as HeadlineFontId | undefined;
+      const name = own && own in CHOICES ? headlineFontName(own, cut) : SHIPPED.poppins!(cut);
+      const style: LayoutLine = {
+        role: line.role, size: block.size, font: name, weight: block.weight, italic: block.italic,
+        script: own === 'brittany-signature', upper: block.upper, tracking: 0, accent: false, box: null,
+      };
+      const face = faceFor(style);
+      const words = block.upper ? printable(line.text).toUpperCase() : printable(line.text);
+      let px = Math.max(8, block.size * short * PART_SCALE[line.role]);
+      setFont(ctx, face.family, px, style);
+      // Too wide for the block: smaller, as far as half its size, rather than off the post.
+      const over = maxWidth / Math.max(1, ctx.measureText(words).width);
+      if (over < 1) { px = Math.max(px * 0.5, px * over * 0.99); setFont(ctx, face.family, px, style); }
+      const width = ctx.measureText(words).width;
+      const x = block.align === 'center' ? x0 + (maxWidth - width) / 2 : block.align === 'right' ? x0 + maxWidth - width : x0;
+      const colour = line.ink ?? block.ink ?? '#ffffff';
+      if (block.shadow) {
+        const light = luminanceOf(colour) > 0.5;
+        ctx.shadowColor = light ? 'rgba(0,0,0,0.55)' : 'rgba(255,255,255,0.5)';
+        ctx.shadowBlur = px * 0.3;
+        ctx.shadowOffsetY = px * 0.04;
+      }
+      ctx.fillStyle = colour;
+      ctx.textBaseline = 'top';
+      ctx.fillText(words, x, y);
+      ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
+      lines.push({
+        text: words, role: line.role, box: { x, y, w: width, h: px },
+        face: face.family.replace(/^CIP /, ''), file: face.file, substitute: face.substitute,
+        font: face.family.replace(/^CIP /, ''), px, colour, spacing: 0, boxFill: null, shadow: block.shadow, layer: 'texts',
+      });
+      left = Math.min(left, x); right = Math.max(right, x + width);
+      y += px * 1.12;
+    }
+    if (block.lines.length) {
+      boxes.push({ id: block.id, x: left / W, y: block.y, w: (right - left) / W, h: (y - block.y * H) / H });
+    }
+  }
+  return { canvas, lines, boxes };
 }

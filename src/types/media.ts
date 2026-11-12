@@ -37,7 +37,7 @@ export type MediaGenerationDTO = {
   hasAsset: boolean;
   assetCount: number;
   /** A post put together from the brand's own files: its headline, whose words can be changed. */
-  headline?: { text: string; role: 'lead' | 'key' | 'tail' }[] | null;
+  headline?: { text: string; role: 'lead' | 'key' | 'tail'; font?: string; ink?: string }[] | null;
   /** Where its bottle and logo are, which can be moved; null when the picture is one piece. */
   layers?: {
     bottle: 'left' | 'center' | 'right' | 'none';

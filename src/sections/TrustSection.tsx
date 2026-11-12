@@ -7,6 +7,8 @@ import { KnowledgeGraphSection } from './KnowledgeGraphSection';
 import { BrainSection } from './BrainSection';
 import { BrandBrainGraph } from './BrandBrainGraph';
 import { Rulebook } from './Rulebook';
+import { BrandHero, JustLearned, OpenQuestions } from './BrandHero';
+import type { OpenQuestion } from '@/server/brain/questions';
 import { Card, EmptyState, Pill } from '../components/ui/Bits';
 import { Icon } from '../components/ui/Icon';
 import { useWorkspace } from '@/context/workspace';
@@ -40,6 +42,7 @@ export function TrustSection({
   brain,
   product,
   rulebook,
+  questions,
   company,
 }: {
   overview: KnowledgeOverview;
@@ -47,6 +50,8 @@ export function TrustSection({
   brain: BrainOverviewDTO;
   product: ProductBrainDTO;
   rulebook: RulebookDTO;
+  /** What CIP could not settle on its own, for a person to answer. */
+  questions: OpenQuestion[];
   company: CompanyBrainDTO;
 }) {
   const workspace = useWorkspace();
@@ -102,26 +107,9 @@ export function TrustSection({
 
       {mode === 'product' ? (
         <>
-          <header className="page-head pagehead-row">
-            <div>
-              <p className="eyebrow">Product Brain</p>
-              <h1>Brand Brain — {product.brand ?? 'All brands'}</h1>
-              <p className="lede">
-                Every colour, phrase, campaign and rule {product.brand ? 'this brand has' : 'the house has'} used,
-                mapped and connected.{product.brand ? '' : ' Choose a brand in the sidebar to see one on its own.'}
-              </p>
-            </div>
-            <div className="headside">
-              <div className="statrow">
-                <Stat n={product.assets.toLocaleString('en-IN')} l="assets indexed" />
-                <Stat n={product.facts.toLocaleString('en-IN')} l="patterns learned" />
-                <Stat n={`${product.covered} of 6`} l="DNA areas covered" />
-              </div>
-              <a className="exportbtn" href={reportHref} download>
-                <Icon name="download" size={14} /> Export Brand DNA Report
-              </a>
-            </div>
-          </header>
+          <BrandHero product={product} reportHref={reportHref} />
+          <OpenQuestions initial={questions} />
+          <JustLearned recent={product.identity.recent} />
 
           <Rulebook rulebook={rulebook} />
 

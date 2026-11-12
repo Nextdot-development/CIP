@@ -78,3 +78,138 @@
   width: 6px; height: 6px; border-radius: 50%;
   background: var(--ok-700); display: inline-block; margin-left: 2px;
 }
+
+/* ---- The brand at a glance ------------------------------------------------
+   The card takes the brand's own colours (--b1, --b2, from what CIP learned)
+   for a soft glow behind its name; the house orange when it has none. */
+.bh {
+  --b1: var(--brand);
+  --b2: var(--brand-deep);
+  position: relative; overflow: hidden; isolation: isolate;
+  margin-bottom: 18px; padding: 26px 28px 22px; border-radius: var(--r-xl);
+  border: 1px solid color-mix(in srgb, var(--b1) 30%, var(--line));
+  background:
+    radial-gradient(120% 90% at 100% 0%, color-mix(in srgb, var(--b1) 34%, transparent), transparent 60%),
+    radial-gradient(90% 80% at 0% 100%, color-mix(in srgb, var(--b2) 20%, transparent), transparent 65%),
+    var(--surface);
+  box-shadow: var(--sh-2);
+}
+.bh::after {
+  /* A fine grain over the glow, so it reads as a material rather than a gradient. */
+  content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none; opacity: .5;
+  background-image: radial-gradient(rgba(255, 255, 255, .035) 1px, transparent 1px);
+  background-size: 3px 3px;
+}
+.bh-top { display: flex; gap: 28px; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; }
+.bh-id { flex: 1 1 380px; min-width: 0; }
+.bh-id .eyebrow { margin: 0 0 6px; }
+.bh-name {
+  margin: 0; font-family: var(--font-display); font-weight: 700; letter-spacing: -0.02em; line-height: 1.02;
+  font-size: clamp(34px, 5.2vw, 58px); color: var(--ink-900);
+  text-shadow: 0 2px 24px color-mix(in srgb, var(--b1) 35%, transparent);
+}
+.bh-note { margin: 10px 0 0; max-width: 62ch; font-size: 15px; line-height: 1.55; color: var(--ink-700); }
+.bh-tone { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; }
+
+.bh-meter { display: flex; flex-direction: column; align-items: center; gap: 12px; flex: 0 0 auto; }
+.bh-ring { position: relative; width: 132px; height: 132px; }
+.bh-ring svg { transform: rotate(-90deg); }
+.bh-ring-track { fill: none; stroke: var(--line-strong); stroke-width: 9; }
+.bh-ring-fill {
+  fill: none; stroke: url(#bh-ring-ink); stroke-width: 9; stroke-linecap: round;
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--b1) 55%, transparent));
+  transition: stroke-dasharray .8s cubic-bezier(.2, .8, .2, 1);
+}
+.bh-ring-text { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; }
+.bh-ring-text b { font-family: var(--font-display); font-size: 34px; line-height: 1; color: var(--ink-900); }
+.bh-ring-text small { font-size: 11px; color: var(--ink-500); margin-top: 3px; }
+.bh-stats { display: flex; gap: 6px; margin: 0; }
+.bh-stats div {
+  min-width: 78px; padding: 7px 10px; border-radius: var(--r-sm); text-align: center;
+  background: color-mix(in srgb, var(--canvas) 55%, transparent); border: 1px solid var(--line);
+}
+.bh-stats dt { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-400); }
+.bh-stats dd { margin: 2px 0 0; font-family: var(--font-display); font-size: 15px; font-weight: 600; color: var(--ink-900); }
+
+.bh-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin-top: 22px; }
+.bh-tile {
+  padding: 14px 15px; border-radius: var(--r-md); min-width: 0;
+  background: color-mix(in srgb, var(--canvas) 62%, transparent); border: 1px solid var(--line);
+  backdrop-filter: blur(6px);
+}
+.bh-tile.is-wide { grid-column: span 2; }
+.bh-k { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--ink-500); }
+.bh-empty { margin: 10px 0 0; font-size: 13px; color: var(--ink-400); font-style: italic; }
+
+.bh-swatches { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.bh-swatch { display: grid; justify-items: center; gap: 5px; padding: 0; border: 0; background: none; cursor: pointer; color: var(--ink-500); }
+.bh-swatch-chip {
+  width: 40px; height: 40px; border-radius: 12px; border: 1px solid rgba(255, 255, 255, .14);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .25), 0 4px 10px rgba(0, 0, 0, .3);
+  transition: transform .15s ease;
+}
+.bh-swatch:hover .bh-swatch-chip { transform: translateY(-2px) scale(1.05); }
+.bh-swatch-hex { font-size: 10.5px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+.bh-lines { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; }
+.bh-lines li {
+  position: relative; padding-left: 18px; font-family: var(--font-display); font-size: 17px; line-height: 1.3; color: var(--ink-900);
+}
+.bh-lines li::before {
+  content: "\201C"; position: absolute; left: 0; top: -4px; font-size: 26px; line-height: 1;
+  color: color-mix(in srgb, var(--b1) 80%, var(--ink-900));
+}
+.bh-fonts { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 4px; font-size: 13px; color: var(--ink-600); }
+.bh-fonts li.is-lead { font-family: var(--font-display); font-size: 16px; font-weight: 600; color: var(--ink-900); }
+
+.bh-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.bh-chip {
+  display: inline-flex; align-items: center; padding: 4px 10px; border-radius: var(--r-pill); font-size: 12.5px;
+  background: var(--ink-100); border: 1px solid var(--line); color: var(--ink-800);
+}
+.bh-chip.is-tone {
+  text-transform: capitalize; font-weight: 600;
+  background: color-mix(in srgb, var(--b1) 16%, transparent); border-color: color-mix(in srgb, var(--b1) 38%, transparent);
+}
+.bh-chip.is-market::before { content: ""; width: 6px; height: 6px; border-radius: 50%; margin-right: 6px; background: var(--ok-500); }
+
+/* ---- Just learned, and what CIP would like to check ---- */
+.bh-recent, .bh-questions { margin-bottom: 18px; }
+.bh-recent-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.bh-recent-head h2 { margin: 0; font-family: var(--font-display); font-size: 16px; }
+.bh-pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--ok-500); animation: bh-pulse 2s infinite; }
+@keyframes bh-pulse {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok-500) 60%, transparent); }
+  70% { box-shadow: 0 0 0 8px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+.bh-recent-row { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(220px, 1fr); gap: 10px; overflow-x: auto; padding-bottom: 4px; scroll-snap-type: x mandatory; }
+.bh-fact {
+  scroll-snap-align: start; padding: 12px 14px; border-radius: var(--r-md); background: var(--surface); border: 1px solid var(--line);
+  display: grid; gap: 4px; align-content: start; transition: border-color .15s ease, transform .15s ease;
+}
+.bh-fact:hover { border-color: var(--line-strong); transform: translateY(-1px); }
+.bh-fact-k { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--brand); font-weight: 600; }
+.bh-fact p { margin: 0; font-size: 13.5px; line-height: 1.45; color: var(--ink-800); }
+.bh-fact-ago { font-size: 11px; color: var(--ink-400); }
+
+.bh-count { padding: 1px 8px; border-radius: var(--r-pill); font-size: 12px; font-weight: 600; background: var(--warn-050); color: var(--warn-700); }
+.bh-q-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 10px; }
+.bh-q {
+  display: grid; gap: 8px; align-content: start; padding: 15px 16px; border-radius: var(--r-md);
+  background: linear-gradient(180deg, var(--warn-050), transparent 70%), var(--surface);
+  border: 1px solid color-mix(in srgb, var(--warn-500) 30%, var(--line));
+}
+.bh-q-title { margin: 0; font-family: var(--font-display); font-size: 15.5px; font-weight: 600; color: var(--ink-900); }
+.bh-q-context { margin: 0; font-size: 13px; line-height: 1.5; color: var(--ink-600); }
+.bh-q-suggest { margin: 0; display: flex; gap: 6px; align-items: flex-start; font-size: 13px; color: var(--ink-800); }
+
+@media (max-width: 720px) {
+  .bh { padding: 20px 16px 16px; }
+  .bh-meter { width: 100%; }
+  .bh-tile.is-wide { grid-column: auto; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bh-pulse { animation: none; }
+  .bh-ring-fill, .bh-swatch-chip, .bh-fact { transition: none; }
+}

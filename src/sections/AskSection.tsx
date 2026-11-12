@@ -82,12 +82,15 @@ const SHAPE_LABELS: Record<string, string> = {
 function shapesFor(
   chosen: ImageProviderStatusDTO | null,
 ): { value: string | null; label: string }[] {
+  const own = chosen?.aspectRatios ?? [];
   return [
     { value: null, label: 'Auto' },
-    ...(chosen?.aspectRatios ?? []).map((ratio) => ({
+    ...own.map((ratio) => ({
       value: ratio,
       label: SHAPE_LABELS[ratio] ?? ratio,
     })),
+    // The feed's own shape, whether or not the generator makes it: made at the nearest and cut to it.
+    ...(own.includes('4:5') ? [] : [{ value: '4:5', label: SHAPE_LABELS['4:5']! }]),
   ];
 }
 
@@ -202,8 +205,8 @@ export function AskSection({
   const chosen = providers.images.find((p) => p.choice === provider) ?? null;
   const videoReady = providers.video.configured;
   const ready = mediaType === 'image' ? Boolean(chosen?.configured) : videoReady;
-  // Every size offered is one this generator makes itself, so there is nothing
-  // to warn about before it is pressed.
+  // Every size offered is one the post comes back in: the generator's own, or
+  // 4:5 made at the nearest of its sizes and cut - so nothing to warn about first.
   const shapes = shapesFor(chosen);
 
   const refresh = useCallback(async () => {
@@ -334,7 +337,8 @@ export function AskSection({
     const form = new FormData();
     form.append('file', ownPicture);
     form.append('request', draft.trim());
-    form.append('ratio', shape ?? '1:1');
+    // Left on Auto, the post takes the picture's own shape: a 4:5 photo makes a 4:5 post, not a square.
+    form.append('ratio', shape ?? 'auto');
     const res = await fetch('/api/media/own-picture', { method: 'POST', body: form }).catch(() => null);
     setPlacing(false);
     if (!res?.ok) {
@@ -457,7 +461,9 @@ export function AskSection({
                 title={
                   option.value === null
                     ? 'CIP reads the size from your request, or decides from the format'
-                    : `${chosen ? IMAGE_PROVIDER_LABELS[chosen.choice] : 'This generator'} makes this size directly`
+                    : chosen?.aspectRatios.includes(option.value)
+                      ? `${IMAGE_PROVIDER_LABELS[chosen.choice]} makes this size directly`
+                      : 'Made at the nearest size the generator has, then cut to this one'
                 }
               >
                 {option.label}
@@ -1011,7 +1017,7 @@ const LINE_PARTS: { role: HeadlineLine['role']; label: string }[] = [
  * The headline of a composed post, line by line, to set again on the same
  * scene. Saved as a new version beside this one, in a second or two.
  */
-function TextEditor({ generation, lines: initial, onDone, onSave, saveLabel = 'Save as new version', hint }: {
+function TextEditor({ generation, lines: initial, onDone, onSave, saveLabel = 'Save as new version', hint, fonts, inks }: {
   generation: MediaGenerationDTO;
   lines: HeadlineLine[];
   onDone: () => void;
@@ -1019,12 +1025,27 @@ function TextEditor({ generation, lines: initial, onDone, onSave, saveLabel = 'S
   onSave?: (lines: HeadlineLine[]) => Promise<boolean>;
   saveLabel?: string;
   hint?: string;
+  /** Faces a line may be set in on its own; none offered when not given. */
+  fonts?: { id: string; label: string; own: boolean }[];
+  /** Colours a line may take on its own - the brand's; none offered when not given. */
+  inks?: string[];
 }) {
   const { note } = useToast();
   const [lines, setLines] = useState<HeadlineLine[]>(initial);
   const [saving, setSaving] = useState(false);
   const set = (i: number, change: Partial<HeadlineLine>) =>
     setLines((all) => all.map((l, n) => (n === i ? { ...l, ...change } : l)));
+  /**
+   * A line's part or face, changed and set on the post at once where the post
+   * is arranged here - choosing "Highlight" did nothing until the button was
+   * pressed, and looked broken. Words still wait for the button: half a word is not a headline.
+   */
+  const setNow = (i: number, change: Partial<HeadlineLine>) => {
+    const next = lines.map((l, n) => (n === i ? { ...l, ...change } : l));
+    setLines(next);
+    const filled = next.filter((l) => l.text.trim());
+    if (onSave && filled.length) void onSave(filled);
+  };
   const filled = lines.filter((l) => l.text.trim());
 
   const save = async () => {
@@ -1056,33 +1077,78 @@ function TextEditor({ generation, lines: initial, onDone, onSave, saveLabel = 'S
         {hint ?? 'Same picture, bottle and logo - only the words change. Capitals are set for you.'}
       </span>
       {lines.map((line, i) => (
-        <div key={i} className="row" style={{ gap: 8 }}>
+        <div key={i} className="headline-line">
+          <div className="row" style={{ gap: 8 }}>
+            <input
+              className="field-input grow"
+              value={line.text}
+              maxLength={80}
+              onChange={(e) => set(i, { text: e.target.value })}
+              aria-label={`Line ${i + 1}`}
+            />
+            {lines.length > 1 && (
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => setLines((all) => all.filter((_, n) => n !== i))}
+                aria-label={`Remove line ${i + 1}`}
+              >
+                <Icon name="x" size={14} />
+              </button>
+            )}
+          </div>
+          <div className="row headline-line-look" style={{ gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
           <select
             className="field-input"
-            style={{ width: 120 }}
+            style={{ width: 118, padding: '6px 8px' }}
             value={line.role}
-            onChange={(e) => set(i, { role: e.target.value as HeadlineLine['role'] })}
+            onChange={(e) => setNow(i, { role: e.target.value as HeadlineLine['role'] })}
             aria-label={`Line ${i + 1} style`}
           >
             {LINE_PARTS.map((p) => <option key={p.role} value={p.role}>{p.label}</option>)}
           </select>
-          <input
-            className="field-input grow"
-            value={line.text}
-            maxLength={80}
-            onChange={(e) => set(i, { text: e.target.value })}
-            aria-label={`Line ${i + 1}`}
-          />
-          {lines.length > 1 && (
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm"
-              onClick={() => setLines((all) => all.filter((_, n) => n !== i))}
-              aria-label={`Remove line ${i + 1}`}
+          {fonts && fonts.length > 0 && (
+            <select
+              className="field-input"
+              style={{ width: 160, padding: '6px 8px' }}
+              value={line.font ?? ''}
+              onChange={(e) => {
+                const font = e.target.value;
+                setNow(i, font ? { font } : { font: undefined });
+              }}
+              aria-label={`Line ${i + 1} font`}
+              title="This line's own font - or the headline's"
             >
-              <Icon name="x" size={14} />
-            </button>
+              <option value="">Headline&apos;s font</option>
+              {fonts.map((f) => <option key={f.id} value={f.id}>{f.label}{f.own ? '' : ' ≈'}</option>)}
+            </select>
           )}
+          {inks && inks.length > 0 && (
+            <span className="row headline-line-inks" role="group" aria-label={`Line ${i + 1} colour`}>
+              <button
+                type="button"
+                className={`headline-ink is-auto ${!line.ink ? 'is-on' : ''}`}
+                onClick={() => line.ink && setNow(i, { ink: undefined })}
+                title="The headline's colour"
+                aria-pressed={!line.ink}
+              >
+                Aa
+              </button>
+              {inks.map((ink) => (
+                <button
+                  key={ink}
+                  type="button"
+                  className={`headline-ink ${line.ink === ink ? 'is-on' : ''}`}
+                  style={{ background: ink }}
+                  onClick={() => line.ink !== ink && setNow(i, { ink })}
+                  title={`This line in ${ink}`}
+                  aria-label={`Line ${i + 1} in ${ink}`}
+                  aria-pressed={line.ink === ink}
+                />
+              ))}
+            </span>
+          )}
+          </div>
         </div>
       ))}
       <div className="row" style={{ gap: 8 }}>
@@ -1109,14 +1175,23 @@ function TextEditor({ generation, lines: initial, onDone, onSave, saveLabel = 'S
 }
 
 type Layers = NonNullable<MediaGenerationDTO['layers']>;
-type LayerName = 'background' | 'shadow' | 'reflection' | 'bottle' | 'headline' | 'logo';
+type LayerName = 'background' | 'shadow' | 'reflection' | 'bottle' | 'headline' | 'texts' | 'logo';
 /**
  * A piece's box in fractions of the post, how far it is turned (degrees,
  * clockwise) for one that turns, and the point it turns and sizes about when
  * that is not its middle - the shadow's is the bottle's foot.
  */
 type Frac = { x: number; y: number; w: number; h: number; r?: number; px?: number; py?: number };
-type Piece = 'bottle' | 'shadow' | 'reflection' | 'logo' | 'text';
+type BasePiece = 'bottle' | 'shadow' | 'reflection' | 'logo' | 'text';
+/** A piece on the post: one of its own, or a block of text a person added - "t:" and its id. */
+type Piece = BasePiece | `t:${string}`;
+const isBlock = (piece: Piece): piece is `t:${string}` => piece.startsWith('t:');
+/** Text a person added besides the headline: its lines, place and look. */
+type TextBlockC = {
+  id: string; lines: HeadlineLine[]; x: number; y: number; width: number; size: number;
+  align: 'left' | 'center' | 'right'; weight: 'regular' | 'bold' | 'black'; italic: boolean; upper: boolean; shadow: boolean;
+  font?: string; ink?: string;
+};
 /** The pieces that hang from the bottle's foot: each moves, sizes and turns about it, on its own. */
 type FromFoot = 'shadow' | 'reflection';
 const FROM_FOOT = new Set<Piece>(['shadow', 'reflection']);
@@ -1124,7 +1199,7 @@ type Placement = {
   bottle?: { cx: number; base: number; height: number; rotate?: number };
   shadow?: { dx: number; dy: number; scale: number; rotate: number };
   reflection?: { dx: number; dy: number; scale: number; rotate: number };
-  logo?: { x: number; y: number; w: number };
+  logo?: { x: number; y: number; w: number; rotate?: number };
   text?: { x: number; y: number; scale: number };
 };
 type Manifest = {
@@ -1137,25 +1212,39 @@ type Manifest = {
     bottle: Frac | null; shadow?: Frac | null; shadowPivot?: { x: number; y: number } | null;
     reflection?: Frac | null; reflectionPivot?: { x: number; y: number } | null;
     logo: Frac | null; text: Frac | null; textAnchor: { x: number } | null;
+    texts?: { id: string; x: number; y: number; w: number; h: number }[];
   };
-  choices: { bottle: Layers['bottle']; size: Layers['size']; logo: Layers['logo']; headline?: 'shown' | 'none'; place?: Placement; style?: PostStyle };
+  choices: { bottle: Layers['bottle']; size: Layers['size']; logo: Layers['logo']; headline?: 'shown' | 'none'; place?: Placement; style?: PostStyle; texts?: TextBlockC[]; order?: StackGroupC[] };
   /** What measuring the post found to look at, each with the change that puts it right when there is one. */
   checks?: (string | { text: string; fix?: { choices: Record<string, unknown> } })[];
 };
 
 /** How the headline and the bottle look, as a person set them. */
 type PostStyle = {
-  ink?: string; align?: 'left' | 'center' | 'right'; textSize?: number;
+  ink?: string; align?: 'left' | 'center' | 'right'; textSize?: number; font?: string;
+  backing?: 'none' | 'box'; backingInk?: string;
   shadow?: number; bright?: number; shadowSoft?: number; shadowAngle?: number; shadowLength?: number;
   reflection?: number; reflectionSoft?: number;
+  logoBright?: number; logoShadow?: number; logoOpacity?: number; bgBright?: number; bgBlur?: number;
 };
-type SlideKey = 'textSize' | 'shadow' | 'bright' | 'shadowSoft' | 'shadowAngle' | 'shadowLength' | 'reflection' | 'reflectionSoft';
+type SlideKey = 'textSize' | 'shadow' | 'bright' | 'shadowSoft' | 'shadowAngle' | 'shadowLength' | 'reflection' | 'reflectionSoft'
+  | 'logoBright' | 'logoShadow' | 'logoOpacity' | 'bgBright' | 'bgBlur';
+/** The pieces that can lie over or under one another, from the bottom up as CIP lays them. */
+const STACK_C = ['bottle', 'headline', 'texts', 'logo'] as const;
+type StackGroupC = (typeof STACK_C)[number];
+const STACK_LABEL: Record<StackGroupC, string> = { bottle: 'Bottle', headline: 'Headline', texts: 'Text', logo: 'Logo' };
+const STACK_LAYERS: Record<StackGroupC, LayerName[]> = { bottle: ['shadow', 'reflection', 'bottle'], headline: ['headline'], texts: ['texts'], logo: ['logo'] };
 
 /** A look set by sliding, as an editor has it: its range, where "as designed" is, and how it reads. */
 const SLIDES: Record<SlideKey, { label: string; min: number; max: number; step: number; plain: number | null; shows: (v: number) => string }> = {
   shadow: { label: 'Strength', min: 0, max: 3, step: 0.05, plain: 1, shows: (v) => `${Math.round(v * 100)}%` },
   shadowSoft: { label: 'Softness', min: 0.2, max: 3, step: 0.05, plain: 1, shows: (v) => `${Math.round(v * 100)}%` },
   shadowAngle: { label: 'Direction', min: -1.6, max: 1.6, step: 0.05, plain: null, shows: (v) => (Math.abs(v) < 0.05 ? 'Straight back' : v < 0 ? `Left ${Math.round(-v * 100 / 1.6)}%` : `Right ${Math.round(v * 100 / 1.6)}%`) },
+  logoBright: { label: 'Light on the logo', min: -0.4, max: 0.4, step: 0.01, plain: 0, shows: (v) => (v === 0 ? 'As it is' : `${v > 0 ? '+' : ''}${Math.round(v * 100)}%`) },
+  logoShadow: { label: 'Shadow', min: 0, max: 2, step: 0.05, plain: 0, shows: (v) => (v === 0 ? 'None' : `${Math.round(v * 100)}%`) },
+  logoOpacity: { label: 'Opacity', min: 0.15, max: 1, step: 0.01, plain: 1, shows: (v) => `${Math.round(v * 100)}%` },
+  bgBright: { label: 'Light', min: -0.5, max: 0.5, step: 0.01, plain: 0, shows: (v) => (v === 0 ? 'As painted' : `${v > 0 ? '+' : ''}${Math.round(v * 100)}%`) },
+  bgBlur: { label: 'Soft focus', min: 0, max: 1, step: 0.02, plain: 0, shows: (v) => (v === 0 ? 'Sharp' : `${Math.round(v * 100)}%`) },
   shadowLength: { label: 'Length', min: 0.3, max: 3, step: 0.05, plain: 1, shows: (v) => `${Math.round(v * 100)}%` },
   reflection: { label: 'Strength', min: 0, max: 2, step: 0.05, plain: 1, shows: (v) => `${Math.round(v * 100)}%` },
   reflectionSoft: { label: 'Softness', min: 0, max: 3, step: 0.05, plain: 0, shows: (v) => (v === 0 ? 'As the surface gives it' : `+${Math.round(v * 100)}%`) },
@@ -1195,15 +1284,21 @@ const restoring = (s: Snapshot) => ({
     size: s.choices.size,
     logo: s.choices.logo,
     headline: s.choices.headline ?? 'shown',
+    texts: s.choices.texts ?? [],
+    order: s.choices.order ?? null,
     place: {
       bottle: s.choices.place?.bottle ?? null, shadow: s.choices.place?.shadow ?? null, reflection: s.choices.place?.reflection ?? null,
       logo: s.choices.place?.logo ?? null, text: s.choices.place?.text ?? null,
     },
     style: {
       ink: s.choices.style?.ink ?? null, align: s.choices.style?.align ?? null, textSize: s.choices.style?.textSize ?? null,
+      font: s.choices.style?.font ?? null,
+      backing: s.choices.style?.backing ?? null, backingInk: s.choices.style?.backingInk ?? null,
       shadow: s.choices.style?.shadow ?? null, bright: s.choices.style?.bright ?? null, shadowSoft: s.choices.style?.shadowSoft ?? null,
       shadowAngle: s.choices.style?.shadowAngle ?? null, shadowLength: s.choices.style?.shadowLength ?? null,
       reflection: s.choices.style?.reflection ?? null, reflectionSoft: s.choices.style?.reflectionSoft ?? null,
+      logoBright: s.choices.style?.logoBright ?? null, logoShadow: s.choices.style?.logoShadow ?? null,
+      logoOpacity: s.choices.style?.logoOpacity ?? null, bgBright: s.choices.style?.bgBright ?? null, bgBlur: s.choices.style?.bgBlur ?? null,
     },
   },
   ...(s.lines ? { lines: s.lines } : {}),
@@ -1228,6 +1323,10 @@ function snapped(box: Frac, piece: Piece): { box: Frac; guides: { x: number[]; y
 const SHAPES: { value: string | null; label: string }[] = [
   { value: null, label: 'As made' }, { value: '1:1', label: 'Square 1:1' }, { value: '4:5', label: 'Portrait 4:5' },
   { value: '9:16', label: 'Story 9:16' }, { value: '16:9', label: 'Wide 16:9' },
+  // Print and retail, as Radico's briefs ask for them.
+  { value: '1:1.414', label: 'Poster A2/A3' }, { value: '1:2', label: 'Standee 36x72in' }, { value: '4:3', label: 'Billboard 4x3m' },
+  { value: '5:1', label: 'Jumia desktop 1200x240' }, { value: '720:261', label: 'Jumia mobile 720x261' },
+  { value: '41:16', label: 'Shelf top 41x16in' }, { value: '18:60', label: 'Shelf side 18x60in' },
 ];
 
 type HeadlineOption = { from: 'words' | 'brand'; lines: HeadlineLine[] };
@@ -1237,12 +1336,13 @@ const STUDIO_STEPS: { id: 'background' | 'bottle' | 'logo' | 'words' | 'download
   { id: 'background', label: 'Background', adds: ['background'] },
   { id: 'bottle', label: 'Bottle', adds: ['shadow', 'reflection', 'bottle'] },
   { id: 'logo', label: 'Logo', adds: ['logo'] },
-  { id: 'words', label: 'Headline', adds: ['headline'] },
+  { id: 'words', label: 'Headline', adds: ['headline', 'texts'] },
   { id: 'download', label: 'Download', adds: [] },
 ];
 /** Top to bottom, as an editor lists them. */
 const LAYER_LIST: { name: LayerName; label: string }[] = [
   { name: 'logo', label: 'Logo' },
+  { name: 'texts', label: 'Text' },
   { name: 'headline', label: 'Headline' },
   { name: 'bottle', label: 'Bottle' },
   { name: 'reflection', label: 'Bottle reflection' },
@@ -1250,13 +1350,18 @@ const LAYER_LIST: { name: LayerName; label: string }[] = [
   { name: 'background', label: 'Background' },
 ];
 /** Which pictures each draggable piece is made of. */
-const PIECE_LAYERS: Record<Piece, LayerName[]> = {
+const PIECE_LAYERS: Record<BasePiece, LayerName[]> = {
   bottle: ['bottle', 'shadow', 'reflection'], shadow: ['shadow'], reflection: ['reflection'], logo: ['logo'], text: ['headline'],
 };
 const PIECE_OF: Partial<Record<LayerName, Piece>> = { bottle: 'bottle', shadow: 'bottle', reflection: 'bottle', logo: 'logo', headline: 'text' };
-const PIECE_LABEL: Record<Piece, string> = { bottle: 'Bottle', shadow: 'Shadow', reflection: 'Reflection', logo: 'Logo', text: 'Headline' };
+const PIECE_LABEL: Record<BasePiece, string> = { bottle: 'Bottle', shadow: 'Shadow', reflection: 'Reflection', logo: 'Logo', text: 'Headline' };
 /** The pieces that turn, by a handle above them. */
-const TURNS = new Set<Piece>(['bottle', 'shadow', 'reflection']);
+const TURNS = new Set<Piece>(['bottle', 'shadow', 'reflection', 'logo']);
+const layersOfPiece = (piece: Piece): LayerName[] => (isBlock(piece) ? ['texts'] : PIECE_LAYERS[piece]);
+const labelOf = (piece: Piece): string => (isBlock(piece) ? 'Text' : PIECE_LABEL[piece]);
+/** A short id for a new block of text. */
+const blockId = () => Math.random().toString(36).replace(/[^a-z0-9]/g, '').slice(2, 10).padEnd(6, '0');
+const TEXT_SIZES_C = { min: 0.015, max: 0.2 };
 const middleOf = (b: Frac) => ({ x: b.x + b.w / 2, y: b.y + b.h / 2 });
 /** Where a piece turns and sizes about: its own point when it has one, else its middle. */
 const pivotOf = (b: Frac) => (b.px !== undefined && b.py !== undefined ? { x: b.px, y: b.py } : middleOf(b));
@@ -1355,6 +1460,8 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
   const [options, setOptions] = useState<HeadlineOption[] | null>(null);
   /** The colours the headline may take: the brand's own, read with the other headlines. */
   const [inks, setInks] = useState<string[]>([]);
+  /** The faces the headline may be set in; `own` false where a free look-alike stands in for the brand's file. */
+  const [fonts, setFonts] = useState<{ id: string; label: string; own: boolean }[]>([]);
   /** The headline's words being changed on the picture itself, line by line. */
   const [inline, setInline] = useState<HeadlineLine[] | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
@@ -1392,7 +1499,9 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
     let live = true;
     void fetch(`/api/media/generations/${generation.id}/headlines`, { cache: 'no-store' })
       .then((r) => (r.ok ? r.json() : { options: [] }))
-      .then((b: { options?: HeadlineOption[]; inks?: string[] }) => { if (live) { setOptions(b.options ?? []); setInks(b.inks ?? []); } })
+      .then((b: { options?: HeadlineOption[]; inks?: string[]; fonts?: { id: string; label: string; own: boolean }[] }) => {
+        if (live) { setOptions(b.options ?? []); setInks(b.inks ?? []); setFonts(b.fonts ?? []); }
+      })
       .catch(() => { if (live) setOptions([]); });
     return () => { live = false; };
   }, [onWords, options, generation.id]);
@@ -1531,15 +1640,20 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
 
   /** A piece where the post has it, turned as it was left. */
   const setBox = (piece: Piece): Frac | null => {
+    if (isBlock(piece)) {
+      const t = manifest?.boxes.texts?.find((x) => x.id === piece.slice(2));
+      return t ? { x: t.x, y: t.y, w: t.w, h: t.h, r: 0 } : null;
+    }
     const b = manifest?.boxes[piece];
     if (!b) return null;
     const r = piece === 'bottle' ? manifest?.choices.place?.bottle?.rotate
+      : piece === 'logo' ? manifest?.choices.place?.logo?.rotate
       : FROM_FOOT.has(piece) ? manifest?.choices.place?.[piece as FromFoot]?.rotate : 0;
     const pivot = piece === 'shadow' ? manifest?.boxes.shadowPivot : piece === 'reflection' ? manifest?.boxes.reflectionPivot : null;
     return { ...b, r: r ?? 0, ...(pivot ? { px: pivot.x, py: pivot.y } : {}) };
   };
   const boxOf = (piece: Piece): Frac | null => moved[piece] ?? setBox(piece);
-  const draggable = (piece: Piece) => PIECE_LAYERS[piece].some((n) => shows(n)) && Boolean(manifest?.boxes[piece]);
+  const draggable = (piece: Piece) => layersOfPiece(piece).some((n) => shows(n)) && Boolean(setBox(piece));
 
   /**
    * The transform that carries a piece's picture from where it was set to
@@ -1550,7 +1664,11 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
     name === 'shadow' || name === 'reflection' ? (moved[name] ? name : moved.bottle ? 'bottle' : undefined) : PIECE_OF[name];
   const transformFor = (name: LayerName): string | undefined => {
     const piece = pieceShowing(name);
-    const from = piece ? setBox(piece) : null;
+    return piece ? transformOfPiece(piece) : undefined;
+  };
+  /** The same for one piece: an added block of text moves on its own, out of the one layer they share. */
+  const transformOfPiece = (piece: Piece): string | undefined => {
+    const from = setBox(piece);
     const to = piece ? moved[piece] : null;
     if (!from || !to) return undefined;
     const a = pivotOf(from);
@@ -1617,6 +1735,16 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
       setMoved((m) => { const next = { ...m }; delete next[piece]; return next; });
       return;
     }
+    if (isBlock(piece)) {
+      const id = piece.slice(2);
+      const k = to.h / from.h;
+      const texts = (manifest.choices.texts ?? []).map((b) => (b.id !== id ? b : {
+        ...b, x: b.x + (to.x - from.x), y: b.y + (to.y - from.y),
+        size: Math.min(TEXT_SIZES_C.max, Math.max(TEXT_SIZES_C.min, b.size * k)), width: Math.min(1.2, b.width * k),
+      }));
+      void arrange({ choices: { texts } }, [piece]);
+      return;
+    }
     const place: Placement = {};
     if (piece === 'bottle') place.bottle = { cx: to.x + to.w / 2, base: to.y + to.h, height: to.h, rotate: to.r ?? 0 };
     if (piece === 'shadow' || piece === 'reflection') {
@@ -1626,7 +1754,7 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
       const b = pivotOf(to);
       place[piece] = { dx: was.dx + (b.x - a.x), dy: was.dy + (b.y - a.y), scale: was.scale * (to.h / from.h), rotate: to.r ?? 0 };
     }
-    if (piece === 'logo') place.logo = { x: to.x, y: to.y, w: to.w };
+    if (piece === 'logo') place.logo = { x: to.x, y: to.y, w: to.w, rotate: to.r ?? 0 };
     if (piece === 'text') {
       const was = manifest.choices.place?.text?.scale ?? 1;
       const anchor = manifest.boxes.textAnchor?.x ?? from.x;
@@ -1757,6 +1885,18 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
       const soft = now('shadowSoft');
       if (soft !== undefined && soft > set('shadowSoft')) filters.push(`blur(${((soft - set('shadowSoft')) * 4).toFixed(1)}px)`);
     }
+    if (name === 'background') {
+      const bright = now('bgBright');
+      if (bright !== undefined) filters.push(`brightness(${((1 + bright) / (1 + set('bgBright'))).toFixed(3)})`);
+      const blur = now('bgBlur');
+      if (blur !== undefined && blur > set('bgBlur')) filters.push(`blur(${((blur - set('bgBlur')) * 8).toFixed(1)}px)`);
+    }
+    if (name === 'logo') {
+      const bright = now('logoBright');
+      if (bright !== undefined) filters.push(`brightness(${((1 + bright) / (1 + set('logoBright'))).toFixed(3)})`);
+      const opacity = now('logoOpacity');
+      if (opacity !== undefined) out.opacity = Math.min(1, opacity / set('logoOpacity'));
+    }
     if (name === 'reflection') {
       const strength = now('reflection');
       if (strength !== undefined && set('reflection') > 0) out.opacity = Math.min(1, strength / set('reflection'));
@@ -1809,7 +1949,25 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
   );
 
   // The shadow and the reflection first, so the bottle's box lies over them where they meet.
-  const handles = (['shadow', 'reflection', 'bottle', 'text', 'logo'] as Piece[]).filter(draggable);
+  // The layers from the bottom up: the background, then each piece in the order a person put them.
+  const order: StackGroupC[] = manifest?.choices.order ?? [...STACK_C];
+  const stacked = [
+    LAYER_LIST.find((l) => l.name === 'background')!,
+    ...order.flatMap((g) => STACK_LAYERS[g].map((n) => LAYER_LIST.find((l) => l.name === n)!)),
+  ];
+  /** A piece one step up or down the stack. */
+  const restack = (g: StackGroupC, by: 1 | -1) => {
+    const at = order.indexOf(g);
+    const to = at + by;
+    if (to < 0 || to >= order.length) return;
+    const next = [...order];
+    [next[at], next[to]] = [next[to]!, next[at]!];
+    void arrange({ choices: { order: next } });
+  };
+  const handles = ([
+    'shadow', 'reflection', 'bottle', 'text', 'logo',
+    ...(manifest?.boxes.texts ?? []).map((t) => `t:${t.id}` as Piece),
+  ] as Piece[]).filter(draggable);
 
   return (
     <div className="studio">
@@ -1828,7 +1986,25 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
           onPointerDown={() => setSelected(null)}
         >
           {manifest
-            ? [...LAYER_LIST].reverse().map((l) => (
+            ? stacked.map((l) => (l.name === 'texts' ? (
+                (manifest.boxes.texts ?? []).map((t) => {
+                  const pad = 0.012;
+                  const piece = `t:${t.id}` as Piece;
+                  return (
+                    <img
+                      key={`texts-${t.id}`}
+                      src={layerSrc(generation.id, manifest, 'texts')}
+                      alt=""
+                      draggable={false}
+                      className={`studio-layer ${shows('texts') ? '' : 'is-hidden'}`}
+                      style={{
+                        clipPath: `inset(${(t.y - pad) * 100}% ${(1 - t.x - t.w - pad) * 100}% ${(1 - t.y - t.h - pad) * 100}% ${(t.x - pad) * 100}%)`,
+                        transform: transformOfPiece(piece), transformOrigin: '0 0',
+                      }}
+                    />
+                  );
+                })
+              ) : (
                 <img
                   key={l.name}
                   src={layerSrc(generation.id, manifest, l.name)}
@@ -1837,7 +2013,7 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
                   className={`studio-layer ${shows(l.name) ? '' : 'is-hidden'}`}
                   style={{ transform: transformFor(l.name), transformOrigin: originFor(l.name), ...previewOf(l.name) }}
                 />
-              ))
+              )))
             : <div className="studio-wait">Laying out the layers…</div>}
           {painting && <div className="studio-wait">Painting a new background…</div>}
 
@@ -1859,10 +2035,10 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
                 title={piece === 'text'
                   ? 'Drag the headline; pull its corner to resize; double-click to change its words'
                   : TURNS.has(piece)
-                    ? `Drag the ${PIECE_LABEL[piece].toLowerCase()}; pull its corner to resize; turn it by the round handle`
-                    : `Drag the ${PIECE_LABEL[piece].toLowerCase()}; pull its corner to resize`}
+                    ? `Drag the ${labelOf(piece).toLowerCase()}; pull its corner to resize; turn it by the round handle`
+                    : `Drag the ${labelOf(piece).toLowerCase()}; pull its corner to resize`}
               >
-                <span className="studio-box-label" style={b.r ? { transform: `rotate(${-b.r}deg)` } : undefined}>{PIECE_LABEL[piece]}{b.r ? ` · ${Math.round(b.r)}°` : ''}</span>
+                <span className="studio-box-label" style={b.r ? { transform: `rotate(${-b.r}deg)` } : undefined}>{labelOf(piece)}{b.r ? ` · ${Math.round(b.r)}°` : ''}</span>
                 {b.px !== undefined && b.py !== undefined && (
                   <span
                     className="studio-box-pivot"
@@ -1875,7 +2051,7 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
                     // The reflection hangs below the foot: its handle goes below it, clear of the bottle.
                     className={`studio-box-turn ${piece === 'reflection' ? 'is-below' : ''}`}
                     onPointerDown={startDrag(piece, 'turn')}
-                    aria-label={`Turn the ${PIECE_LABEL[piece].toLowerCase()}`}
+                    aria-label={`Turn the ${labelOf(piece).toLowerCase()}`}
                     title="Drag round to turn; Alt for any angle"
                   >
                     <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true">
@@ -1884,7 +2060,7 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
                     </svg>
                   </span>
                 )}
-                <span className="studio-box-grip" onPointerDown={startDrag(piece, 'resize')} aria-label={`Resize the ${PIECE_LABEL[piece].toLowerCase()}`} title="Pull to make it bigger or smaller">
+                <span className="studio-box-grip" onPointerDown={startDrag(piece, 'resize')} aria-label={`Resize the ${labelOf(piece).toLowerCase()}`} title="Pull to make it bigger or smaller">
                   <svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true">
                     <path d="M4 12L12 4M7.5 4H12v4.5M4 7.5V12h4.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
                   </svg>
@@ -1991,6 +2167,12 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
                 Painted in the brand&apos;s own style, with room for the bottle on any side. Everything you place on it
                 next is free.
               </p>
+              <div className="studio-group">
+                <p className="studio-group-title">Background</p>
+                {slide('bgBright')}
+                {slide('bgBlur')}
+                <p className="tiny muted" style={{ margin: 0 }}>Darker or softer, the bottle and the words stand out more. Free.</p>
+              </div>
             </>
           )}
 
@@ -2046,7 +2228,7 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
                           className={`studio-part ${part === piece ? 'is-on' : ''}`}
                           onClick={() => { setPart(piece); setSelected(piece); }}
                         >
-                          {PIECE_LABEL[piece]}
+                          {labelOf(piece)}
                         </button>
                       ))}
                   </div>
@@ -2099,7 +2281,25 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
                 (on) => { setWant((w) => ({ ...w, logo: on })); void arrange({ choices: { logo: on ? 'top-right' : 'none' } }); },
               )}
               {logoOn && (
-                <p className="tiny muted">Drag it on the picture to place it; pull its corner to resize it.</p>
+                <>
+                  <p className="tiny muted">Drag it on the picture to place it; pull its corner to resize it; the round handle turns it.</p>
+                  {Boolean(manifest?.choices.place?.logo?.rotate) && (
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      style={{ justifySelf: 'start' }}
+                      onClick={() => void arrange({ choices: { place: { logo: { ...manifest!.choices.place!.logo!, rotate: 0 } } } })}
+                    >
+                      Stand the logo straight
+                    </button>
+                  )}
+                  <div className="studio-group">
+                    <p className="studio-group-title">Logo</p>
+                    {slide('logoBright')}
+                    {slide('logoShadow')}
+                    {slide('logoOpacity')}
+                  </div>
+                </>
               )}
             </>
           )}
@@ -2119,6 +2319,8 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
                 lines={generation.headline}
                 hint="Suggested for this post, in the brand's own type. Change the words here; drag them on the picture to move them."
                 saveLabel="Set the headline"
+                fonts={fonts}
+                inks={inks}
                 onSave={async (lines) => arrange({ lines })}
                 onDone={() => note('Headline set')}
               />
@@ -2149,7 +2351,84 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
                             onClick={() => style.ink !== ink && void arrange({ choices: { style: { ink } } })}
                           />
                         ))}
+                        <AnyColour
+                          value={style.ink && !inks.includes(style.ink) ? style.ink : null}
+                          label="Any other colour for the headline"
+                          onPick={(ink) => void arrange({ choices: { style: { ink } } })}
+                        />
                       </div>
+                    </>
+                  )}
+                  <p className="tiny muted" style={{ margin: 0 }}>Behind the words</p>
+                  <div className="row" style={{ gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                    {([
+                      { value: null, label: 'Auto', title: 'A soft shade where the picture is too busy for the words - as CIP sets it' },
+                      { value: 'none', label: 'Nothing', title: 'No shade and no box: the words straight on the picture' },
+                      { value: 'box', label: 'Box', title: 'A solid box behind each line, in a colour you choose' },
+                    ] as const).map((o) => (
+                      <button
+                        key={o.label}
+                        type="button"
+                        className={`chip ${(style.backing ?? null) === o.value ? 'on' : ''}`}
+                        aria-pressed={(style.backing ?? null) === o.value}
+                        title={o.title}
+                        onClick={() => (style.backing ?? null) !== o.value && void arrange({ choices: { style: { backing: o.value } } })}
+                      >
+                        {o.label}
+                      </button>
+                    ))}
+                  </div>
+                  {style.backing === 'box' && (
+                    <div className="row" style={{ gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                      <span className="tiny muted">Box colour</span>
+                      {inks.map((ink) => (
+                        <button
+                          key={ink}
+                          type="button"
+                          className={`studio-swatch ${(style.backingInk ?? '#ffffff') === ink ? 'is-on' : ''}`}
+                          style={{ background: ink }}
+                          aria-label={`A box in ${ink}`}
+                          title={ink}
+                          onClick={() => (style.backingInk ?? '#ffffff') !== ink && void arrange({ choices: { style: { backingInk: ink } } })}
+                        />
+                      ))}
+                      <AnyColour
+                        value={style.backingInk && !inks.includes(style.backingInk) ? style.backingInk : null}
+                        label="Any other colour for the box"
+                        onPick={(backingInk) => void arrange({ choices: { style: { backingInk } } })}
+                      />
+                    </div>
+                  )}
+                  {fonts.length > 0 && (
+                    <>
+                      <p className="tiny muted" style={{ margin: 0 }}>Font</p>
+                      <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                        <button
+                          type="button"
+                          className={`chip ${!style.font ? 'on' : ''}`}
+                          aria-pressed={!style.font}
+                          onClick={() => style.font && void arrange({ choices: { style: { font: null } } })}
+                        >
+                          As designed
+                        </button>
+                        {fonts.map((f) => (
+                          <button
+                            key={f.id}
+                            type="button"
+                            className={`chip ${style.font === f.id ? 'on' : ''}`}
+                            aria-pressed={style.font === f.id}
+                            title={f.own ? f.label : `${f.label} - a free look-alike stands in until its font file is added`}
+                            onClick={() => style.font !== f.id && void arrange({ choices: { style: { font: f.id } } })}
+                          >
+                            {f.label}{!f.own && <span className="studio-alike" aria-label="look-alike"> ≈</span>}
+                          </button>
+                        ))}
+                      </div>
+                      {fonts.some((f) => !f.own) && (
+                        <p className="tiny muted" style={{ margin: 0 }}>
+                          ≈ The brand&apos;s own font file is not in CIP yet: the nearest free face stands in until it is added.
+                        </p>
+                      )}
                     </>
                   )}
                   <p className="tiny muted" style={{ margin: 0 }}>Line up</p>
@@ -2179,6 +2458,18 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
             </>
           )}
 
+          {current.id === 'words' && manifest && (
+            <TextBlocks
+              blocks={manifest.choices.texts ?? []}
+              generation={generation}
+              fonts={fonts}
+              inks={inks}
+              selected={selected && isBlock(selected) ? selected.slice(2) : null}
+              onSelect={(id) => setSelected(`t:${id}`)}
+              onChange={(texts) => arrange({ choices: { texts } })}
+            />
+          )}
+
           {current.id === 'download' && (
             <>
               <p className="studio-q">Take it to your editor</p>
@@ -2200,6 +2491,12 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
                 <p className="tiny muted" style={{ margin: 0 }}>
                   Laid out again for this size on the same background - free. Where the size needs more background
                   than was painted, its own edges are carried out softly.
+                </p>
+              )}
+              {exportShape && !['1:1', '4:5', '9:16', '16:9'].includes(exportShape) && (
+                <p className="tiny muted" style={{ margin: 0 }}>
+                  A print size comes 1080 pixels on its short side - right for laying out and approval. For the printer,
+                  take the PSD, SVG or PDF: the headline stays live text there, and the pictures can be swapped for full-size ones.
                 </p>
               )}
               <div className="stack" style={{ gap: 6 }}>
@@ -2226,6 +2523,19 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
         </div>
 
         <div className="studio-layers">
+          <p className="insp-label">Order - what lies over what</p>
+          <ol className="studio-stack">
+            {[...order].reverse().map((g, i, top) => (
+              <li key={g}>
+                <span>{STACK_LABEL[g]}</span>
+                <span className="row" style={{ gap: 2 }}>
+                  <button type="button" className="studio-stack-btn" disabled={i === 0} onClick={() => restack(g, 1)} aria-label={`Bring the ${STACK_LABEL[g].toLowerCase()} forward`} title="Bring forward">↑</button>
+                  <button type="button" className="studio-stack-btn" disabled={i === top.length - 1} onClick={() => restack(g, -1)} aria-label={`Send the ${STACK_LABEL[g].toLowerCase()} back`} title="Send back">↓</button>
+                </span>
+              </li>
+            ))}
+            <li className="is-fixed"><span>Background</span><Icon name="lock" size={12} /></li>
+          </ol>
           <p className="insp-label">Layers</p>
           {LAYER_LIST.map((l) => {
             const there = reached.has(l.name) && present.has(l.name);
@@ -2301,6 +2611,179 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
         </p>
         </div>
       </aside>
+    </div>
+  );
+}
+
+/**
+ * Any colour at all, for when the brand's own are not enough: picked in the
+ * browser's own picker, and set once the picking stops rather than on every
+ * shade passed on the way.
+ */
+function AnyColour({ value, label, onPick }: { value: string | null; label: string; onPick: (hex: string) => void }) {
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [shown, setShown] = useState<string | null>(value);
+  useEffect(() => setShown(value), [value]);
+  return (
+    <label className={`studio-swatch is-any ${value ? 'is-on' : ''}`} title={label} style={shown ? { background: shown } : undefined}>
+      {!shown && <Icon name="plus" size={12} />}
+      <input
+        type="color"
+        value={shown ?? '#ffffff'}
+        aria-label={label}
+        onChange={(e) => {
+          const hex = e.target.value.toLowerCase();
+          setShown(hex);
+          if (timer.current) clearTimeout(timer.current);
+          timer.current = setTimeout(() => onPick(hex), 450);
+        }}
+      />
+    </label>
+  );
+}
+
+/**
+ * Text besides the headline: a line under it, an offer, a call to act. Each
+ * block its own lines - each with its part, face and colour - and its own
+ * face, colour, size, lining up, weight, italic, capitals and shadow. Placed
+ * and sized on the picture by dragging, like any other piece.
+ */
+function TextBlocks({ blocks, generation, fonts, inks, selected, onSelect, onChange }: {
+  blocks: TextBlockC[];
+  generation: MediaGenerationDTO;
+  fonts: { id: string; label: string; own: boolean }[];
+  inks: string[];
+  selected: string | null;
+  onSelect: (id: string) => void;
+  onChange: (texts: TextBlockC[]) => Promise<boolean>;
+}) {
+  const [sizes, setSizes] = useState<Record<string, number>>({});
+  const update = (id: string, change: Partial<TextBlockC>) => onChange(blocks.map((b) => (b.id === id ? { ...b, ...change } : b)));
+  const add = () => {
+    const below = blocks.length ? Math.max(...blocks.map((b) => b.y)) + 0.09 : 0.78;
+    void onChange([...blocks, {
+      id: blockId(), lines: [{ text: 'Your text here', role: 'lead' }], x: 0.07, y: Math.min(0.9, below), width: 0.6, size: 0.045,
+      align: 'left', weight: 'bold', italic: false, upper: false, shadow: true,
+    }]);
+  };
+  const letSize = (b: TextBlockC) => { const v = sizes[b.id]; if (v !== undefined && v !== b.size) void update(b.id, { size: v }); };
+
+  return (
+    <div className="text-blocks">
+      <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+        <p className="studio-group-title" style={{ margin: 0 }}>More text</p>
+        <button type="button" className="btn btn-ghost btn-sm" onClick={add} disabled={blocks.length >= 6}>
+          <Icon name="plus" size={14} /> Add text
+        </button>
+      </div>
+      {blocks.length === 0 && (
+        <p className="tiny muted" style={{ margin: 0 }}>
+          A line under the headline, an offer, a call to act - each its own block, dragged where it goes.
+        </p>
+      )}
+      {blocks.map((b, n) => {
+        const size = sizes[b.id] ?? b.size;
+        return (
+          <section key={b.id} className={`text-block ${selected === b.id ? 'is-on' : ''}`} onClick={() => onSelect(b.id)}>
+            <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+              <span className="text-block-title">Text {n + 1}</span>
+              <span className="row" style={{ gap: 4 }}>
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  disabled={blocks.length >= 6}
+                  onClick={(e) => { e.stopPropagation(); void onChange([...blocks, { ...b, id: blockId(), y: Math.min(0.92, b.y + 0.08) }]); }}
+                  title="Duplicate"
+                >
+                  Duplicate
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  onClick={(e) => { e.stopPropagation(); void onChange(blocks.filter((x) => x.id !== b.id)); }}
+                  aria-label={`Delete text ${n + 1}`}
+                  title="Delete"
+                >
+                  <Icon name="trash" size={14} />
+                </button>
+              </span>
+            </div>
+
+            <TextEditor
+              key={b.lines.map((l) => l.text).join('|')}
+              generation={generation}
+              lines={b.lines}
+              hint="Its words, line by line. Each line may take its own part, font and colour."
+              saveLabel="Set the words"
+              fonts={fonts}
+              inks={inks}
+              onSave={async (lines) => update(b.id, { lines })}
+              onDone={() => undefined}
+            />
+
+            <div className="text-block-look">
+              <label className="tiny muted">Font</label>
+              <select className="field-input" value={b.font ?? ''} onChange={(e) => void update(b.id, { font: e.target.value || undefined })}>
+                <option value="">Poppins</option>
+                {fonts.filter((f) => f.id !== 'poppins').map((f) => <option key={f.id} value={f.id}>{f.label}{f.own ? '' : ' ≈'}</option>)}
+              </select>
+
+              <label className="tiny muted">Colour</label>
+              <span className="row headline-line-inks">
+                {['#ffffff', ...inks.filter((i) => i !== '#ffffff')].map((ink) => (
+                  <button
+                    key={ink}
+                    type="button"
+                    className={`headline-ink ${(b.ink ?? '#ffffff') === ink ? 'is-on' : ''}`}
+                    style={{ background: ink }}
+                    onClick={() => void update(b.id, { ink })}
+                    aria-label={`Text ${n + 1} in ${ink}`}
+                  />
+                ))}
+                <AnyColour
+                  value={b.ink && !['#ffffff', ...inks].includes(b.ink) ? b.ink : null}
+                  label={`Any other colour for text ${n + 1}`}
+                  onPick={(ink) => void update(b.id, { ink })}
+                />
+              </span>
+
+              <label className="tiny muted">Size {Math.round(size * 1000) / 10}%</label>
+              <input
+                type="range" min={TEXT_SIZES_C.min} max={TEXT_SIZES_C.max} step={0.005} value={size}
+                onChange={(e) => setSizes((x) => ({ ...x, [b.id]: Number(e.target.value) }))}
+                onPointerUp={() => letSize(b)} onKeyUp={() => letSize(b)} onBlur={() => letSize(b)}
+                aria-label={`Text ${n + 1} size`}
+              />
+
+              <label className="tiny muted">Line up</label>
+              <span className="row" style={{ gap: 4 }}>
+                {(['left', 'center', 'right'] as const).map((a) => (
+                  <button key={a} type="button" className={`chip ${b.align === a ? 'on' : ''}`} onClick={() => b.align !== a && void update(b.id, { align: a })}>
+                    {a === 'left' ? 'Left' : a === 'center' ? 'Centre' : 'Right'}
+                  </button>
+                ))}
+              </span>
+
+              <label className="tiny muted">Weight</label>
+              <span className="row" style={{ gap: 4 }}>
+                {(['regular', 'bold', 'black'] as const).map((w) => (
+                  <button key={w} type="button" className={`chip ${b.weight === w ? 'on' : ''}`} onClick={() => b.weight !== w && void update(b.id, { weight: w })}>
+                    {w === 'regular' ? 'Regular' : w === 'bold' ? 'Bold' : 'Black'}
+                  </button>
+                ))}
+              </span>
+
+              <label className="tiny muted">Style</label>
+              <span className="row" style={{ gap: 4, flexWrap: 'wrap' }}>
+                <button type="button" className={`chip ${b.italic ? 'on' : ''}`} aria-pressed={b.italic} onClick={() => void update(b.id, { italic: !b.italic })}><i>Italic</i></button>
+                <button type="button" className={`chip ${b.upper ? 'on' : ''}`} aria-pressed={b.upper} onClick={() => void update(b.id, { upper: !b.upper })}>CAPS</button>
+                <button type="button" className={`chip ${b.shadow ? 'on' : ''}`} aria-pressed={b.shadow} onClick={() => void update(b.id, { shadow: !b.shadow })}>Shadow</button>
+              </span>
+            </div>
+            <p className="tiny muted" style={{ margin: 0 }}>Drag it on the picture to place it; pull its corner to size it.</p>
+          </section>
+        );
+      })}
     </div>
   );
 }

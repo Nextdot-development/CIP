@@ -600,3 +600,39 @@ a.gtag:hover { color: var(--ink-900); border-color: var(--ink-400); }
 .studio-slide { display: grid; gap: 4px; }
 .studio-slide input[type=range] { width: 100%; accent-color: var(--brand); cursor: pointer; }
 .studio-reset { border: 0; background: none; padding: 0; font-size: 11.5px; color: var(--brand); cursor: pointer; text-decoration: underline; }
+
+/* A face standing in for one whose file is not in CIP yet. */
+.studio-alike { opacity: .6; font-weight: 400; }
+
+/* A line of the headline: its words on top, its part, face and colour under them. */
+.headline-line { display: grid; gap: 6px; padding: 8px; border-radius: var(--r-sm); border: 1px solid var(--line-soft); }
+.headline-line-look .field-input { font-size: 13px; }
+.headline-line-inks { gap: 5px; align-items: center; }
+.headline-ink {
+  width: 22px; height: 22px; border-radius: 50%; padding: 0; cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, 0.3); box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.25);
+}
+.headline-ink.is-auto { width: auto; padding: 0 7px; border-radius: 11px; font-size: 11px; background: var(--ink-100); color: var(--ink-700); }
+.headline-ink.is-on { outline: 2px solid var(--brand); outline-offset: 2px; }
+
+/* Text besides the headline: each block its own card. */
+.text-blocks { display: grid; gap: 10px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line-soft); }
+.text-block { display: grid; gap: 8px; padding: 10px; border-radius: var(--r-md); border: 1px solid var(--line); background: var(--canvas); }
+.text-block.is-on { border-color: var(--brand); box-shadow: 0 0 0 1px var(--brand); }
+.text-block-title { font-family: var(--font-display); font-weight: 600; font-size: 13.5px; }
+.text-block-look { display: grid; grid-template-columns: 70px 1fr; gap: 8px 10px; align-items: center; }
+.text-block-look .field-input { padding: 6px 8px; font-size: 13px; }
+.text-block-look input[type=range] { width: 100%; accent-color: var(--brand); }
+
+/* Any colour at all: the browser's own picker, behind a swatch with a plus. */
+.studio-swatch.is-any { position: relative; display: inline-grid; place-items: center; overflow: hidden; color: var(--ink-700);
+  background: conic-gradient(#e2934a, #f5c242, #8faa72, #8591e0, #b06ab3, #e2934a); }
+.studio-swatch.is-any svg { background: var(--surface); border-radius: 50%; padding: 2px; }
+.studio-swatch.is-any input { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%; border: 0; padding: 0; }
+
+/* What lies over what: the pieces from the top down, each a step up or down. */
+.studio-stack { list-style: none; margin: 0 0 12px; padding: 0; display: grid; gap: 4px; }
+.studio-stack li { display: flex; justify-content: space-between; align-items: center; padding: 6px 10px; border-radius: var(--r-sm); background: var(--canvas); border: 1px solid var(--line-soft); font-size: 13px; }
+.studio-stack li.is-fixed { color: var(--ink-500); }
+.studio-stack-btn { width: 26px; height: 24px; border-radius: 6px; border: 1px solid var(--line); background: var(--surface); color: var(--ink-800); cursor: pointer; }
+.studio-stack-btn:disabled { opacity: .35; cursor: default; }

@@ -11,8 +11,8 @@ import { createCanvas, loadImage } from '@napi-rs/canvas';
 
 process.env.DATABASE_URL ??= 'postgres://unused@localhost:5432/unused';
 const { drawScene, mergeLearned, SCENE_KEPT } = await import('../src/server/media/composePost');
-const { choicesFrom, designChecks, providerQuality, sidesOf, styleFrom } = await import('../src/server/media/arrange');
-const { arrangeLayout, fitLayout } = await import('../src/server/brain/layouts');
+const { choicesFrom, designChecks, providerQuality, sidesOf, styleFrom, textsFrom } = await import('../src/server/media/arrange');
+const { adaptLayout, arrangeLayout, fitLayout } = await import('../src/server/brain/layouts');
 const { DEFAULT_LAYOUT } = await import('../src/server/brain/bench');
 const { suggestHeadlines } = await import('../src/server/brain/bench');
 
@@ -381,5 +381,145 @@ describe('a post on one\'s own picture, planned with no model asked', () => {
     // With nothing to go on, the brand's name.
     const bare = settlePlan(freeDraft('', 'Whytehall', []), { ...ctx, request: '' });
     assert.deepEqual(bare.headline.map((l) => l.text), ['Whytehall']);
+  });
+});
+
+describe('print and retail sizes from the briefs', () => {
+  it('sets a banner\'s words larger against its height, with room across, so they do not shrink to a line of print', () => {
+    const square = adaptLayout(DEFAULT_LAYOUT, 1);
+    const banner = adaptLayout(DEFAULT_LAYOUT, 5);
+    assert.ok(banner.text!.lines[0]!.size > square.text!.lines[0]!.size * 1.9);
+    assert.ok(banner.text!.width * 5 > 1.5);
+  });
+
+  it('measures margins against the short side, so a banner\'s logo is not called small for being narrow', async () => {
+    const boxes = { bottle: box(0.55, 0.1, 0.06, 0.82), logo: box(0.01, 0.05, 0.03, 0.12), text: box(0.02, 0.2, 0.3, 0.4), textAnchor: { x: 0.02 } };
+    const checks = await designChecks({ width: 5400, height: 1080, boxes });
+    assert.ok(!checks.some((c) => /logo is small/.test(c.text)));
+    assert.ok(!checks.some((c) => /very close to the edge/.test(c.text)));
+    // The same boxes on a square post are small and tight.
+    const square = await designChecks({ width: 1080, height: 1080, boxes });
+    assert.ok(square.some((c) => /logo is small/.test(c.text)));
+  });
+});
+
+describe('the headline in a face the person chooses', () => {
+  it('keeps a face from the brand\'s list, and refuses one that is not on it', () => {
+    assert.deepEqual(styleFrom({ font: 'playfair-display' }), { font: 'playfair-display' });
+    assert.deepEqual(styleFrom({ font: null }, { font: 'butler' }), {});
+    assert.throws(() => styleFrom({ font: 'Comic Sans' }));
+  });
+
+  it('sets each line at its own weight, and stands a free face in for a brand file CIP does not hold', async () => {
+    const { withHeadlineFont } = await import('../src/server/media/typography');
+    const set = withHeadlineFont(DEFAULT_LAYOUT, 'playfair-display');
+    assert.deepEqual(set.text!.lines.map((l) => l.font), ['PlayfairDisplay-Bold', 'PlayfairDisplay-Black', 'PlayfairDisplay-Italic']);
+    const butler = withHeadlineFont(DEFAULT_LAYOUT, 'butler');
+    assert.ok(butler.text!.lines.every((l) => /^PlayfairDisplay-/.test(l.font ?? '') || /^butler/i.test(l.font ?? '')));
+    const signature = withHeadlineFont(DEFAULT_LAYOUT, 'brittany-signature');
+    assert.ok(signature.text!.lines.every((l) => l.script));
+    // No choice: the layout's own faces.
+    assert.equal(withHeadlineFont(DEFAULT_LAYOUT, null), DEFAULT_LAYOUT);
+  });
+});
+
+describe('a face for one line of the headline', () => {
+  it('keeps a line\'s own face from the brand\'s list, and drops one that is not on it', async () => {
+    const { headlineFrom } = await import('../src/server/media/retext');
+    const lines = headlineFrom([
+      { text: 'Light lamps', role: 'lead', font: 'playfair-display' },
+      { text: 'Honey', role: 'key', font: 'Comic Sans' },
+    ]);
+    assert.deepEqual(lines, [{ text: 'Light lamps', role: 'lead', font: 'playfair-display' }, { text: 'Honey', role: 'key' }]);
+  });
+
+  it('sets a line in its own face, the rest in the headline\'s, and every highlighted line as a highlight', async () => {
+    const { measureHeadline } = await import('../src/server/media/typography');
+    const plain = measureHeadline(DEFAULT_LAYOUT.text!, [{ text: 'Honey', role: 'key' }], 1);
+    const own = measureHeadline(DEFAULT_LAYOUT.text!, [{ text: 'Honey', role: 'key', font: 'brittany-signature' }], 1);
+    // A script face sets the same word narrower than the layout's black sans.
+    assert.ok(own.width < plain.width);
+  });
+});
+
+describe('a colour for one line of the headline', () => {
+  it('keeps a hex colour for a line, and drops anything else', async () => {
+    const { headlineFrom } = await import('../src/server/media/retext');
+    assert.deepEqual(
+      headlineFrom([{ text: 'Share sweetness', role: 'lead', ink: '#FFD409' }, { text: 'Honey', role: 'key', ink: 'red' }]),
+      [{ text: 'Share sweetness', role: 'lead', ink: '#ffd409' }, { text: 'Honey', role: 'key' }],
+    );
+  });
+});
+
+describe('more text besides the headline', () => {
+  it('keeps each block checked: its words as a headline\'s, its place and look in bounds', () => {
+    const [b] = textsFrom([{ id: 'abc123', lines: [{ text: 'Order now', role: 'lead', ink: '#FFD409' }], x: 5, y: 0.8, size: 9, align: 'centre', weight: 'heavy', font: 'Comic Sans', ink: 'blue' }]);
+    assert.deepEqual(b, {
+      id: 'abc123', lines: [{ text: 'Order now', role: 'lead', ink: '#ffd409' }], x: 1, y: 0.8, width: 0.6, size: 0.2,
+      align: 'left', weight: 'bold', italic: false, upper: false, shadow: true,
+    });
+    assert.throws(() => textsFrom([{ id: 'abc123', lines: [{ text: 'a b', role: 'lead' }] }, { id: 'abc123', lines: [{ text: 'c d', role: 'lead' }] }]));
+    assert.throws(() => textsFrom([{ id: 'x', lines: [{ text: 'a b', role: 'lead' }] }]));
+    assert.throws(() => textsFrom(Array.from({ length: 7 }, (_, i) => ({ id: `block${i}`, lines: [{ text: 'a b', role: 'lead' }] }))));
+  });
+
+  it('keeps the blocks with the other choices, and an empty list takes them all off', () => {
+    const current = { bottle: 'left' as const, size: 'medium' as const, logo: 'top-right' as const };
+    const set = choicesFrom({ texts: [{ id: 'abc123', lines: [{ text: 'Order now', role: 'lead' }] }] }, current);
+    assert.equal(set.texts!.length, 1);
+    assert.equal(choicesFrom({ bottle: 'right' }, set).texts!.length, 1);
+    assert.equal(choicesFrom({ texts: [] }, set).texts, undefined);
+  });
+
+  it('sets each block where it was put, and says where it landed', async () => {
+    const { setTextBlocks } = await import('../src/server/media/typography');
+    const blocks = textsFrom([{ id: 'abc123', lines: [{ text: 'Order now', role: 'lead' }], x: 0.1, y: 0.8, width: 0.5, align: 'right' }]);
+    const { boxes, lines } = setTextBlocks(blocks, 1080, 1080);
+    assert.equal(boxes[0]!.id, 'abc123');
+    assert.ok(Math.abs(boxes[0]!.x + boxes[0]!.w - 0.6) < 0.002, 'lined up on the right of its width');
+    assert.equal(lines[0]!.layer, 'texts');
+  });
+});
+
+describe('what is behind the headline', () => {
+  it('keeps nothing, or a box in a colour, and lets null hand it back to CIP', () => {
+    assert.deepEqual(styleFrom({ backing: 'none' }), { backing: 'none' });
+    assert.deepEqual(styleFrom({ backing: 'box', backingInk: '#BB8D3D' }), { backing: 'box', backingInk: '#bb8d3d' });
+    assert.deepEqual(styleFrom({ backing: null, backingInk: null }, { backing: 'box', backingInk: '#bb8d3d' }), {});
+    assert.throws(() => styleFrom({ backing: 'glow' }));
+    assert.throws(() => styleFrom({ backingInk: 'gold' }));
+  });
+});
+
+describe('a post on one\'s own picture, left on Auto', () => {
+  it('takes the shape nearest the picture\'s own', async () => {
+    const { nearestShape, ownShape } = await import('../src/server/media/ownPicture');
+    assert.equal(nearestShape(1080 / 1350), 0.8);
+    assert.equal(nearestShape(1), 1);
+    assert.equal(nearestShape(1080 / 1920), 9 / 16);
+    assert.equal(nearestShape(1600 / 1066), 1.5);
+    assert.equal(await ownShape(png(800, 1000, '#336699')), 0.8);
+  });
+});
+
+describe('the logo, the background and what lies over what', () => {
+  it('keeps the logo\'s and the background\'s looks in bounds, and drops what is as it was', () => {
+    assert.deepEqual(styleFrom({ logoBright: 2, logoShadow: 1, logoOpacity: 0, bgBright: -0.3, bgBlur: 5 }),
+      { logoBright: 0.4, logoShadow: 1, logoOpacity: 0.15, bgBright: -0.3, bgBlur: 1 });
+    assert.deepEqual(styleFrom({ logoBright: 0, logoShadow: 0, logoOpacity: 1, bgBright: 0, bgBlur: 0 }), {});
+  });
+
+  it('turns the logo, and keeps an order of the pieces that has each of them once', async () => {
+    const { orderFrom } = await import('../src/server/media/arrange');
+    const current = { bottle: 'left' as const, size: 'medium' as const, logo: 'top-right' as const };
+    assert.equal(choicesFrom({ place: { logo: { x: 0.8, y: 0.05, w: 0.12, rotate: -15 } } }, current).place!.logo!.rotate, -15);
+    assert.deepEqual(orderFrom(['headline', 'bottle', 'texts', 'logo']), ['headline', 'bottle', 'texts', 'logo']);
+    assert.throws(() => orderFrom(['bottle', 'bottle', 'texts', 'logo']));
+    assert.throws(() => orderFrom(['bottle', 'headline']));
+    const set = choicesFrom({ order: ['headline', 'bottle', 'texts', 'logo'] }, current);
+    assert.deepEqual(set.order, ['headline', 'bottle', 'texts', 'logo']);
+    // The usual order is not kept: nothing to say.
+    assert.equal(choicesFrom({ order: ['bottle', 'headline', 'texts', 'logo'] }, set).order, undefined);
   });
 });

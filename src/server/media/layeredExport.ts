@@ -1,4 +1,5 @@
 import 'server-only';
+import { STACK, type StackGroup } from '../brain/layouts';
 import { readFileSync } from 'node:fs';
 import { PDFDocument, createCanvas, loadImage, type SKRSContext2D } from '@napi-rs/canvas';
 import { writePsdBuffer, type Layer, type Psd } from 'ag-psd';
@@ -68,13 +69,16 @@ async function toPsd(post: Post): Promise<Buffer> {
   // Each line a text layer: live words in the brand's face, carrying the
   // pixels they were set as, so it shows as made until Photoshop redraws it.
   const words: Layer[] = [];
+  const added: Layer[] = [];
   for (const [i, line] of layers.lines.entries()) {
     const area = lineArea(line, W, H);
-    words.push({
-      name: `Headline ${i + 1}: ${line.text}`,
+    // An added block's line is on the added text's layer, the headline's on its own.
+    const onTexts = line.layer === 'texts' && layers.texts;
+    (onTexts ? added : words).push({
+      name: onTexts ? `Text: ${line.text}` : `Headline ${i + 1}: ${line.text}`,
       left: area.x,
       top: area.y,
-      imageData: await pixels(layers.headline, area),
+      imageData: await pixels(onTexts ? layers.texts! : layers.headline, area),
       text: {
         text: line.text,
         // Photoshop places text by its baseline.
@@ -89,14 +93,15 @@ async function toPsd(post: Post): Promise<Buffer> {
     });
   }
 
-  const children = [
-    await raster('Background', layers.background),
-    await raster('Bottle shadow', layers.shadow),
-    await raster('Bottle reflection', layers.reflection ?? null),
-    await raster('Bottle', layers.bottle),
-    words.length ? { name: 'Headline', opened: true, children: words.reverse() } : null,
-    await raster('Logo', layers.logo),
-  ].filter((l): l is Layer => l !== null);
+  // In the order the pieces lie on the post, from the bottom up - the person's, when they changed it.
+  const groups: Record<StackGroup, (Layer | null)[]> = {
+    bottle: [await raster('Bottle shadow', layers.shadow), await raster('Bottle reflection', layers.reflection ?? null), await raster('Bottle', layers.bottle)],
+    headline: [words.length ? { name: 'Headline', opened: true, children: words.reverse() } : null],
+    texts: [added.length ? { name: 'Text', opened: true, children: added.reverse() } : null],
+    logo: [await raster('Logo', layers.logo)],
+  };
+  const children = [await raster('Background', layers.background), ...(layers.order ?? STACK).flatMap((g) => groups[g])]
+    .filter((l): l is Layer => l !== null);
 
   const psd: Psd = { width: W, height: H, imageData: await pixels(post.bytes), children };
   return writePsdBuffer(psd, { invalidateTextLayers: true, generateThumbnail: false });
@@ -130,7 +135,7 @@ function toSvg(post: Post): string {
     const uri = dataUri(png);
     return `<image id="${id}" x="0" y="0" width="${W}" height="${H}" href="${uri}" xlink:href="${uri}"/>`;
   };
-  const text = layers.lines.map((line, i) => {
+  const svgLines = (which: 'headline' | 'texts') => layers.lines.filter((l) => (l.layer ?? 'headline') === which).map((line, i) => {
     const box = line.boxFill
       ? `<rect x="${(line.box.x - line.px * 0.2).toFixed(1)}" y="${(line.box.y - line.px * 0.14).toFixed(1)}" width="${(line.box.w + line.px * 0.4).toFixed(1)}" height="${(line.px * 1.28).toFixed(1)}" fill="${line.boxFill}"/>`
       : '';
@@ -143,11 +148,14 @@ function toSvg(post: Post): string {
     `<defs><style>${fontFaces(layers.lines)}</style>` +
     '<filter id="soft" x="-20%" y="-40%" width="140%" height="180%"><feDropShadow dx="0" dy="2" stdDeviation="6" flood-color="#000" flood-opacity="0.55"/></filter></defs>' +
     `<g id="Background">${image('background', layers.background)}</g>` +
-    `<g id="Bottle-shadow">${image('bottle-shadow', layers.shadow)}</g>` +
-    `<g id="Bottle-reflection">${image('bottle-reflection', layers.reflection ?? null)}</g>` +
-    `<g id="Bottle">${image('bottle', layers.bottle)}</g>` +
-    `<g id="Headline">${text}</g>` +
-    `<g id="Logo">${image('logo', layers.logo)}</g>` +
+    (layers.order ?? STACK).map((g) => ({
+      bottle: `<g id="Bottle-shadow">${image('bottle-shadow', layers.shadow)}</g>` +
+        `<g id="Bottle-reflection">${image('bottle-reflection', layers.reflection ?? null)}</g>` +
+        `<g id="Bottle">${image('bottle', layers.bottle)}</g>`,
+      headline: `<g id="Headline">${svgLines('headline')}</g>`,
+      texts: `<g id="Text">${svgLines('texts')}</g>`,
+      logo: `<g id="Logo">${image('logo', layers.logo)}</g>`,
+    })[g]).join('') +
     '</svg>';
 }
 
@@ -162,10 +170,9 @@ async function toPdf(post: Post): Promise<Buffer> {
   const { width: W, height: H, layers } = post;
   const doc = new PDFDocument({ title: layers.lines.map((l) => l.text).join(' ') || 'Post', creator: 'CIP' });
   const ctx = doc.beginPage(W, H) as unknown as SKRSContext2D;
-  for (const png of [layers.background, layers.shadow, layers.reflection ?? null, layers.bottle]) {
-    if (png) ctx.drawImage(await loadImage(png), 0, 0, W, H);
-  }
-  for (const line of layers.lines) {
+  const draw = async (png: Buffer | null | undefined) => { if (png) ctx.drawImage(await loadImage(png), 0, 0, W, H); };
+  const write = (which: 'headline' | 'texts') => {
+  for (const line of layers.lines.filter((l) => (l.layer ?? 'headline') === which)) {
     if (line.boxFill) {
       ctx.fillStyle = line.boxFill;
       ctx.fillRect(line.box.x - line.px * 0.2, line.box.y - line.px * 0.14, line.box.w + line.px * 0.4, line.px * 1.28);
@@ -184,7 +191,15 @@ async function toPdf(post: Post): Promise<Buffer> {
     ctx.shadowBlur = 0;
     ctx.shadowOffsetY = 0;
   }
-  if (layers.logo) ctx.drawImage(await loadImage(layers.logo), 0, 0, W, H);
+  };
+  await draw(layers.background);
+  // In the order the pieces lie on the post, from the bottom up.
+  for (const g of layers.order ?? STACK) {
+    if (g === 'bottle') for (const png of [layers.shadow, layers.reflection ?? null, layers.bottle]) await draw(png);
+    if (g === 'headline') write('headline');
+    if (g === 'texts') write('texts');
+    if (g === 'logo') await draw(layers.logo);
+  }
   doc.endPage();
   return doc.close();
 }

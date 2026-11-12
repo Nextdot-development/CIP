@@ -37,6 +37,10 @@ const KNOWN_MARKETS: { market: string; patterns: RegExp }[] = [
   { market: 'Nigeria', patterns: /\b(nigeria|nigerian|lagos)\b/i },
   { market: 'Ghana', patterns: /\b(ghana|ghanaian|accra)\b/i },
   { market: 'West Africa', patterns: /\bwest[\s-]?africa(n)?\b/i },
+  // Named in Radico's briefs: labels for Cave and Gardens, a billboard in Togo, posters for Uganda.
+  { market: "Côte d'Ivoire", patterns: /\b(c[oô]te d.?ivoire|ivory coast|ivorian|abidjan)\b/i },
+  { market: 'Togo', patterns: /\b(togo|togolese|lom[eé])\b/i },
+  { market: 'Uganda', patterns: /\b(uganda|ugandan|kampala)\b/i },
   { market: 'UAE', patterns: /\b(uae|dubai|emirates)\b/i },
   { market: 'UK', patterns: /\b(uk|britain|british|united kingdom)\b/i },
   { market: 'USA', patterns: /\b(usa|united states|america|american)\b/i },
@@ -60,7 +64,7 @@ const KNOWN_MARKETS: { market: string; patterns: RegExp }[] = [
  * nothing, and suggests coverage that is not there.
  */
 const REGIONS: Record<string, string[]> = {
-  'West Africa': ['Ghana', 'Nigeria'],
+  'West Africa': ['Ghana', 'Nigeria', "Côte d'Ivoire", 'Togo'],
 };
 
 /**

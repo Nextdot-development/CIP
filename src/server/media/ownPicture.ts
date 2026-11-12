@@ -28,7 +28,8 @@ export async function postOnOwnPicture(
     || (await activeBrand(scope)).active
     || '';
   if (!brand) throw new MediaRejected('Say which brand it is for - "Whytehall Honey", say - or choose the brand at the top.');
-  const ratio = SHAPES[typeof input.ratio === 'string' ? input.ratio : ''] ?? 1;
+  // A shape picked on the page, else the picture's own - the nearest a post can take.
+  const ratio = SHAPES[typeof input.ratio === 'string' ? input.ratio : ''] ?? await ownShape(input.picture.bytes);
   if (!(await canCompose(scope, brand))) {
     throw new MediaRejected(`CIP has no cut-out bottle for ${brand} yet, so it cannot set a post on your picture. Add the brand's bottle first.`);
   }
@@ -61,6 +62,19 @@ export async function postOnOwnPicture(
      where id = ${id} and company_id = ${scope.companyId}
   `);
   return (await getGeneration(scope, id)).generation;
+}
+
+/** The shape a post takes from a picture left on Auto: the one nearest its own. Square when it cannot be read. */
+export async function ownShape(bytes: Buffer): Promise<number> {
+  const { loadImage } = await import('@napi-rs/canvas');
+  const img = await loadImage(bytes).catch(() => null);
+  if (!img || !img.width || !img.height) return 1;
+  return nearestShape(img.width / img.height);
+}
+
+/** Of the shapes a post can take, the one nearest a picture's - by how much would be cut, not by the difference in numbers. */
+export function nearestShape(ratio: number): number {
+  return Object.values(SHAPES).sort((a, b) => Math.abs(Math.log(a / ratio)) - Math.abs(Math.log(b / ratio)))[0]!;
 }
 
 /** The shapes a post on one's own picture can take, as the composer offers them. */

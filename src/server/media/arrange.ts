@@ -1,7 +1,7 @@
 import 'server-only';
 import { withCompanyScope } from '../db';
 import type { CompanyScope } from '../db';
-import { choicesOf, type Corner, type Placement, type PostChoices, type PostStyle } from '../brain/layouts';
+import { STACK, choicesOf, type Corner, type Placement, type PostChoices, type PostStyle, type StackGroup } from '../brain/layouts';
 import { brandDrink, headlineSuggestions, pastScenes } from '../brain/bench';
 import { drinkLine, headlineInks, rebuildPost, type PostBoxes, type PostLayers, type PostRecipe } from './composePost';
 import { generationIn, getGeneration, keepScene, sceneOf, validateProviderChoice } from './generation';
@@ -10,7 +10,7 @@ import { MEDIA_LIMITS } from './providers/types';
 import { exportPost, type ExportFormat } from './layeredExport';
 import { headlineFrom } from './retext';
 import { forgetMediaAsset, getMediaAsset, mediaStorageKey, putMediaAsset } from './storage';
-import type { HeadlineLine } from './typography';
+import { HEADLINE_FONTS, headlineFontIsOwn, type HeadlineLine, type TextBlock } from './typography';
 import { MediaNotFound, MediaProviderUnavailable, MediaRejected, type MediaGenerationDTO } from './types';
 
 /**
@@ -53,12 +53,61 @@ export function choicesFrom(raw: unknown, current: PostChoices): PostChoices {
     (place as Record<string, unknown>)[piece] = placementOf(piece, sent[piece]);
   }
   const style = styleFrom(r.style, current.style);
+  const texts = r.texts === undefined ? current.texts ?? [] : textsFrom(r.texts);
+  const order = r.order === undefined ? current.order : r.order === null ? undefined : orderFrom(r.order);
   return {
     bottle, size, logo,
     ...(headline === 'none' ? { headline } : {}),
     ...(Object.keys(place).length ? { place } : {}),
     ...(Object.keys(style).length ? { style } : {}),
+    ...(texts.length ? { texts } : {}),
+    ...(order && order.join() !== STACK.join() ? { order } : {}),
   };
+}
+
+/** Which piece lies over which, as sent: each of them once. */
+export function orderFrom(raw: unknown): StackGroup[] {
+  if (!Array.isArray(raw) || raw.length !== STACK.length || STACK.some((g) => !raw.includes(g))) {
+    throw new MediaRejected('Send the order of the bottle, headline, text and logo, each once.');
+  }
+  return raw as StackGroup[];
+}
+
+const TEXT_ID = /^[a-z0-9]{4,12}$/;
+const MAX_TEXTS = 6;
+
+/** The added text blocks as sent, each checked: its words as a headline's are, its place and look kept in bounds. */
+export function textsFrom(raw: unknown): TextBlock[] {
+  if (!Array.isArray(raw)) throw new MediaRejected('Send the added text as a list of blocks.');
+  if (raw.length > MAX_TEXTS) throw new MediaRejected(`A post takes at most ${MAX_TEXTS} blocks of text besides its headline.`);
+  const seen = new Set<string>();
+  return raw.map((b) => {
+    const r = (b && typeof b === 'object' ? b : {}) as Record<string, unknown>;
+    const id = typeof r.id === 'string' && TEXT_ID.test(r.id) ? r.id : null;
+    if (!id || seen.has(id)) throw new MediaRejected('Each block of text needs an id of its own.');
+    seen.add(id);
+    const num = (key: string, min: number, max: number, plain: number) => {
+      const v = r[key];
+      return typeof v === 'number' && Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : plain;
+    };
+    const font = typeof r.font === 'string' && HEADLINE_FONTS.some((f) => f.id === r.font) ? r.font as TextBlock['font'] : undefined;
+    const ink = typeof r.ink === 'string' && /^#[0-9a-f]{6}$/i.test(r.ink) ? r.ink.toLowerCase() : undefined;
+    return {
+      id,
+      lines: headlineFrom(r.lines),
+      x: num('x', -0.2, 1, 0.07),
+      y: num('y', -0.2, 1, 0.78),
+      width: num('width', 0.08, 1.2, 0.6),
+      size: num('size', 0.015, 0.2, 0.045),
+      align: r.align === 'center' || r.align === 'right' ? r.align : 'left',
+      weight: r.weight === 'regular' || r.weight === 'black' ? r.weight : 'bold',
+      italic: r.italic === true,
+      upper: r.upper === true,
+      shadow: r.shadow !== false,
+      ...(font ? { font } : {}),
+      ...(ink ? { ink } : {}),
+    };
+  });
 }
 
 const INK = /^#[0-9a-f]{6}$/i;
@@ -70,7 +119,8 @@ export function styleFrom(raw: unknown, current: PostStyle = {}): PostStyle {
   if (!raw || typeof raw !== 'object') throw new MediaRejected('That is not a look the post can take.');
   const r = raw as Record<string, unknown>;
   const out: PostStyle = { ...current };
-  const num = (key: 'textSize' | 'shadow' | 'bright' | 'shadowSoft' | 'shadowAngle' | 'shadowLength' | 'reflection' | 'reflectionSoft', min: number, max: number) => {
+  const num = (key: 'textSize' | 'shadow' | 'bright' | 'shadowSoft' | 'shadowAngle' | 'shadowLength' | 'reflection' | 'reflectionSoft'
+    | 'logoBright' | 'logoShadow' | 'logoOpacity' | 'bgBright' | 'bgBlur', min: number, max: number) => {
     const v = r[key];
     if (v === undefined) return;
     if (v === null) { delete out[key]; return; }
@@ -81,6 +131,21 @@ export function styleFrom(raw: unknown, current: PostStyle = {}): PostStyle {
     if (r.ink === null) delete out.ink;
     else if (typeof r.ink === 'string' && INK.test(r.ink)) out.ink = r.ink.toLowerCase();
     else throw new MediaRejected('That is not a colour the headline can take.');
+  }
+  if (r.font !== undefined) {
+    if (r.font === null) delete out.font;
+    else if (typeof r.font === 'string' && HEADLINE_FONTS.some((f) => f.id === r.font)) out.font = r.font;
+    else throw new MediaRejected('That is not a face the headline can be set in.');
+  }
+  if (r.backing !== undefined) {
+    if (r.backing === null) delete out.backing;
+    else if (r.backing === 'none' || r.backing === 'box') out.backing = r.backing;
+    else throw new MediaRejected('That is not something the headline can stand on.');
+  }
+  if (r.backingInk !== undefined) {
+    if (r.backingInk === null) delete out.backingInk;
+    else if (typeof r.backingInk === 'string' && INK.test(r.backingInk)) out.backingInk = r.backingInk.toLowerCase();
+    else throw new MediaRejected('That is not a colour the box can take.');
   }
   if (r.align !== undefined) {
     if (r.align === null) delete out.align;
@@ -95,6 +160,11 @@ export function styleFrom(raw: unknown, current: PostStyle = {}): PostStyle {
   num('shadowLength', 0.3, 3);
   num('reflection', 0, 2);
   num('reflectionSoft', 0, 3);
+  num('logoBright', -0.4, 0.4);
+  num('logoShadow', 0, 2);
+  num('logoOpacity', 0.15, 1);
+  num('bgBright', -0.5, 0.5);
+  num('bgBlur', 0, 1);
   // Back to as the layout has it: nothing to keep.
   if (out.textSize === 1) delete out.textSize;
   if (out.shadow === 1) delete out.shadow;
@@ -103,6 +173,11 @@ export function styleFrom(raw: unknown, current: PostStyle = {}): PostStyle {
   if (out.shadowLength === 1) delete out.shadowLength;
   if (out.reflection === 1) delete out.reflection;
   if (out.reflectionSoft === 0) delete out.reflectionSoft;
+  if (out.logoBright === 0) delete out.logoBright;
+  if (out.logoShadow === 0) delete out.logoShadow;
+  if (out.logoOpacity === 1) delete out.logoOpacity;
+  if (out.bgBright === 0) delete out.bgBright;
+  if (out.bgBlur === 0) delete out.bgBlur;
   return out;
 }
 
@@ -121,7 +196,10 @@ function placementOf(piece: 'bottle' | 'logo' | 'text' | 'shadow' | 'reflection'
     return { cx: num('cx', -0.2, 1.2), base: num('base', 0.1, 1.3), height: num('height', 0.08, 1.2), ...(rotate ? { rotate } : {}) };
   }
   if (piece === 'shadow' || piece === 'reflection') return { dx: num('dx', -1, 1), dy: num('dy', -1, 1), scale: num('scale', 0.2, 4), rotate: turned(num('rotate', -720, 720)) };
-  if (piece === 'logo') return { x: num('x', -0.2, 1), y: num('y', -0.2, 1), w: num('w', 0.03, 0.8) };
+  if (piece === 'logo') {
+    const rotate = r.rotate === undefined ? 0 : turned(num('rotate', -720, 720));
+    return { x: num('x', -0.2, 1), y: num('y', -0.2, 1), w: num('w', 0.03, 0.8), ...(rotate ? { rotate } : {}) };
+  }
   return { x: num('x', -0.2, 1), y: num('y', -0.2, 1), scale: num('scale', 0.3, 3) };
 }
 
@@ -299,7 +377,7 @@ export async function arrangePost(
 
 // --- the layers, one file each ---------------------------------------------------------
 
-export const LAYER_NAMES = ['background', 'shadow', 'reflection', 'bottle', 'headline', 'logo'] as const;
+export const LAYER_NAMES = ['background', 'shadow', 'reflection', 'bottle', 'headline', 'texts', 'logo'] as const;
 export type LayerName = (typeof LAYER_NAMES)[number];
 
 const layerKey = (scope: CompanyScope, generationId: string, name: LayerName) =>
@@ -385,7 +463,8 @@ function manifestOf(width: number, height: number, version: string, choices: Pos
     layers: LAYER_NAMES.map((name) => ({
       name,
       present: name === 'background'
-        || (name === 'headline' ? choices.headline !== 'none' : name === 'logo' ? choices.logo !== 'none' : choices.bottle !== 'none'),
+        || (name === 'texts' ? Boolean(choices.texts?.length)
+          : name === 'headline' ? choices.headline !== 'none' : name === 'logo' ? choices.logo !== 'none' : choices.bottle !== 'none'),
       v: hashes?.[name] ?? version,
     })),
     boxes,
@@ -450,7 +529,12 @@ export async function layerFile(scope: CompanyScope, generationId: string, name:
 }
 
 /** The other shapes a post can be taken away in, from the same background. */
-export const EXPORT_SHAPES: Record<string, number> = { '1:1': 1, '4:5': 0.8, '9:16': 9 / 16, '16:9': 16 / 9 };
+export const EXPORT_SHAPES: Record<string, number> = {
+  '1:1': 1, '4:5': 0.8, '9:16': 9 / 16, '16:9': 16 / 9,
+  // What Radico's briefs ask for besides posts: A-size posters (A2, A3 - one shape), a standee,
+  // a billboard, Jumia's banners and a shelf unit's panels.
+  '1:1.414': 1 / Math.SQRT2, '1:2': 0.5, '4:3': 4 / 3, '5:1': 5, '720:261': 720 / 261, '41:16': 41 / 16, '18:60': 18 / 60,
+};
 
 /**
  * The post as a file an editor opens, every part on its own layer. Nothing is
@@ -517,6 +601,11 @@ export async function designChecks(
   const out: DesignCheck[] = [];
   const { bottle, logo, text } = post.boxes;
   const name = { bottle: 'bottle', logo: 'logo', text: 'headline' } as const;
+  // Margins and sizes in shares of the short side, across and down: on a square post these are the
+  // shares of the post they always were; on a banner, 3% of its width would be a third of its height.
+  const short = Math.min(post.width, post.height);
+  const sx = short / post.width;
+  const sy = short / post.height;
   // Along one side, kept inside the margin - or as near as a piece that big can be.
   const inside = (v: number, size: number) => (size >= 1 - 2 * SAFE ? SAFE : Math.min(1 - SAFE - size, Math.max(SAFE, v)));
   const placed = (piece: 'bottle' | 'logo' | 'text', b: Frac, x: number, y: number) => {
@@ -529,8 +618,8 @@ export async function designChecks(
     const top = Math.max(SAFE, b.y);
     return { place: { bottle: { cx: x + b.w / 2, base: b.y + b.h, height: b.y + b.h - top } } };
   };
-  if (logo && logo.w < 0.07) {
-    const w = 0.1;
+  if (logo && logo.w < 0.07 * sx) {
+    const w = 0.1 * sx;
     const h = logo.h * (w / logo.w);
     out.push({
       text: 'The logo is small - it may not read on a phone. Pull its corner to make it bigger.',
@@ -542,7 +631,7 @@ export async function designChecks(
     const fix = { choices: placed(piece, b, inside(b.x, b.w), piece === 'bottle' ? b.y : inside(b.y, b.h)) };
     const outside = b.x < -0.005 || b.y < -0.005 || b.x + b.w > 1.005 || (piece !== 'bottle' && b.y + b.h > 1.005);
     if (outside) { out.push({ text: `Part of the ${name[piece]} is outside the post and will be cut off.`, fix }); continue; }
-    const tight = b.x < 0.03 || b.y < 0.03 || b.x + b.w > 0.97 || (piece !== 'bottle' && b.y + b.h > 0.97);
+    const tight = b.x < 0.03 * sx || b.y < 0.03 * sy || b.x + b.w > 1 - 0.03 * sx || (piece !== 'bottle' && b.y + b.h > 1 - 0.03 * sy);
     if (tight) out.push({ text: `The ${name[piece]} is very close to the edge - some screens may cut it. Move it in a little.`, fix });
   }
   const overlap = (a: typeof text, b: typeof text) => {
@@ -613,7 +702,9 @@ export async function headlineOptions(scope: CompanyScope, generationId: string)
   if (!roles.size) roles.add('lead');
   // The colours the headline may take come with them: the brand's own, read once the step opens.
   const [options, inks] = await Promise.all([headlineSuggestions(scope, recipe.brand, headline, roles), headlineInks(scope, recipe)]);
-  return { options, inks };
+  // The faces to choose from, and which are set from the brand's own files rather than a free stand-in.
+  const fonts = HEADLINE_FONTS.map((f) => ({ id: f.id, label: f.label, own: headlineFontIsOwn(f.id) }));
+  return { options, inks, fonts };
 }
 
 // --- a new background ------------------------------------------------------------------

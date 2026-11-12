@@ -3,6 +3,7 @@ import { withCompanyScope } from '../db';
 import type { CompanyScope } from '../db';
 import { readBrandDna } from './brandDna';
 import type { BrandFactDTO } from './brandDna';
+import { brandIdentity, type BrandIdentity } from './brandIdentity';
 
 /**
  * The Product Brain: one brand's DNA, arranged the way the guidebook draws it.
@@ -39,6 +40,8 @@ export type ProductBrainDTO = {
   clusters: BrainCluster[];
   /** When the newest fact changed, in words. Null when nothing is learned. */
   updatedAgo: string | null;
+  /** The brand at a glance: its colours, lines, tone, type, packs and markets. */
+  identity: BrandIdentity;
 };
 
 const PILLAR = /pillar|message|positioning|proposition|promise|purpose|belief|essence|values?\b|platform|territory|story|heritage|origin/i;
@@ -143,5 +146,6 @@ export async function productBrain(scope: CompanyScope, brand: string | null): P
     covered: clusters.filter((cluster) => cluster.count > 0).length,
     clusters,
     updatedAgo: ago(numbers.counts.updated_at),
+    identity: await brandIdentity(scope, brand, facts),
   };
 }

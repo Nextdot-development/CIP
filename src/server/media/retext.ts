@@ -3,7 +3,7 @@ import { withCompanyScope } from '../db';
 import type { CompanyScope } from '../db';
 import { rebuildPost, type PostRecipe } from './composePost';
 import { completeGeneration, failGeneration, getGeneration, insertGeneration, keepScene, sceneOf } from './generation';
-import { printable, type HeadlineLine } from './typography';
+import { HEADLINE_FONTS, printable, type HeadlineLine } from './typography';
 import { MediaRejected, type MediaGenerationDTO } from './types';
 
 /**
@@ -28,6 +28,10 @@ export function headlineFrom(raw: unknown): HeadlineLine[] {
     .map((l) => ({
       text: typeof l?.text === 'string' ? printable(l.text) : '',
       role: ROLES.has(l?.role) ? (l.role as HeadlineLine['role']) : 'lead',
+      // A face for this line alone, from the brand's list; anything else is the headline's own.
+      ...(typeof l?.font === 'string' && HEADLINE_FONTS.some((f) => f.id === l.font) ? { font: l.font as string } : {}),
+      // And a colour for this line alone, as a hex colour.
+      ...(typeof l?.ink === 'string' && /^#[0-9a-f]{6}$/i.test(l.ink) ? { ink: (l.ink as string).toLowerCase() } : {}),
     }))
     .filter((l) => l.text);
   if (lines.length === 0) throw new MediaRejected('The headline needs at least one line.');
