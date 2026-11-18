@@ -71,6 +71,8 @@ export async function enqueueUnderstanding(scope: CompanyScope): Promise<number>
            -- Brand material only. A market report or a book is read for what it
            -- says, never for what this brand looks and sounds like.
            and f.knowledge_role = 'brand'
+           -- Kept as it is, on purpose: no model reads it.
+           and coalesce(f.metadata->>'noModel', '') <> 'true'
            and f.checksum_sha256 is not null
            -- Once per content, not once per file.
            --

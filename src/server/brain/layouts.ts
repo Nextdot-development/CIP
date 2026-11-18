@@ -346,13 +346,79 @@ export type PostChoices = {
   style?: PostStyle;
   /** Text a person added besides the headline, each block placed and styled on its own. */
   texts?: TextBlock[];
-  /** Which piece lies over which, from the bottom up. Absent: bottle, headline, text, logo. */
+  /** Pictures a person added - a glass, ice, a garnish - each placed, turned and styled on its own. */
+  pictures?: AddedPicture[];
+  /** Which piece lies over which, from the bottom up. Absent: bottle, pictures, headline, text, logo. */
   order?: StackGroup[];
+  /** Pieces held where they are, so a drag cannot move them: "bottle", "logo", "p:<id>"… */
+  locked?: string[];
+};
+
+/** A shape laid on the post - a box, a band, a badge, a button - drawn, not painted. */
+export type ShapeSpec = {
+  kind: 'rect' | 'round' | 'circle' | 'line' | 'badge' | 'button';
+  fill: string;
+  stroke?: string;
+  /** The outline's width, a share of the shape's short side. */
+  strokeW?: number;
+  /** Words in it, for a badge or a button. */
+  text?: string;
+  ink?: string;
+  font?: string;
+};
+
+/**
+ * A picture laid on the post as it is - nothing painted: a Drive file, at a place and width in
+ * fractions of the post, its height from its own shape, turned about its middle.
+ */
+export type AddedPicture = {
+  id: string;
+  /** The Drive file it is - or, for a shape, absent. */
+  file?: string;
+  /** A shape drawn instead of a picture. */
+  shape?: ShapeSpec;
+  /** Its height over its width, as shown: the file's, cropped - or the shape's own. */
+  aspect: number;
+  /** How much is cut off each side of the file, as shares of it. */
+  crop?: { l: number; t: number; r: number; b: number };
+  /** Its edges faded out (0 to 1), and a colour laid over it (how strongly, 0 to 1). */
+  feather?: number;
+  tint?: string;
+  tintAmount?: number;
+  x: number;
+  y: number;
+  w: number;
+  rotate?: number;
+  /** Mirrored left to right. */
+  flip?: boolean;
+  opacity?: number;
+  bright?: number;
+  /** A soft shadow under it: 0 none, 1 as a designer would, 2 heavy. */
+  shadow?: number;
+  /** A shadow on the surface at its foot, so it stands on the table rather than floats: 0 to 1. */
+  ground?: number;
+  /** Its reflection on a glossy surface below it, as the bottle has: 0 to 1. */
+  mirror?: number;
 };
 
 /** The pieces that can be put over or under one another; the background is always at the bottom. */
-export const STACK = ['bottle', 'headline', 'texts', 'logo'] as const;
+export const STACK = ['bottle', 'pictures', 'headline', 'texts', 'logo'] as const;
 export type StackGroup = (typeof STACK)[number];
+
+/**
+ * An order made whole: a piece it does not name - one added since it was set - goes in where
+ * the usual order has it, just above the piece below it there.
+ */
+export function stackOf(order?: readonly StackGroup[] | null): StackGroup[] {
+  if (!order?.length) return [...STACK];
+  const out = order.filter((g, i) => STACK.includes(g) && order.indexOf(g) === i);
+  STACK.forEach((g, i) => {
+    if (out.includes(g)) return;
+    const below = i > 0 ? out.indexOf(STACK[i - 1]!) : -1;
+    out.splice(below + 1, 0, g);
+  });
+  return out;
+}
 
 export type PostStyle = {
   /** The headline's colour - one of the brand's own. */
@@ -369,12 +435,33 @@ export type PostStyle = {
   backing?: 'none' | 'box';
   backingInk?: string;
   /** The logo lighter or darker, its shadow, and how see-through it is. */
+  /** Which of the brand's logos: its white one, its black one, its colour one. Absent: the one that stands out where it lands. */
+  logoTone?: 'light' | 'dark' | 'colour';
   logoBright?: number;
   logoShadow?: number;
   logoOpacity?: number;
   /** The background lighter or darker, and softened. */
   bgBright?: number;
   bgBlur?: number;
+  /** The background drawn bigger (1 as it is, up to 3) and moved within the frame (-1 to 1 each way), or mirrored. */
+  bgZoom?: number;
+  bgX?: number;
+  bgY?: number;
+  bgFlip?: boolean;
+  /** A colour rising from the foot of the background, and how strong; and its edges darkened. */
+  bgOverlay?: string;
+  bgOverlayAmount?: number;
+  bgVignette?: number;
+  /** The whole post warmer or cooler (-1 to 1), with more or less contrast and colour (-0.5 to 0.5, -1 to 1). */
+  warmth?: number;
+  contrast?: number;
+  saturation?: number;
+  /** The headline's letter spacing (share of its size), line spacing (multiple of it), outline and second colour. */
+  textSpacing?: number;
+  textLeading?: number;
+  textStroke?: number;
+  textStrokeInk?: string;
+  ink2?: string;
   /** The headline's size against the layout's. */
   textSize?: number;
   /** How strong the bottle's shadow is: 0 none, 1 as the scene casts it. */

@@ -116,7 +116,7 @@ export type MarketSummary = {
  * that do not exist.
  */
 export async function companyMarkets(scope: CompanyScope): Promise<MarketSummary[]> {
-  return withCompanyScope(scope, async (tx) => {
+  return mergedMarkets(await withCompanyScope(scope, async (tx) => {
     const rows = await tx<{ market: string; files: number; facts: number }[]>`
       select f.market,
              count(distinct f.id)::int      as files,
@@ -131,7 +131,34 @@ export async function companyMarkets(scope: CompanyScope): Promise<MarketSummary
        order by files desc, f.market
     `;
     return rows;
-  });
+  }));
+}
+
+/** A market as one spelling: the known one ("india" is India), else as it was written, trimmed. */
+export function marketName(raw: string): string {
+  const name = raw.trim().replace(/\s+/g, ' ');
+  return KNOWN_MARKETS.find((known) => known.market.toLowerCase() === name.toLowerCase())?.market ?? name;
+}
+
+/**
+ * Markets that differ only in how they were typed, as one: "India" and "india" are the same
+ * place, and a picker showing both made a person choose between them. Named as the known
+ * spelling, else the one most files use.
+ */
+export function mergedMarkets(rows: MarketSummary[]): MarketSummary[] {
+  const byName = new Map<string, MarketSummary & { most: number }>();
+  for (const row of rows) {
+    const key = row.market.trim().toLowerCase();
+    const had = byName.get(key);
+    if (!had) { byName.set(key, { ...row, market: marketName(row.market), most: row.files }); continue; }
+    const known = KNOWN_MARKETS.some((k) => k.market.toLowerCase() === key);
+    if (!known && row.files > had.most) { had.market = row.market.trim(); had.most = row.files; }
+    had.files += row.files;
+    had.facts += row.facts;
+  }
+  return [...byName.values()]
+    .map(({ most: _most, ...m }) => m)
+    .sort((a, b) => b.files - a.files || a.market.localeCompare(b.market));
 }
 
 /**
@@ -292,9 +319,17 @@ export async function setFileMarket(
   fileId: string,
   market: string | null,
 ): Promise<boolean> {
-  const value = market?.trim().slice(0, 60) || null;
+  const typed = market ? marketName(market).slice(0, 60) : '';
 
   return withCompanyScope(scope, async (tx) => {
+    // Written the way this company already writes it, when it has it: one market, one spelling.
+    const [same] = typed
+      ? await tx<{ market: string }[]>`
+          select market from drive_files
+           where company_id = ${scope.companyId} and archived_at is null and lower(market) = lower(${typed})
+           group by market order by count(*) desc limit 1`
+      : [];
+    const value = typed ? (KNOWN_MARKETS.some((k) => k.market === typed) ? typed : same?.market ?? typed) : null;
     const rows = await tx<{ id: string }[]>`
       update drive_files
          set market = ${value}, updated_at = now()

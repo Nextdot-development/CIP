@@ -81,6 +81,7 @@ const BRAND_WORDS: [RegExp, string][] = [
   [/jaisalmer/i, 'Jaisalmer'],
   [/sangam/i, 'Sangam'],
   [/kohinoor/i, 'Kohinoor Reserve'],
+  [/ankahi|zaffran/i, 'Ankahi'],
 ];
 
 /** Flavours, editions and sizes, as the files name them. */
@@ -90,7 +91,7 @@ const VARIANTS: [RegExp, string][] = [
   [/honey/i, 'Honey'], [/\bfire\b/i, 'Fire'], [/royal(?!\s*ranth)/i, 'Royal'], [/select/i, 'Select'],
   [/\bdc\b|double\s*cask/i, 'Double Cask'], [/asava/i, 'Asava'], [/master'?s?\s*reserve/i, "Master's Reserve"],
   [/pocket/i, 'Pocket Pack'], [/hipster/i, 'Hipster Pack'], [/\bmini\b/i, 'Mini'], [/\b1\s*l\b|1l\b/i, '1L'], [/750\s*ml/i, '750ml'],
-  [/blue\s*vodka|^blue\b/i, 'Blue'], [/white\s*vodka/i, 'White'],
+  [/blue\s*vodka|^blue\b/i, 'Blue'], [/white\s*vodka/i, 'White'], [/zaffran/i, 'Zaffran'],
 ];
 
 /** Brand, by the file's own name first and then the folders it sits in. */

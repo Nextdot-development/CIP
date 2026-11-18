@@ -148,6 +148,8 @@ export function AskSection({
   initial,
   providers,
   markets,
+  brands = [],
+  activeBrand = null,
   ideation,
 }: {
   /** Concept cards, shown under the heading and above the composer. */
@@ -156,6 +158,9 @@ export function AskSection({
   providers: ProviderStatusDTO;
   /** Markets this company has knowledge about. Empty when nothing is placed. */
   markets: string[];
+  /** The company's brands, and the one chosen at the top of the page. */
+  brands?: string[];
+  activeBrand?: string | null;
 }) {
   const workspace = useWorkspace();
   const { seed } = useAskSeed();
@@ -194,6 +199,8 @@ export function AskSection({
   const [market, setMarket] = useState<string | null>(markets.length === 1 ? markets[0]! : null);
   // Null is "let CIP decide", which is what it did before there was a picker.
   const [shape, setShape] = useState<string | null>(null);
+  // The brand chosen at the top of the page to start with; unset, the request names it or CIP asks.
+  const [brand, setBrand] = useState<string | null>(activeBrand ?? (brands.length === 1 ? brands[0]! : null));
   // A picture of the person's own to set the post on, instead of one painted for it: free.
   const [ownPicture, setOwnPicture] = useState<File | null>(null);
   const [placing, setPlacing] = useState(false);
@@ -208,6 +215,15 @@ export function AskSection({
   // Every size offered is one the post comes back in: the generator's own, or
   // 4:5 made at the nearest of its sizes and cut - so nothing to warn about first.
   const shapes = shapesFor(chosen);
+  // A brief's piece arrives with its shape and market: chosen here too, when this page offers them.
+  // A shape it cannot make is left to Auto - the request says the size, and the studio exports to it.
+  const [lookSeed, setLookSeed] = useState(seed);
+  if (seed !== lookSeed) {
+    setLookSeed(seed);
+    if (seed?.market && markets.includes(seed.market)) setMarket(seed.market);
+    if (seed?.brand && brands.includes(seed.brand)) setBrand(seed.brand);
+    if (seed && seed.shape !== undefined) setShape(shapes.some((o) => o.value === seed.shape) ? seed.shape ?? null : null);
+  }
 
   const refresh = useCallback(async () => {
     const res = await fetch('/api/media/generations', { cache: 'no-store' });
@@ -248,6 +264,7 @@ export function AskSection({
           ...(mediaType === 'image' && shape ? { aspectRatio: shape } : {}),
           ...(mediaType === 'image' && basedOn ? { basedOn: basedOn.id } : {}),
           ...(market ? { market } : {}),
+          ...(brand ? { brand } : {}),
           ...(clarification ? { clarification } : {}),
         }),
       });
@@ -337,6 +354,7 @@ export function AskSection({
     const form = new FormData();
     form.append('file', ownPicture);
     form.append('request', draft.trim());
+    if (brand) form.append('brand', brand);
     // Left on Auto, the post takes the picture's own shape: a 4:5 photo makes a 4:5 post, not a square.
     form.append('ratio', shape ?? 'auto');
     const res = await fetch('/api/media/own-picture', { method: 'POST', body: form }).catch(() => null);
@@ -352,6 +370,11 @@ export function AskSection({
   };
 
   const busy = phase === 'planning' || phase === 'making' || phase === 'checking' || placing;
+  // Chosen before anything starts, wherever there is a choice - so CIP never stops to ask.
+  const missing = [
+    ...(brands.length > 1 && !brand ? ['brand'] : []),
+    ...(markets.length > 1 && !market ? ['market'] : []),
+  ];
 
   return (
     <div className="rise">
@@ -410,6 +433,28 @@ export function AskSection({
         {/* Which market, when this company has more than one. Unset is a real
             choice: the Brain then asks, instead of averaging three countries
             that do not look alike. */}
+        {/* Which brand, when this company has more than one: the one chosen at
+            the top of the page to start with. Unset, the request names it or CIP asks. */}
+        {brands.length > 1 && (
+          <div className="row" style={{ gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
+            <span className="tiny muted" style={{ marginRight: 2 }}>Brand:</span>
+            {brands.map((name) => (
+              <button
+                key={name}
+                type="button"
+                className={`chip ${brand === name ? 'on' : ''}`}
+                aria-pressed={brand === name}
+                onClick={() => setBrand(brand === name ? null : name)}
+              >
+                {name}
+              </button>
+            ))}
+            {brand === null && (
+              <span className="tiny muted">— or name it in the request</span>
+            )}
+          </div>
+        )}
+
         {markets.length > 1 && (
           <div className="row" style={{ gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
             <span className="tiny muted" style={{ marginRight: 2 }}>For:</span>
@@ -528,11 +573,15 @@ export function AskSection({
                 ? `${IMAGE_PROVIDER_LABELS[provider]} has no key configured.`
                 : 'No video provider is configured.'}
           </span>
+          {missing.length > 0 && (
+            <span className="tiny" style={{ color: 'var(--warn-700, #b7791f)' }}>Choose the {missing.join(' and the ')} first</span>
+          )}
           <button
             type="button"
             className="btn btn-primary"
             onClick={() => void (mediaType === 'image' && ownPicture ? placeOnOwn() : send())}
-            disabled={busy || (mediaType === 'image' && ownPicture ? false : !draft.trim() || !ready)}
+            disabled={busy || missing.length > 0 || (mediaType === 'image' && ownPicture ? false : !draft.trim() || !ready)}
+            title={missing.length ? `Choose the ${missing.join(' and the ')} above first - so CIP never has to stop and ask` : undefined}
           >
             {placing ? 'Setting it on your picture…' : busy ? 'Working…' : 'Make it'} <Icon name="arrow-right" size={14} />
           </button>
@@ -580,8 +629,6 @@ export function AskSection({
           </div>
         </Card>
       )}
-
-      {result?.status === 'generated' && result.qc && <QcOutcome qc={result.qc} />}
 
       {result?.status === 'generated' && (
         <Result
@@ -834,176 +881,6 @@ function Plan({ plan }: { plan: PlanSummary }) {
  * Both outcomes are honest and neither is an error: another configured
  * generator makes it exactly, or the nearest shape is made and cut down.
  */
-type GenerationCheckState =
-  | { state: 'waiting' }
-  | { state: 'unchecked' }
-  | { state: 'failed' }
-  | { state: 'ready'; id: string; score: number | null; flags: number; broke: string[] };
-
-/**
- * The checker's verdict on a generated image.
- *
- * The worker checks every generated image against the brand and its rules
- * before it is treated as final; this shows that verdict under the picture
- * once it lands, and says so plainly while it has not.
- */
-function GenerationCheck({ generationId, live }: { generationId: string; live: boolean }) {
-  const [check, setCheck] = useState<GenerationCheckState>({ state: 'waiting' });
-
-  useEffect(() => {
-    let stopped = false;
-    let tries = 0;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-
-    const load = async () => {
-      const res = await fetch(`/api/brain/checks?generationId=${encodeURIComponent(generationId)}`, { cache: 'no-store' }).catch(() => null);
-      const body = res?.ok
-        ? ((await res.json().catch(() => null)) as {
-            check: {
-              id: string; status: string; score: number | null;
-              flags?: { status: string; severity?: string; citedRule?: { rule: string } | null }[];
-            } | null;
-          } | null)
-        : null;
-      if (stopped) return;
-
-      const found = body?.check;
-      if (found && found.status === 'ready') {
-        // Counted from the flags if they came, and zero if they did not. Read
-        // straight off the body, a reply without them threw inside this
-        // effect, where nothing catches it - and the line sat on "Checking it
-        // against the brand" for ever, saying the opposite of what happened.
-        const flags = Array.isArray(found.flags) ? found.flags : [];
-        setCheck({
-          state: 'ready',
-          id: found.id,
-          score: found.score,
-          flags: flags.filter((f) => f.status !== 'disputed').length,
-          // The same test the generator's own loop uses: a rule, not a
-          // pattern, found broken, and not disputed. See rulesBroken.
-          broke: flags
-            .filter((f) => f.status !== 'disputed' && f.citedRule && f.severity !== 'note')
-            .map((f) => f.citedRule!.rule),
-        });
-        return;
-      }
-      if (found && found.status === 'failed') {
-        setCheck({ state: 'failed' });
-        return;
-      }
-
-      // Only the picture just made is waited on.
-      //
-      // Every card used to ask again every six seconds, thirty times: open the
-      // history on a company with two dozen results and that is several hundred
-      // requests for verdicts that are either already there or will not arrive
-      // until the worker next runs. An older one is asked once and left alone.
-      if (!live) {
-        setCheck({ state: 'unchecked' });
-        return;
-      }
-
-      tries += 1;
-      if (tries > 30) {
-        setCheck({ state: 'unchecked' });
-        return;
-      }
-      timer = setTimeout(load, 6_000);
-    };
-
-    timer = setTimeout(load, 0);
-    return () => {
-      stopped = true;
-      if (timer) clearTimeout(timer);
-    };
-  }, [generationId, live]);
-
-  if (check.state === 'waiting') {
-    return <p className="gencheck"><Icon name="shield" size={13} /> Checking it against the brand and its rules…</p>;
-  }
-  if (check.state === 'unchecked') {
-    return <p className="gencheck"><Icon name="shield" size={13} /> Not checked yet. The worker checks it when it next runs.</p>;
-  }
-  if (check.state === 'failed') {
-    return <p className="gencheck"><Icon name="alert" size={13} /> The consistency check could not run on this one.</p>;
-  }
-  const tone = check.score === null ? 'neutral' : check.score >= 80 ? 'ok' : check.score >= 50 ? 'warn' : 'stop';
-  return (
-    <div className="gencheck">
-      <Icon name="shield" size={13} />
-      {check.broke.length === 0 ? (
-        <Pill tone="ok">Passed QC</Pill>
-      ) : (
-        <Pill tone="stop">Did not pass QC</Pill>
-      )}
-      <Pill tone={tone}>{check.score === null ? 'Not judged' : `${check.score} / 100`}</Pill>
-      <span>{check.flags === 0 ? 'No flags' : `${check.flags} flag${check.flags === 1 ? '' : 's'}`}</span>
-      <a href={`/check?check=${check.id}`}>See the check</a>
-      {check.broke.length > 0 && (
-        <p className="gencheck-broke">Breaks: {check.broke.join('; ')}</p>
-      )}
-    </div>
-  );
-}
-
-/**
- * How the picture got to where it is: made once and passed, or made again
- * because a version broke a rule - and, when it never passed, why it stopped.
- */
-function QcOutcome({ qc }: { qc: GenerationQc }) {
-  const fixed = qc.earlier.filter((e) => e.broke.length > 0);
-  const why: Record<GenerationQc['stopped'], string> = {
-    passed: '',
-    out_of_tries: `It was made ${qc.attempts} times and every version broke a rule.`,
-    out_of_time: 'It ran out of time to make another version.',
-    generation_failed: 'Making another version failed.',
-    check_failed: 'The check itself could not run.',
-    left_to_you: 'Change the layers below to fix it - nothing is made again on its own.',
-  };
-
-  return (
-    <Card className="pad">
-      <p className="strong" style={{ marginBottom: 4 }}>
-        <Icon name={qc.verdict === 'passed' ? 'check' : 'alert'} size={15} />{' '}
-        {qc.verdict === 'passed'
-          ? qc.attempts === 1
-            ? 'Passed every QC rule first time'
-            : `Passed QC on version ${qc.attempts}`
-          : qc.verdict === 'failed'
-            ? 'This does not pass QC yet'
-            : 'This has not been checked'}
-      </p>
-      {fixed.length > 0 && (
-        <ul className="small" style={{ margin: '6px 0 0', paddingLeft: 18 }}>
-          {fixed.map((e, i) => (
-            <li key={e.generationId}>
-              Version {i + 1} broke: {e.broke.join('; ')}
-              {qc.verdict === 'passed' ? ' — fixed.' : '.'}
-            </li>
-          ))}
-        </ul>
-      )}
-      {qc.verdict === 'failed' && (
-        <>
-          <p className="small" style={{ marginTop: 6 }}>
-            {why[qc.stopped]} This is the closest version. It still breaks:
-          </p>
-          <ul className="small" style={{ margin: '4px 0 0', paddingLeft: 18 }}>
-            {qc.broke.map((b, i) => (
-              <li key={i}><strong>{b.rule}</strong> — {b.message}</li>
-            ))}
-          </ul>
-          <p className="tiny muted" style={{ marginTop: 6 }}>
-            Fix it with &ldquo;Build on this&rdquo;, or dispute a flag on the check if the rule does not apply.
-          </p>
-        </>
-      )}
-      {qc.verdict === 'unchecked' && (
-        <p className="small" style={{ marginTop: 6 }}>{why[qc.stopped]} Do not treat it as approved until it has been checked.</p>
-      )}
-    </Card>
-  );
-}
 
 type HeadlineLine = NonNullable<MediaGenerationDTO['headline']>[number];
 
@@ -1175,7 +1052,7 @@ function TextEditor({ generation, lines: initial, onDone, onSave, saveLabel = 'S
 }
 
 type Layers = NonNullable<MediaGenerationDTO['layers']>;
-type LayerName = 'background' | 'shadow' | 'reflection' | 'bottle' | 'headline' | 'texts' | 'logo';
+type LayerName = 'background' | 'shadow' | 'reflection' | 'bottle' | 'pictures' | 'headline' | 'texts' | 'logo';
 /**
  * A piece's box in fractions of the post, how far it is turned (degrees,
  * clockwise) for one that turns, and the point it turns and sizes about when
@@ -1183,15 +1060,36 @@ type LayerName = 'background' | 'shadow' | 'reflection' | 'bottle' | 'headline' 
  */
 type Frac = { x: number; y: number; w: number; h: number; r?: number; px?: number; py?: number };
 type BasePiece = 'bottle' | 'shadow' | 'reflection' | 'logo' | 'text';
-/** A piece on the post: one of its own, or a block of text a person added - "t:" and its id. */
-type Piece = BasePiece | `t:${string}`;
+/** A piece on the post: one of its own, a block of text a person added - "t:" and its id - or a picture they added, "p:". */
+type Piece = BasePiece | `t:${string}` | `p:${string}`;
 const isBlock = (piece: Piece): piece is `t:${string}` => piece.startsWith('t:');
+const isPic = (piece: Piece): piece is `p:${string}` => piece.startsWith('p:');
+/** A picture a person laid on the post - a glass, ice - from Drive: its place, width, shape and look. */
+type PictureC = {
+  id: string; file?: string; shape?: ShapeC; aspect: number; x: number; y: number; w: number;
+  rotate?: number; flip?: boolean; opacity?: number; bright?: number; shadow?: number;
+  crop?: { l: number; t: number; r: number; b: number }; feather?: number; tint?: string; tintAmount?: number;
+  /** A shadow on the surface at its foot: 0 to 1. */
+  ground?: number;
+  /** Its reflection on a glossy surface: 0 to 1. */
+  mirror?: number;
+};
+/** A shape laid on the post: a box, a band, a badge, a button - with words, for the last two. */
+type ShapeC = { kind: 'rect' | 'round' | 'circle' | 'line' | 'badge' | 'button'; fill: string; stroke?: string; strokeW?: number; text?: string; ink?: string; font?: string };
+/** Letter and line spacing, an outline and a second colour, for any words. */
+type TextLookC = { spacing?: number; lineHeight?: number; stroke?: number; strokeInk?: string; ink2?: string };
+/** A shape drawn by the server exactly as the post will have it, at the size it is shown. */
+const shapeSrc = (shape: ShapeC, w: number, h: number) =>
+  `/api/media/shape?s=${encodeURIComponent(JSON.stringify(shape))}&w=${Math.max(4, Math.round(w / 20) * 20)}&h=${Math.max(4, Math.round(h / 20) * 20)}`;
+const pictureSrc = (pic: PictureC, size?: number) => (pic.shape
+  ? shapeSrc(pic.shape, 240, 240 * pic.aspect)
+  : `/api/drive/files/${pic.file}/content${size ? `?size=${size}` : '?disposition=inline'}`);
 /** Text a person added besides the headline: its lines, place and look. */
 type TextBlockC = {
   id: string; lines: HeadlineLine[]; x: number; y: number; width: number; size: number;
   align: 'left' | 'center' | 'right'; weight: 'regular' | 'bold' | 'black'; italic: boolean; upper: boolean; shadow: boolean;
   font?: string; ink?: string;
-};
+} & TextLookC;
 /** The pieces that hang from the bottle's foot: each moves, sizes and turns about it, on its own. */
 type FromFoot = 'shadow' | 'reflection';
 const FROM_FOOT = new Set<Piece>(['shadow', 'reflection']);
@@ -1214,7 +1112,7 @@ type Manifest = {
     logo: Frac | null; text: Frac | null; textAnchor: { x: number } | null;
     texts?: { id: string; x: number; y: number; w: number; h: number }[];
   };
-  choices: { bottle: Layers['bottle']; size: Layers['size']; logo: Layers['logo']; headline?: 'shown' | 'none'; place?: Placement; style?: PostStyle; texts?: TextBlockC[]; order?: StackGroupC[] };
+  choices: { bottle: Layers['bottle']; size: Layers['size']; logo: Layers['logo']; headline?: 'shown' | 'none'; place?: Placement; style?: PostStyle; texts?: TextBlockC[]; pictures?: PictureC[]; order?: StackGroupC[]; locked?: string[] };
   /** What measuring the post found to look at, each with the change that puts it right when there is one. */
   checks?: (string | { text: string; fix?: { choices: Record<string, unknown> } })[];
 };
@@ -1226,14 +1124,38 @@ type PostStyle = {
   shadow?: number; bright?: number; shadowSoft?: number; shadowAngle?: number; shadowLength?: number;
   reflection?: number; reflectionSoft?: number;
   logoBright?: number; logoShadow?: number; logoOpacity?: number; bgBright?: number; bgBlur?: number;
+  logoTone?: 'light' | 'dark' | 'colour';
+  bgZoom?: number; bgX?: number; bgY?: number; bgFlip?: boolean; bgOverlay?: string; bgOverlayAmount?: number; bgVignette?: number;
+  warmth?: number; contrast?: number; saturation?: number;
+  textSpacing?: number; textLeading?: number; textStroke?: number; textStrokeInk?: string; ink2?: string;
 };
 type SlideKey = 'textSize' | 'shadow' | 'bright' | 'shadowSoft' | 'shadowAngle' | 'shadowLength' | 'reflection' | 'reflectionSoft'
-  | 'logoBright' | 'logoShadow' | 'logoOpacity' | 'bgBright' | 'bgBlur';
+  | 'logoBright' | 'logoShadow' | 'logoOpacity' | 'bgBright' | 'bgBlur'
+  | 'bgZoom' | 'bgX' | 'bgY' | 'bgOverlayAmount' | 'bgVignette' | 'warmth' | 'contrast' | 'saturation';
+/** Ready-made looks for the whole post: one click, and each slider still free to change after. */
+const POST_LOOKS: { label: string; style: Partial<Record<'warmth' | 'contrast' | 'saturation', number | null>> }[] = [
+  { label: 'Natural', style: { warmth: null, contrast: null, saturation: null } },
+  { label: 'Warm', style: { warmth: 0.45, contrast: 0.06, saturation: 0.1 } },
+  { label: 'Cool', style: { warmth: -0.45, contrast: 0.06, saturation: null } },
+  { label: 'Punchy', style: { warmth: null, contrast: 0.25, saturation: 0.35 } },
+  { label: 'Muted', style: { warmth: 0.1, contrast: -0.1, saturation: -0.4 } },
+  { label: 'Classic', style: { warmth: null, contrast: 0.15, saturation: -1 } },
+];
 /** The pieces that can lie over or under one another, from the bottom up as CIP lays them. */
-const STACK_C = ['bottle', 'headline', 'texts', 'logo'] as const;
+const STACK_C = ['bottle', 'pictures', 'headline', 'texts', 'logo'] as const;
 type StackGroupC = (typeof STACK_C)[number];
-const STACK_LABEL: Record<StackGroupC, string> = { bottle: 'Bottle', headline: 'Headline', texts: 'Text', logo: 'Logo' };
-const STACK_LAYERS: Record<StackGroupC, LayerName[]> = { bottle: ['shadow', 'reflection', 'bottle'], headline: ['headline'], texts: ['texts'], logo: ['logo'] };
+const STACK_LABEL: Record<StackGroupC, string> = { bottle: 'Bottle', pictures: 'Pictures', headline: 'Headline', texts: 'Text', logo: 'Logo' };
+const STACK_LAYERS: Record<StackGroupC, LayerName[]> = { bottle: ['shadow', 'reflection', 'bottle'], pictures: ['pictures'], headline: ['headline'], texts: ['texts'], logo: ['logo'] };
+/** An order made whole, as the server makes it: a piece it does not name goes where it usually lies. */
+function stackOfC(order?: readonly StackGroupC[] | null): StackGroupC[] {
+  if (!order?.length) return [...STACK_C];
+  const out = order.filter((g, i) => STACK_C.includes(g) && order.indexOf(g) === i);
+  STACK_C.forEach((g, i) => {
+    if (out.includes(g)) return;
+    out.splice(i > 0 ? out.indexOf(STACK_C[i - 1]!) + 1 : 0, 0, g);
+  });
+  return out;
+}
 
 /** A look set by sliding, as an editor has it: its range, where "as designed" is, and how it reads. */
 const SLIDES: Record<SlideKey, { label: string; min: number; max: number; step: number; plain: number | null; shows: (v: number) => string }> = {
@@ -1245,6 +1167,14 @@ const SLIDES: Record<SlideKey, { label: string; min: number; max: number; step: 
   logoOpacity: { label: 'Opacity', min: 0.15, max: 1, step: 0.01, plain: 1, shows: (v) => `${Math.round(v * 100)}%` },
   bgBright: { label: 'Light', min: -0.5, max: 0.5, step: 0.01, plain: 0, shows: (v) => (v === 0 ? 'As painted' : `${v > 0 ? '+' : ''}${Math.round(v * 100)}%`) },
   bgBlur: { label: 'Soft focus', min: 0, max: 1, step: 0.02, plain: 0, shows: (v) => (v === 0 ? 'Sharp' : `${Math.round(v * 100)}%`) },
+  bgZoom: { label: 'Zoom', min: 1, max: 3, step: 0.02, plain: 1, shows: (v) => (v === 1 ? 'As made' : `${Math.round(v * 100)}%`) },
+  bgX: { label: 'Across', min: -1, max: 1, step: 0.02, plain: 0, shows: (v) => (v === 0 ? 'Middle' : `${v < 0 ? 'Left' : 'Right'} ${Math.round(Math.abs(v) * 100)}%`) },
+  bgY: { label: 'Up and down', min: -1, max: 1, step: 0.02, plain: 0, shows: (v) => (v === 0 ? 'Middle' : `${v < 0 ? 'Up' : 'Down'} ${Math.round(Math.abs(v) * 100)}%`) },
+  bgOverlayAmount: { label: 'Colour from below', min: 0, max: 1, step: 0.02, plain: 0, shows: (v) => (v === 0 ? 'None' : `${Math.round(v * 100)}%`) },
+  bgVignette: { label: 'Dark edges', min: 0, max: 1, step: 0.02, plain: 0, shows: (v) => (v === 0 ? 'None' : `${Math.round(v * 100)}%`) },
+  warmth: { label: 'Warmth', min: -1, max: 1, step: 0.02, plain: 0, shows: (v) => (v === 0 ? 'Natural' : `${v > 0 ? 'Warmer' : 'Cooler'} ${Math.round(Math.abs(v) * 100)}%`) },
+  contrast: { label: 'Contrast', min: -0.5, max: 0.5, step: 0.01, plain: 0, shows: (v) => (v === 0 ? 'Natural' : `${v > 0 ? '+' : ''}${Math.round(v * 100)}%`) },
+  saturation: { label: 'Colour', min: -1, max: 1, step: 0.02, plain: 0, shows: (v) => (v === -1 ? 'Black and white' : v === 0 ? 'Natural' : `${v > 0 ? '+' : ''}${Math.round(v * 100)}%`) },
   shadowLength: { label: 'Length', min: 0.3, max: 3, step: 0.05, plain: 1, shows: (v) => `${Math.round(v * 100)}%` },
   reflection: { label: 'Strength', min: 0, max: 2, step: 0.05, plain: 1, shows: (v) => `${Math.round(v * 100)}%` },
   reflectionSoft: { label: 'Softness', min: 0, max: 3, step: 0.05, plain: 0, shows: (v) => (v === 0 ? 'As the surface gives it' : `+${Math.round(v * 100)}%`) },
@@ -1285,7 +1215,9 @@ const restoring = (s: Snapshot) => ({
     logo: s.choices.logo,
     headline: s.choices.headline ?? 'shown',
     texts: s.choices.texts ?? [],
+    pictures: s.choices.pictures ?? [],
     order: s.choices.order ?? null,
+    locked: s.choices.locked ?? [],
     place: {
       bottle: s.choices.place?.bottle ?? null, shadow: s.choices.place?.shadow ?? null, reflection: s.choices.place?.reflection ?? null,
       logo: s.choices.place?.logo ?? null, text: s.choices.place?.text ?? null,
@@ -1298,7 +1230,12 @@ const restoring = (s: Snapshot) => ({
       shadowAngle: s.choices.style?.shadowAngle ?? null, shadowLength: s.choices.style?.shadowLength ?? null,
       reflection: s.choices.style?.reflection ?? null, reflectionSoft: s.choices.style?.reflectionSoft ?? null,
       logoBright: s.choices.style?.logoBright ?? null, logoShadow: s.choices.style?.logoShadow ?? null,
-      logoOpacity: s.choices.style?.logoOpacity ?? null, bgBright: s.choices.style?.bgBright ?? null, bgBlur: s.choices.style?.bgBlur ?? null,
+      logoOpacity: s.choices.style?.logoOpacity ?? null, logoTone: s.choices.style?.logoTone ?? null, bgBright: s.choices.style?.bgBright ?? null, bgBlur: s.choices.style?.bgBlur ?? null,
+      bgZoom: s.choices.style?.bgZoom ?? null, bgX: s.choices.style?.bgX ?? null, bgY: s.choices.style?.bgY ?? null, bgFlip: s.choices.style?.bgFlip ?? null,
+      bgOverlay: s.choices.style?.bgOverlay ?? null, bgOverlayAmount: s.choices.style?.bgOverlayAmount ?? null, bgVignette: s.choices.style?.bgVignette ?? null,
+      warmth: s.choices.style?.warmth ?? null, contrast: s.choices.style?.contrast ?? null, saturation: s.choices.style?.saturation ?? null,
+      textSpacing: s.choices.style?.textSpacing ?? null, textLeading: s.choices.style?.textLeading ?? null, textStroke: s.choices.style?.textStroke ?? null,
+      textStrokeInk: s.choices.style?.textStrokeInk ?? null, ink2: s.choices.style?.ink2 ?? null,
     },
   },
   ...(s.lines ? { lines: s.lines } : {}),
@@ -1307,18 +1244,34 @@ const restoring = (s: Snapshot) => ({
 /** Where a dragged piece settles when it comes near: the middle, and a margin in from each edge. */
 const SNAP = 0.012;
 const MARGIN = 0.05;
-function snapped(box: Frac, piece: Piece): { box: Frac; guides: { x: number[]; y: number[] } } {
+function snapped(box: Frac, piece: Piece, others: Frac[] = []): { box: Frac; guides: { x: number[]; y: number[] } } {
   const guides = { x: [] as number[], y: [] as number[] };
   let { x, y } = box;
-  const nearX = ([[x + box.w / 2, 0.5], [x, MARGIN], [x + box.w, 1 - MARGIN]] as const).find(([at, line]) => Math.abs(at - line) < SNAP);
+  // The post's middle and margins, then the edges and middles of every other piece - as Canva lines them up.
+  const linesX = [0.5, MARGIN, 1 - MARGIN, ...others.flatMap((o) => [o.x, o.x + o.w / 2, o.x + o.w])];
+  const linesY = [0.5, MARGIN, 1 - MARGIN, ...others.flatMap((o) => [o.y, o.y + o.h / 2, o.y + o.h])];
+  const nearest = (anchors: number[], lines: number[], skip?: (a: number, line: number) => boolean) => {
+    let best: [number, number] | null = null;
+    for (const a of anchors) for (const line of lines) {
+      if (skip?.(a, line)) continue;
+      const d = Math.abs(a - line);
+      if (d < SNAP && (!best || d < Math.abs(best[0] - best[1]))) best = [a, line];
+    }
+    return best;
+  };
+  const nearX = nearest([x, x + box.w / 2, x + box.w], linesX);
   if (nearX) { x += nearX[1] - nearX[0]; guides.x.push(nearX[1]); }
-  // A bottle stands on its surface: only the words and the logo settle on the bottom margin.
-  const ys: (readonly [number, number])[] = [[y + box.h / 2, 0.5], [y, MARGIN]];
-  if (piece !== 'bottle') ys.push([y + box.h, 1 - MARGIN]);
-  const nearY = ys.find(([at, line]) => Math.abs(at - line) < SNAP);
+  // A bottle stands on its surface: it does not settle its foot on the bottom margin.
+  const foot = y + box.h;
+  const nearY = nearest([y, y + box.h / 2, foot], linesY, (a, line) => piece === 'bottle' && a === foot && line === 1 - MARGIN);
   if (nearY) { y += nearY[1] - nearY[0]; guides.y.push(nearY[1]); }
   return { box: { ...box, x, y }, guides };
 }
+
+/** A box moved by so much, its pivot with it. */
+const shiftBox = (b: Frac, dx: number, dy: number): Frac => ({
+  ...b, x: b.x + dx, y: b.y + dy, ...(b.px !== undefined && b.py !== undefined ? { px: b.px + dx, py: b.py + dy } : {}),
+});
 
 const SHAPES: { value: string | null; label: string }[] = [
   { value: null, label: 'As made' }, { value: '1:1', label: 'Square 1:1' }, { value: '4:5', label: 'Portrait 4:5' },
@@ -1332,9 +1285,10 @@ const SHAPES: { value: string | null; label: string }[] = [
 type HeadlineOption = { from: 'words' | 'brand'; lines: HeadlineLine[] };
 
 /** The steps, in the order a designer builds a post. Each adds its layers to the canvas. */
-const STUDIO_STEPS: { id: 'background' | 'bottle' | 'logo' | 'words' | 'download'; label: string; adds: LayerName[] }[] = [
+const STUDIO_STEPS: { id: 'background' | 'bottle' | 'pictures' | 'logo' | 'words' | 'download'; label: string; adds: LayerName[] }[] = [
   { id: 'background', label: 'Background', adds: ['background'] },
   { id: 'bottle', label: 'Bottle', adds: ['shadow', 'reflection', 'bottle'] },
+  { id: 'pictures', label: 'Pictures', adds: ['pictures'] },
   { id: 'logo', label: 'Logo', adds: ['logo'] },
   { id: 'words', label: 'Headline', adds: ['headline', 'texts'] },
   { id: 'download', label: 'Download', adds: [] },
@@ -1344,6 +1298,7 @@ const LAYER_LIST: { name: LayerName; label: string }[] = [
   { name: 'logo', label: 'Logo' },
   { name: 'texts', label: 'Text' },
   { name: 'headline', label: 'Headline' },
+  { name: 'pictures', label: 'Pictures' },
   { name: 'bottle', label: 'Bottle' },
   { name: 'reflection', label: 'Bottle reflection' },
   { name: 'shadow', label: 'Bottle shadow' },
@@ -1356,9 +1311,10 @@ const PIECE_LAYERS: Record<BasePiece, LayerName[]> = {
 const PIECE_OF: Partial<Record<LayerName, Piece>> = { bottle: 'bottle', shadow: 'bottle', reflection: 'bottle', logo: 'logo', headline: 'text' };
 const PIECE_LABEL: Record<BasePiece, string> = { bottle: 'Bottle', shadow: 'Shadow', reflection: 'Reflection', logo: 'Logo', text: 'Headline' };
 /** The pieces that turn, by a handle above them. */
-const TURNS = new Set<Piece>(['bottle', 'shadow', 'reflection', 'logo']);
-const layersOfPiece = (piece: Piece): LayerName[] => (isBlock(piece) ? ['texts'] : PIECE_LAYERS[piece]);
-const labelOf = (piece: Piece): string => (isBlock(piece) ? 'Text' : PIECE_LABEL[piece]);
+const TURNING = new Set<Piece>(['bottle', 'shadow', 'reflection', 'logo']);
+const turns = (piece: Piece) => TURNING.has(piece) || isPic(piece);
+const layersOfPiece = (piece: Piece): LayerName[] => (isBlock(piece) ? ['texts'] : isPic(piece) ? ['pictures'] : PIECE_LAYERS[piece]);
+const labelOf = (piece: Piece): string => (isBlock(piece) ? 'Text' : isPic(piece) ? 'Picture' : PIECE_LABEL[piece]);
 /** A short id for a new block of text. */
 const blockId = () => Math.random().toString(36).replace(/[^a-z0-9]/g, '').slice(2, 10).padEnd(6, '0');
 const TEXT_SIZES_C = { min: 0.015, max: 0.2 };
@@ -1413,7 +1369,8 @@ const layerSrc = (id: string, manifest: Manifest, name: LayerName) => {
  * while it arrives. A layer that did not change is already here.
  */
 function preload(id: string, manifest: Manifest): Promise<void> {
-  return Promise.all(manifest.layers.map((l) => new Promise<void>((done) => {
+  // A layer a post does not have is never shown, and one set before it existed is not stored at all.
+  return Promise.all(manifest.layers.filter((l) => l.present && l.name !== 'pictures').map((l) => new Promise<void>((done) => {
     const img = new Image();
     img.onload = () => done();
     img.onerror = () => done();
@@ -1453,6 +1410,14 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
   const [saving, setSaving] = useState(false);
   /** A piece turned on or off, shown so at once while the post catches up. */
   const [want, setWant] = useState<{ logo?: boolean; headline?: boolean }>({});
+  /** The brand's logos, one of each kind - white, black, colour - for the person to choose between. Free. */
+  const [logoVersions, setLogoVersions] = useState<{ id: string; name: string; tone: 'light' | 'dark' | 'colour' }[]>([]);
+  useEffect(() => {
+    void fetch(`/api/media/generations/${generation.id}/glass`, { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((b: { logos?: { id: string; name: string; tone: 'light' | 'dark' | 'colour' }[] } | null) => setLogoVersions(b?.logos ?? []))
+      .catch(() => undefined);
+  }, [generation.id]);
   const [painting, setPainting] = useState(false);
   const [backgroundNote, setBackgroundNote] = useState('');
   const [exportShape, setExportShape] = useState<string | null>(null);
@@ -1465,7 +1430,13 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
   /** The headline's words being changed on the picture itself, line by line. */
   const [inline, setInline] = useState<HeadlineLine[] | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
-  const drag = useRef<{ piece: Piece; mode: 'move' | 'resize' | 'turn'; x: number; y: number; from: Frac } | null>(null);
+  const drag = useRef<{ piece: Piece; mode: 'move' | 'resize' | 'turn'; x: number; y: number; from: Frac; others?: { piece: Piece; from: Frac }[] } | null>(null);
+  /** Pieces chosen together - Shift and click - to move, line up or hold still as one. */
+  const [group, setGroup] = useState<Set<Piece>>(new Set());
+  /** A picture or a block of text copied, to paste here or on another post. */
+  const clip = useRef<{ kind: 'picture'; item: PictureC } | { kind: 'text'; item: TextBlockC } | null>(null);
+  /** The picture being touched up with the brush. */
+  const [brushing, setBrushing] = useState<string | null>(null);
   const queue = useRef<Promise<unknown>>(Promise.resolve());
   // Undo and redo: the post as it stood before each change, kept here in the browser.
   const latest = useRef<Snapshot | null>(null);
@@ -1493,7 +1464,7 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
   }, [load, note]);
 
   // Other headlines, fetched once the headline step is open: read from what CIP holds, nothing spent.
-  const onWords = STUDIO_STEPS[step]?.id === 'words';
+  const onWords = ['words', 'background', 'pictures'].includes(STUDIO_STEPS[step]?.id ?? '');
   useEffect(() => {
     if (!onWords || options) return;
     let live = true;
@@ -1522,6 +1493,13 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
   const showing = useRef<string | null>(null);
   /** A look being slid: shown on the picture at once, and set into the post when let go. */
   const [drafts, setDrafts] = useState<Partial<Record<SlideKey, number>>>({});
+  /**
+   * The added pictures and text blocks as last sent. A second drag made before the first is
+   * saved builds on this - built on what is shown, it put the first piece back where it was.
+   */
+  const sentLists = useRef<{ pictures?: PictureC[]; texts?: TextBlockC[] }>({});
+  const listNow = <K extends 'pictures' | 'texts'>(key: K): NonNullable<Manifest['choices'][K]> =>
+    (sentLists.current[key] ?? manifest?.choices[key] ?? []) as NonNullable<Manifest['choices'][K]>;
   const arrange = (
     given: Change | null,
     settles: Piece[] = [],
@@ -1529,6 +1507,12 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
     mode: 'do' | 'undo' | 'redo' = 'do',
   ): Promise<boolean> => {
     const dropped = (p: Piece) => (drops.current[p] = (drops.current[p] ?? 0) + 1);
+    if (mode !== 'do') sentLists.current = {};
+    else if (given?.choices) {
+      const c = given.choices as { pictures?: PictureC[]; texts?: TextBlockC[] };
+      if (c.pictures) sentLists.current.pictures = c.pictures;
+      if (c.texts) sentLists.current.texts = c.texts;
+    }
     if (mode === 'do' && given && waiting.current) {
       const w = waiting.current;
       w.body = mergeChange(w.body, given);
@@ -1543,7 +1527,7 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
       const done = [...seen].filter(([p, n]) => drops.current[p] === n).map(([p]) => p);
       setMoved((m) => { const left = { ...m }; for (const p of done) delete left[p]; return left; });
       pending.current -= 1;
-      if (pending.current === 0) { setSaving(false); setWant({}); }
+      if (pending.current === 0) { setSaving(false); setWant({}); sentLists.current = {}; }
       showHistory();
     };
     const run = queue.current.then(async () => {
@@ -1640,6 +1624,10 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
 
   /** A piece where the post has it, turned as it was left. */
   const setBox = (piece: Piece): Frac | null => {
+    if (isPic(piece)) {
+      const pic = manifest?.choices.pictures?.find((x) => x.id === piece.slice(2));
+      return pic && manifest ? { x: pic.x, y: pic.y, w: pic.w, h: (pic.w * pic.aspect * manifest.width) / manifest.height, r: pic.rotate ?? 0 } : null;
+    }
     if (isBlock(piece)) {
       const t = manifest?.boxes.texts?.find((x) => x.id === piece.slice(2));
       return t ? { x: t.x, y: t.y, w: t.w, h: t.h, r: 0 } : null;
@@ -1677,15 +1665,37 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
   };
   const originFor = (name: LayerName): string | undefined => (pieceShowing(name) ? '0 0' : undefined);
 
+  const locked = new Set<Piece>((manifest?.choices.locked ?? []) as Piece[]);
   const startDrag = (piece: Piece, mode: 'move' | 'resize' | 'turn') => (e: React.PointerEvent) => {
     const from = boxOf(piece);
     if (!from) return;
     e.preventDefault();
     e.stopPropagation();
+    // Shift and click: one more piece chosen with the others, or one let go.
+    if (e.shiftKey && mode === 'move') {
+      setGroup((g) => {
+        const next = new Set(g.size ? g : selected ? [selected] : []);
+        if (next.has(piece)) next.delete(piece); else next.add(piece);
+        return next;
+      });
+      setSelected(piece);
+      return;
+    }
     setSelected(piece);
-    drag.current = { piece, mode, x: e.clientX, y: e.clientY, from };
+    if (!group.has(piece)) setGroup(new Set([piece]));
+    // Held still: chosen, never moved.
+    if (locked.has(piece)) return;
+    const others = mode === 'move' && group.has(piece) && group.size > 1
+      ? [...group].filter((o) => o !== piece && !locked.has(o) && boxOf(o)).map((o) => ({ piece: o, from: boxOf(o)! }))
+      : undefined;
+    drag.current = { piece, mode, x: e.clientX, y: e.clientY, from, others };
     (e.target as Element).setPointerCapture?.(e.pointerId);
   };
+  /** Every other piece on the post, to line a moved one up with. */
+  const guideBoxes = (moving: Piece): Frac[] => handles
+    .filter((h) => h !== moving && !group.has(h) && !(moving === 'bottle' && (h === 'shadow' || h === 'reflection')))
+    .map((h) => boxOf(h))
+    .filter((b): b is Frac => Boolean(b) && !b!.r);
 
   const onMove = (e: React.PointerEvent) => {
     const d = drag.current;
@@ -1718,11 +1728,13 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
           // Grown out from its pivot, which stays where it is.
           return { ...f, x: f.px + (f.x - f.px) * k, y: f.py + (f.y - f.py) * k, w: f.w * k, h: f.h * k };
         })();
-    const settled = d.mode === 'move' && !e.altKey ? snapped(raw, d.piece) : { box: raw, guides: { x: [], y: [] } };
+    const settled = d.mode === 'move' && !e.altKey ? snapped(raw, d.piece, guideBoxes(d.piece)) : { box: raw, guides: { x: [], y: [] } };
     const box: Frac = { ...settled.box };
     if (f.px !== undefined && f.py !== undefined && d.mode === 'move') { box.px = f.px + (box.x - f.x); box.py = f.py + (box.y - f.y); }
     setGuides(settled.guides);
-    setMoved((m) => ({ ...m, [d.piece]: box }));
+    // The others chosen with it go the same way.
+    const along = Object.fromEntries((d.others ?? []).map((o) => [o.piece, shiftBox(o.from, box.x - f.x, box.y - f.y)]));
+    setMoved((m) => ({ ...m, ...along, [d.piece]: box }));
   };
 
   /** Where a piece was left, set into the post. */
@@ -1735,10 +1747,18 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
       setMoved((m) => { const next = { ...m }; delete next[piece]; return next; });
       return;
     }
+    if (isPic(piece)) {
+      const id = piece.slice(2);
+      const pictures = listNow('pictures').map((pic) => (pic.id !== id ? pic : {
+        ...pic, x: to.x, y: to.y, w: Math.min(1.5, Math.max(0.02, to.w)), rotate: to.r ?? 0,
+      }));
+      void arrange({ choices: { pictures } }, [piece]);
+      return;
+    }
     if (isBlock(piece)) {
       const id = piece.slice(2);
       const k = to.h / from.h;
-      const texts = (manifest.choices.texts ?? []).map((b) => (b.id !== id ? b : {
+      const texts = listNow('texts').map((b) => (b.id !== id ? b : {
         ...b, x: b.x + (to.x - from.x), y: b.y + (to.y - from.y),
         size: Math.min(TEXT_SIZES_C.max, Math.max(TEXT_SIZES_C.min, b.size * k)), width: Math.min(1.2, b.width * k),
       }));
@@ -1769,6 +1789,80 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
     setGuides({ x: [], y: [] });
     if (!d) return;
     commit(d.piece, moved[d.piece]);
+    for (const o of d.others ?? []) commit(o.piece, moved[o.piece]);
+  };
+
+  // --- lining up, and holding still -------------------------------------------------
+  /** What the line-up buttons act on: the pieces chosen together, else the one chosen. */
+  const lineUpOn = (): Piece[] => [...(group.size > 1 ? group : selected ? [selected] : [])].filter((x) => !locked.has(x) && boxOf(x));
+  /** The chosen pieces lined up: on the post's margins and middle for one, on each other for several. */
+  const lineUp = (how: 'left' | 'center' | 'right' | 'top' | 'middle' | 'bottom') => {
+    const ps = lineUpOn();
+    if (!ps.length) return;
+    const boxes = ps.map((x) => [x, boxOf(x)!] as const);
+    const x0 = Math.min(...boxes.map(([, b]) => b.x)); const x1 = Math.max(...boxes.map(([, b]) => b.x + b.w));
+    const y0 = Math.min(...boxes.map(([, b]) => b.y)); const y1 = Math.max(...boxes.map(([, b]) => b.y + b.h));
+    const area = ps.length > 1 ? { x: x0, y: y0, w: x1 - x0, h: y1 - y0 } : { x: MARGIN, y: MARGIN, w: 1 - 2 * MARGIN, h: 1 - 2 * MARGIN };
+    const placed: Partial<Record<Piece, Frac>> = {};
+    for (const [x, b] of boxes) {
+      const dx = how === 'left' ? area.x - b.x : how === 'center' ? area.x + area.w / 2 - (b.x + b.w / 2) : how === 'right' ? area.x + area.w - (b.x + b.w) : 0;
+      const dy = how === 'top' ? area.y - b.y : how === 'middle' ? area.y + area.h / 2 - (b.y + b.h / 2) : how === 'bottom' ? area.y + area.h - (b.y + b.h) : 0;
+      placed[x] = shiftBox(b, dx, dy);
+    }
+    setMoved((m) => ({ ...m, ...placed }));
+    for (const [x] of boxes) commit(x, placed[x]);
+  };
+  /** Three or more chosen pieces, spaced evenly between the first and the last. */
+  const spaceOut = (axis: 'x' | 'y') => {
+    const ps = lineUpOn();
+    if (ps.length < 3) return;
+    const along = (b: Frac) => (axis === 'x' ? { at: b.x, size: b.w } : { at: b.y, size: b.h });
+    const boxes = ps.map((x) => [x, boxOf(x)!] as const).sort((a, b) => along(a[1]).at - along(b[1]).at);
+    const first = along(boxes[0]![1]);
+    const last = along(boxes[boxes.length - 1]![1]);
+    const gap = (last.at + last.size - first.at - boxes.reduce((t, [, b]) => t + along(b).size, 0)) / (boxes.length - 1);
+    let at = first.at;
+    const placed: Partial<Record<Piece, Frac>> = {};
+    for (const [x, b] of boxes) {
+      const d = at - along(b).at;
+      placed[x] = axis === 'x' ? shiftBox(b, d, 0) : shiftBox(b, 0, d);
+      at += along(b).size + gap;
+    }
+    setMoved((m) => ({ ...m, ...placed }));
+    for (const [x] of boxes) commit(x, placed[x]);
+  };
+  /** The chosen pieces held still, or let go. */
+  const toggleLock = () => {
+    const ps = [...(group.size > 1 ? group : selected ? [selected] : [])];
+    if (!ps.length) return;
+    const all = ps.every((x) => locked.has(x));
+    const next = new Set(locked);
+    for (const x of ps) if (all) next.delete(x); else next.add(x);
+    void arrange({ choices: { locked: [...next] } });
+  };
+  /** A picture or a block of text, again, a little down and across - or pasted from another post. */
+  const placeCopy = (c: NonNullable<typeof clip.current>) => {
+    const id = blockId();
+    if (c.kind === 'picture') {
+      const item = { ...c.item, id, x: Math.min(0.9, c.item.x + 0.03), y: Math.min(0.9, c.item.y + 0.03) };
+      void arrange({ choices: { pictures: [...listNow('pictures'), item].slice(-8) } }).then((ok) => ok && setSelected(`p:${id}`));
+    } else {
+      const item = { ...c.item, id, x: Math.min(0.9, c.item.x + 0.03), y: Math.min(0.92, c.item.y + 0.03) };
+      void arrange({ choices: { texts: [...listNow('texts'), item].slice(-6) } }).then((ok) => ok && setSelected(`t:${id}`));
+    }
+  };
+  const copyOf = (piece: Piece | null): NonNullable<typeof clip.current> | null => {
+    if (!piece) return null;
+    if (isPic(piece)) { const item = listNow('pictures').find((x) => x.id === piece.slice(2)); return item ? { kind: 'picture', item } : null; }
+    if (isBlock(piece)) { const item = listNow('texts').find((x) => x.id === piece.slice(2)); return item ? { kind: 'text', item } : null; }
+    return null;
+  };
+  const removePiece = (piece: Piece) => {
+    if (isPic(piece)) void arrange({ choices: { pictures: listNow('pictures').filter((x) => x.id !== piece.slice(2)) } });
+    else if (isBlock(piece)) void arrange({ choices: { texts: listNow('texts').filter((x) => x.id !== piece.slice(2)) } });
+    else return;
+    setSelected(null);
+    setGroup(new Set());
   };
 
   // The keyboard, as an editor has it: Ctrl+Z, Ctrl+Shift+Z or Ctrl+Y, and the
@@ -1780,6 +1874,27 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
     const typing = e.target instanceof HTMLElement && (e.target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName));
     if (typing || !manifest) return;
     const k = e.key.toLowerCase();
+    const mod = e.ctrlKey || e.metaKey;
+    if (k === 'escape') { setSelected(null); setGroup(new Set()); return; }
+    if ((k === 'delete' || k === 'backspace') && selected && (isPic(selected) || isBlock(selected)) && !locked.has(selected)) {
+      e.preventDefault();
+      removePiece(selected);
+      return;
+    }
+    if (mod && k === 'd' && copyOf(selected)) { e.preventDefault(); placeCopy(copyOf(selected)!); return; }
+    if (mod && k === 'c' && copyOf(selected)) {
+      clip.current = copyOf(selected);
+      // Kept in this browser too, to paste on another post.
+      try { localStorage.setItem('cip-studio-clip', JSON.stringify(clip.current)); } catch { /* not kept: pasted here only */ }
+      note('Copied - Ctrl+V to paste, here or on another post.');
+      return;
+    }
+    if (mod && k === 'v') {
+      let c = clip.current;
+      try { c = c ?? (JSON.parse(localStorage.getItem('cip-studio-clip') ?? 'null') as typeof c); } catch { /* nothing kept */ }
+      if (c) { e.preventDefault(); placeCopy(c); }
+      return;
+    }
     if ((e.ctrlKey || e.metaKey) && (k === 'z' || k === 'y')) {
       e.preventDefault();
       const back = k === 'z' && !e.shiftKey;
@@ -1788,7 +1903,7 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
     }
     const d = e.shiftKey ? 0.02 : 0.004;
     const by = ({ arrowleft: [-d, 0], arrowright: [d, 0], arrowup: [0, -d], arrowdown: [0, d] } as Record<string, [number, number]>)[k];
-    if (!by || !selected || !draggable(selected)) return;
+    if (!by || !selected || !draggable(selected) || locked.has(selected)) return;
     e.preventDefault();
     const piece = selected;
     const start = nudge.current?.piece === piece ? nudge.current.box : boxOf(piece);
@@ -1885,6 +2000,23 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
       const soft = now('shadowSoft');
       if (soft !== undefined && soft > set('shadowSoft')) filters.push(`blur(${((soft - set('shadowSoft')) * 4).toFixed(1)}px)`);
     }
+    // The whole post's contrast and colour, slid: every layer alike.
+    const grading: string[] = [];
+    if (now('contrast') !== undefined) grading.push(`contrast(${((1 + now('contrast')!) / (1 + set('contrast'))).toFixed(3)})`);
+    if (now('saturation') !== undefined) grading.push(`saturate(${((1 + now('saturation')!) / Math.max(0.02, 1 + set('saturation'))).toFixed(3)})`);
+    if (now('warmth') !== undefined && now('warmth') !== set('warmth')) {
+      const d = now('warmth')! - set('warmth');
+      grading.push(d > 0 ? `sepia(${(d * 0.35).toFixed(3)})` : `hue-rotate(${(d * 12).toFixed(1)}deg)`);
+    }
+    filters.push(...grading);
+    if (name === 'background' && (now('bgZoom') !== undefined || now('bgX') !== undefined || now('bgY') !== undefined)) {
+      // From the background as set to as slid: bigger by the one over the other, moved by the difference -
+      // on the screen, as the server moves it, mirrored or not.
+      const zs = set('bgZoom') || 1; const zd = now('bgZoom') ?? zs;
+      const shift = (axis: 'bgX' | 'bgY') => ((now(axis) ?? set(axis)) * (zd - 1)) / 2 - ((set(axis) * (zs - 1)) / 2) * (zd / zs);
+      out.transform = `translate(${(shift('bgX') * 100).toFixed(2)}%, ${(shift('bgY') * 100).toFixed(2)}%) scale(${(zd / zs).toFixed(4)})`;
+      out.transformOrigin = '50% 50%';
+    }
     if (name === 'background') {
       const bright = now('bgBright');
       if (bright !== undefined) filters.push(`brightness(${((1 + bright) / (1 + set('bgBright'))).toFixed(3)})`);
@@ -1950,7 +2082,7 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
 
   // The shadow and the reflection first, so the bottle's box lies over them where they meet.
   // The layers from the bottom up: the background, then each piece in the order a person put them.
-  const order: StackGroupC[] = manifest?.choices.order ?? [...STACK_C];
+  const order: StackGroupC[] = stackOfC(manifest?.choices.order);
   const stacked = [
     LAYER_LIST.find((l) => l.name === 'background')!,
     ...order.flatMap((g) => STACK_LAYERS[g].map((n) => LAYER_LIST.find((l) => l.name === n)!)),
@@ -1966,8 +2098,99 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
   };
   const handles = ([
     'shadow', 'reflection', 'bottle', 'text', 'logo',
+    ...(manifest?.choices.pictures ?? []).map((pic) => `p:${pic.id}` as Piece),
     ...(manifest?.boxes.texts ?? []).map((t) => `t:${t.id}` as Piece),
   ] as Piece[]).filter(draggable);
+  /** A picture's look as being slid, before the post catches up. */
+  const [picDrafts, setPicDrafts] = useState<Record<string, Partial<PictureC>>>({});
+  /** The canvas's width on screen, for a picture's shadow to be the size the post will have it. */
+  const [canvasW, setCanvasW] = useState(600);
+  useEffect(() => {
+    const el = canvasRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const watch = new ResizeObserver(() => setCanvasW(el.clientWidth || 600));
+    watch.observe(el);
+    return () => watch.disconnect();
+  }, [manifest !== null]);
+  const picturesShown = () => (manifest?.choices.pictures ?? []).map((pic) => {
+    const b = boxOf(`p:${pic.id}`);
+    if (!b) return null;
+    const look = { ...pic, ...(picDrafts[pic.id] ?? {}) };
+    const filters: string[] = [];
+    if (look.bright) filters.push(`brightness(${(1 + look.bright).toFixed(3)})`);
+    if (look.shadow) {
+      const size = Math.max(b.w * canvasW, (b.h * canvasW * (manifest!.height / manifest!.width)));
+      filters.push(`drop-shadow(0 ${(b.h * canvasW * (manifest!.height / manifest!.width) * 0.02 * look.shadow).toFixed(1)}px ${(size * 0.025 * look.shadow).toFixed(1)}px rgba(0,0,0,${Math.min(0.8, 0.4 * look.shadow).toFixed(2)}))`);
+    }
+    const W = manifest!.width;
+    const src = look.shape
+      ? shapeSrc(look.shape, look.w * W, look.w * W * look.aspect)
+      : `/api/drive/files/${look.file}/content?disposition=inline`;
+    const c = look.crop ?? { l: 0, t: 0, r: 0, b: 0 };
+    const kw = 1 - c.l - c.r;
+    const kh = 1 - c.t - c.b;
+    // The picture inside its box, larger by what is cropped, moved by what is cut off its top and left.
+    const inner: React.CSSProperties = { position: 'absolute', left: `${(-c.l / kw) * 100}%`, top: `${(-c.t / kh) * 100}%`, width: `${100 / kw}%`, height: `${100 / kh}%` };
+    // As the server fades it: up to six tenths of the way in from each edge, of half its short side.
+    const fade = look.feather ? (look.feather * 0.6 * Math.min(b.w * W, b.h * manifest!.height)) / 2 : 0;
+    const fx = fade ? (fade / (b.w * W)) * 100 : 0;
+    const fy = fade ? (fade / (b.h * (manifest!.height))) * 100 : 0;
+    const mask = fade
+      ? `linear-gradient(to right, transparent, #000 ${fx.toFixed(1)}%, #000 ${(100 - fx).toFixed(1)}%, transparent), linear-gradient(to bottom, transparent, #000 ${fy.toFixed(1)}%, #000 ${(100 - fy).toFixed(1)}%, transparent)`
+      : undefined;
+    // Its shadow on the surface, at its foot, as the server lays it.
+    const footW = b.w * 0.84;
+    const footH = (b.w * W * 0.09) / manifest!.height;
+    const ground = look.ground ? (
+      <span
+        key={`pic-ground-${pic.id}`}
+        className={`studio-pic ${shows('pictures') ? '' : 'is-hidden'}`}
+        style={{
+          left: `${(b.x + b.w / 2 - footW / 2) * 100}%`, top: `${(b.y + b.h * 0.985 - footH / 2) * 100}%`,
+          width: `${footW * 100}%`, height: `${footH * 100}%`, borderRadius: '50%',
+          background: `rgba(0,0,0,${Math.min(0.75, 0.7 * look.ground).toFixed(2)})`,
+          filter: `blur(${Math.max(2, b.w * canvasW * 0.04).toFixed(1)}px)`,
+        }}
+      />
+    ) : null;
+    // Its reflection on the surface, as the server lays it: upside down below its foot, fading away.
+    const mirrorDeep = b.h * 0.55;
+    const reflection = look.mirror && Math.abs(b.r ?? 0) < 8 ? (
+      <div
+        key={`pic-mirror-${pic.id}`}
+        className={`studio-pic ${shows('pictures') ? '' : 'is-hidden'}`}
+        style={{
+          left: `${b.x * 100}%`, top: `${(b.y + b.h * 0.99) * 100}%`, width: `${b.w * 100}%`, height: `${mirrorDeep * 100}%`,
+          overflow: 'hidden', opacity: Math.min(0.6, 0.45 * look.mirror) * (look.opacity ?? 1),
+          maskImage: 'linear-gradient(to bottom, #000, transparent)', WebkitMaskImage: 'linear-gradient(to bottom, #000, transparent)',
+        }}
+      >
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={src} alt="" draggable={false} style={{ position: 'absolute', left: 0, top: 0, width: '100%', height: `${(b.h / mirrorDeep) * 100}%`, transform: `scaleY(-1)${look.flip ? ' scaleX(-1)' : ''}` }} />
+      </div>
+    ) : null;
+    return [ground, reflection, (
+      <div
+        key={`pic-${pic.id}`}
+        className={`studio-pic ${shows('pictures') ? '' : 'is-hidden'}`}
+        style={{
+          left: `${b.x * 100}%`, top: `${b.y * 100}%`, width: `${b.w * 100}%`, height: `${b.h * 100}%`,
+          transform: `rotate(${b.r ?? 0}deg)${look.flip ? ' scaleX(-1)' : ''}`,
+          opacity: look.opacity ?? 1,
+          overflow: 'hidden',
+          ...(filters.length ? { filter: filters.join(' ') } : {}),
+          ...(mask ? { maskImage: mask, WebkitMaskImage: mask, maskComposite: 'intersect', WebkitMaskComposite: 'source-in' } as React.CSSProperties : {}),
+        }}
+      >
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={src} alt="" draggable={false} style={inner} />
+        {look.tint && look.tintAmount ? (
+          // The colour laid over the picture only, never its clear ground.
+          <span style={{ ...inner, background: look.tint, opacity: look.tintAmount, maskImage: `url("${src}")`, WebkitMaskImage: `url("${src}")`, maskSize: '100% 100%', WebkitMaskSize: '100% 100%' } as React.CSSProperties} />
+        ) : null}
+      </div>
+    )];
+  });
 
   return (
     <div className="studio">
@@ -1979,14 +2202,16 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
             aspectRatio: manifest ? `${manifest.width} / ${manifest.height}` : '1 / 1',
             // A tall story is held to the screen's height, and narrows to keep its shape.
             width: manifest ? `min(100%, calc(72vh * ${manifest.width} / ${manifest.height}))` : '100%',
+            // While the background is zoomed or moved by a slider, what goes past the post is not shown.
+            ...(drafts.bgZoom !== undefined || drafts.bgX !== undefined || drafts.bgY !== undefined ? { overflow: 'hidden' } : {}),
           }}
           onPointerMove={onMove}
           onPointerUp={onDrop}
           onPointerCancel={onDrop}
-          onPointerDown={() => setSelected(null)}
+          onPointerDown={() => { setSelected(null); setGroup(new Set()); }}
         >
           {manifest
-            ? stacked.map((l) => (l.name === 'texts' ? (
+            ? stacked.map((l) => (l.name === 'pictures' ? picturesShown() : l.name === 'texts' ? (
                 (manifest.boxes.texts ?? []).map((t) => {
                   const pad = 0.012;
                   const piece = `t:${t.id}` as Piece;
@@ -2022,7 +2247,7 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
             return (
               <div
                 key={piece}
-                className={`studio-box ${selected === piece ? 'is-on' : ''}`}
+                className={`studio-box ${selected === piece ? 'is-on' : ''} ${group.size > 1 && group.has(piece) ? 'is-grouped' : ''} ${locked.has(piece) ? 'is-locked' : ''}`}
                 style={{
                   left: `${b.x * 100}%`, top: `${b.y * 100}%`, width: `${b.w * 100}%`, height: `${b.h * 100}%`,
                   ...(b.r ? {
@@ -2034,11 +2259,11 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
                 onDoubleClick={piece === 'text' && generation.headline ? () => setInline(generation.headline!.map((l) => ({ ...l }))) : undefined}
                 title={piece === 'text'
                   ? 'Drag the headline; pull its corner to resize; double-click to change its words'
-                  : TURNS.has(piece)
+                  : turns(piece)
                     ? `Drag the ${labelOf(piece).toLowerCase()}; pull its corner to resize; turn it by the round handle`
                     : `Drag the ${labelOf(piece).toLowerCase()}; pull its corner to resize`}
               >
-                <span className="studio-box-label" style={b.r ? { transform: `rotate(${-b.r}deg)` } : undefined}>{labelOf(piece)}{b.r ? ` · ${Math.round(b.r)}°` : ''}</span>
+                <span className="studio-box-label" style={b.r ? { transform: `rotate(${-b.r}deg)` } : undefined}>{locked.has(piece) ? '🔒 ' : ''}{labelOf(piece)}{b.r ? ` · ${Math.round(b.r)}°` : ''}</span>
                 {b.px !== undefined && b.py !== undefined && (
                   <span
                     className="studio-box-pivot"
@@ -2046,7 +2271,7 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
                     title="It turns about here - the bottle's foot"
                   />
                 )}
-                {TURNS.has(piece) && (
+                {turns(piece) && !locked.has(piece) && (
                   <span
                     // The reflection hangs below the foot: its handle goes below it, clear of the bottle.
                     className={`studio-box-turn ${piece === 'reflection' ? 'is-below' : ''}`}
@@ -2060,11 +2285,11 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
                     </svg>
                   </span>
                 )}
-                <span className="studio-box-grip" onPointerDown={startDrag(piece, 'resize')} aria-label={`Resize the ${labelOf(piece).toLowerCase()}`} title="Pull to make it bigger or smaller">
+                {!locked.has(piece) && <span className="studio-box-grip" onPointerDown={startDrag(piece, 'resize')} aria-label={`Resize the ${labelOf(piece).toLowerCase()}`} title="Pull to make it bigger or smaller">
                   <svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true">
                     <path d="M4 12L12 4M7.5 4H12v4.5M4 7.5V12h4.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
                   </svg>
-                </span>
+                </span>}
               </div>
             );
           })}
@@ -2114,11 +2339,41 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
           <button type="button" className="btn btn-ghost btn-sm" disabled={!redos.current.length} onClick={() => void arrange(null, [], 'redo')} title="Redo (Ctrl+Shift+Z)">
             Redo
           </button>
+          {Boolean(selected) && (
+            <span className="studio-tools" role="toolbar" aria-label="Line up">
+              {([
+                ['left', 'Line up on the left', 'M3 2v12M6 4h7v3H6zM6 9h4v3H6z'],
+                ['center', 'Line up on the middle', 'M8 2v12M4 4h8v3H4zM5.5 9h5v3h-5z'],
+                ['right', 'Line up on the right', 'M13 2v12M3 4h7v3H3zM6 9h4v3H6z'],
+                ['top', 'Line up at the top', 'M2 3h12M4 6v7h3V6zM9 6v4h3V6z'],
+                ['middle', 'Line up across the middle', 'M2 8h12M4 4v8h3V4zM9 5.5v5h3v-5z'],
+                ['bottom', 'Line up at the foot', 'M2 13h12M4 3v7h3V3zM9 6v4h3V6z'],
+              ] as const).map(([how, label, d]) => (
+                <button key={how} type="button" className="studio-tool" onClick={() => lineUp(how)} title={group.size > 1 ? `${label} - of each other` : `${label} of the post`} aria-label={label}>
+                  <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d={d} fill="none" stroke="currentColor" strokeWidth="1.4" /></svg>
+                </button>
+              ))}
+              {group.size > 2 && (
+                <>
+                  <button type="button" className="studio-tool is-word" onClick={() => spaceOut('x')} title="Space them evenly across">Space ↔</button>
+                  <button type="button" className="studio-tool is-word" onClick={() => spaceOut('y')} title="Space them evenly down">Space ↕</button>
+                </>
+              )}
+              <button
+                type="button"
+                className={`studio-tool is-word ${[...(group.size > 1 ? group : [selected!])].every((x) => locked.has(x)) ? 'is-on' : ''}`}
+                onClick={toggleLock}
+                title="Hold it still, so a drag cannot move it"
+              >
+                {[...(group.size > 1 ? group : [selected!])].every((x) => locked.has(x)) ? 'Unlock' : 'Lock'}
+              </button>
+            </span>
+          )}
           <span className="tiny muted">
             {saving
               ? 'Saving where you put it…'
               : handles.length
-                ? 'Drag to move, pull a corner to resize, arrow keys to nudge. All free.'
+                ? 'Drag to move, Shift-click to choose several, arrows to nudge, Delete, Ctrl+D, Ctrl+C/V. All free.'
                 : 'The background alone. Add the bottle next.'}
           </span>
         </div>
@@ -2172,6 +2427,53 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
                 {slide('bgBright')}
                 {slide('bgBlur')}
                 <p className="tiny muted" style={{ margin: 0 }}>Darker or softer, the bottle and the words stand out more. Free.</p>
+              </div>
+              <div className="studio-group">
+                <p className="studio-group-title">Frame it</p>
+                {slide('bgZoom')}
+                {(valueOf('bgZoom') ?? 1) > 1 && slide('bgX')}
+                {(valueOf('bgZoom') ?? 1) > 1 && slide('bgY')}
+                <div className="row" style={{ gap: 6 }}>
+                  <button type="button" className={`chip ${style.bgFlip ? 'on' : ''}`} aria-pressed={Boolean(style.bgFlip)} onClick={() => void arrange({ choices: { style: { bgFlip: !style.bgFlip } } })}>
+                    Mirror it
+                  </button>
+                </div>
+              </div>
+              <div className="studio-group">
+                <p className="studio-group-title">Colour and edges</p>
+                <span className="row headline-line-inks">
+                  {['#000000', '#ffffff', ...inks.filter((i) => !['#000000', '#ffffff'].includes(i))].map((ink) => (
+                    <button
+                      key={ink}
+                      type="button"
+                      className={`headline-ink ${(style.bgOverlay ?? '#000000') === ink ? 'is-on' : ''}`}
+                      style={{ background: ink }}
+                      onClick={() => void arrange({ choices: { style: { bgOverlay: ink, ...((style.bgOverlayAmount ?? 0) === 0 ? { bgOverlayAmount: 0.5 } : {}) } } })}
+                      aria-label={`Colour from below in ${ink}`}
+                    />
+                  ))}
+                  <AnyColour value={style.bgOverlay && !['#000000', '#ffffff', ...inks].includes(style.bgOverlay) ? style.bgOverlay : null} label="Any colour from below"
+                    onPick={(ink) => void arrange({ choices: { style: { bgOverlay: ink, ...((style.bgOverlayAmount ?? 0) === 0 ? { bgOverlayAmount: 0.5 } : {}) } } })} />
+                </span>
+                {slide('bgOverlayAmount')}
+                {slide('bgVignette')}
+              </div>
+              <div className="studio-group">
+                <p className="studio-group-title">The whole post</p>
+                <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                  {POST_LOOKS.map((l) => {
+                    const on = (['warmth', 'contrast', 'saturation'] as const).every((k) => (style[k] ?? null) === (l.style[k] ?? null));
+                    return (
+                      <button key={l.label} type="button" className={`chip ${on ? 'on' : ''}`} aria-pressed={on} onClick={() => !on && void arrange({ choices: { style: l.style } })}>
+                        {l.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                {slide('warmth')}
+                {slide('contrast')}
+                {slide('saturation')}
+                <p className="tiny muted" style={{ margin: 0 }}>Every layer alike, and the files you download too. Free.</p>
               </div>
             </>
           )}
@@ -2272,6 +2574,39 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
             </>
           )}
 
+          {current.id === 'pictures' && manifest && (
+            <StudioPictures
+              generationId={generation.id}
+              bottle={manifest.boxes.bottle}
+              pictures={manifest.choices.pictures ?? []}
+              postAspect={manifest.height / manifest.width}
+              selected={selected && isPic(selected) ? selected.slice(2) : null}
+              onSelect={(id) => setSelected(id ? `p:${id}` : null)}
+              drafts={picDrafts}
+              inks={inks}
+              fonts={fonts}
+              onBrush={(file) => setBrushing(file)}
+              onDraft={(id, look) => setPicDrafts((d) => ({ ...d, [id]: { ...(d[id] ?? {}), ...look } }))}
+              onChange={(make, settle) => arrange({ choices: { pictures: make(listNow('pictures')) } }).then((ok) => {
+                if (settle) setPicDrafts((d) => { const n = { ...d }; delete n[settle]; return n; });
+                return ok;
+              })}
+            />
+          )}
+
+          {brushing && manifest && (
+            <CutoutBrush
+              file={brushing}
+              onClose={() => setBrushing(null)}
+              onSaved={(file) => {
+                const was = brushing;
+                setBrushing(null);
+                void arrange({ choices: { pictures: listNow('pictures').map((x) => (x.file === was ? { ...x, file } : x)) } });
+                note('Touched up - free.');
+              }}
+            />
+          )}
+
           {current.id === 'logo' && (
             <>
               <p className="studio-q">The logo</p>
@@ -2292,6 +2627,25 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
                     >
                       Stand the logo straight
                     </button>
+                  )}
+                  {logoVersions.length > 1 && (
+                    <div className="studio-group">
+                      <p className="studio-group-title">Which logo</p>
+                      <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                        <button type="button" className={`chip ${!style.logoTone ? 'on' : ''}`} aria-pressed={!style.logoTone}
+                          onClick={() => void arrange({ choices: { style: { logoTone: null } } })} title="The one that stands out against the picture">
+                          Auto
+                        </button>
+                        {logoVersions.map((l) => (
+                          <button key={l.tone} type="button" className={`chip logo-version ${style.logoTone === l.tone ? 'on' : ''}`} aria-pressed={style.logoTone === l.tone}
+                            onClick={() => void arrange({ choices: { style: { logoTone: l.tone } } })} title={l.name}>
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img src={`/api/drive/files/${l.id}/content?size=160`} alt="" className={`logo-version-img is-${l.tone}`} />
+                            {l.tone === 'light' ? 'White' : l.tone === 'dark' ? 'Black' : 'Colour'}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
                   )}
                   <div className="studio-group">
                     <p className="studio-group-title">Logo</p>
@@ -2458,6 +2812,23 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
             </>
           )}
 
+          {current.id === 'words' && manifest && generation.headline && headlineOn && (
+            <div className="studio-group">
+              <p className="studio-group-title">The headline&apos;s letters</p>
+              <TextLookControls
+                value={{ spacing: style.textSpacing, lineHeight: style.textLeading, stroke: style.textStroke, strokeInk: style.textStrokeInk, ink2: style.ink2 }}
+                inks={inks}
+                onChange={(c) => void arrange({ choices: { style: {
+                  ...('spacing' in c ? { textSpacing: c.spacing ?? null } : {}),
+                  ...('lineHeight' in c ? { textLeading: c.lineHeight ?? null } : {}),
+                  ...('stroke' in c ? { textStroke: c.stroke ?? null } : {}),
+                  ...('strokeInk' in c ? { textStrokeInk: c.strokeInk ?? null } : {}),
+                  ...('ink2' in c ? { ink2: c.ink2 ?? null } : {}),
+                } } })}
+              />
+            </div>
+          )}
+
           {current.id === 'words' && manifest && (
             <TextBlocks
               blocks={manifest.choices.texts ?? []}
@@ -2620,6 +2991,206 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
  * browser's own picker, and set once the picking stops rather than on every
  * shade passed on the way.
  */
+/**
+ * The letters of any words: the room between them and between lines, an outline and its colour,
+ * and a second colour they fade to. Slid, each is set when let go; null puts it back as designed.
+ */
+function TextLookControls({ value, inks, onChange }: {
+  value: TextLookC;
+  inks: string[];
+  onChange: (change: { [K in keyof TextLookC]?: TextLookC[K] | null }) => void;
+}) {
+  const [draft, setDraft] = useState<TextLookC>({});
+  const v = { ...value, ...draft };
+  const letGo = (key: 'spacing' | 'lineHeight' | 'stroke', plain: number) => {
+    const d = draft[key];
+    if (d === undefined) return;
+    setDraft((x) => { const n = { ...x }; delete n[key]; return n; });
+    if (d !== (value[key] ?? plain)) onChange({ [key]: d === plain ? null : d, ...(key === 'stroke' && d && !value.strokeInk ? { strokeInk: '#000000' } : {}) });
+  };
+  const slider = (key: 'spacing' | 'lineHeight' | 'stroke', label: string, min: number, max: number, step: number, plain: number, shows: (n: number) => string) => (
+    <div className="studio-slide">
+      <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
+        <span className="tiny muted">{label}</span>
+        <span className="row" style={{ gap: 6, alignItems: 'center' }}>
+          <span className="tiny">{shows(v[key] ?? plain)}</span>
+          {value[key] !== undefined && <button type="button" className="studio-reset" onClick={() => onChange({ [key]: null })}>Reset</button>}
+        </span>
+      </div>
+      <input type="range" min={min} max={max} step={step} value={v[key] ?? plain} aria-label={label}
+        onChange={(e) => { const n = Number(e.target.value); setDraft((x) => ({ ...x, [key]: n })); }}
+        onPointerUp={() => letGo(key, plain)} onKeyUp={() => letGo(key, plain)} onBlur={() => letGo(key, plain)} />
+    </div>
+  );
+  const colours = ['#000000', '#ffffff', ...inks.filter((i) => !['#000000', '#ffffff'].includes(i))];
+  return (
+    <div className="stack" style={{ gap: 8 }}>
+      {slider('spacing', 'Letter spacing', -0.08, 0.6, 0.005, 0, (n) => (n === 0 ? 'As designed' : `${n > 0 ? '+' : ''}${Math.round(n * 100)}%`))}
+      {slider('lineHeight', 'Line spacing', 0.7, 2.5, 0.02, 1.15, (n) => `${n.toFixed(2)}×`)}
+      {slider('stroke', 'Outline', 0, 0.25, 0.005, 0, (n) => (n === 0 ? 'None' : `${Math.round(n * 100)}%`))}
+      {(v.stroke ?? 0) > 0 && (
+        <span className="row headline-line-inks">
+          {colours.map((ink) => (
+            <button key={ink} type="button" className={`headline-ink ${(value.strokeInk ?? '#000000') === ink ? 'is-on' : ''}`} style={{ background: ink }}
+              onClick={() => onChange({ strokeInk: ink })} aria-label={`Outline in ${ink}`} />
+          ))}
+          <AnyColour value={value.strokeInk && !colours.includes(value.strokeInk) ? value.strokeInk : null} label="Any outline colour" onPick={(ink) => onChange({ strokeInk: ink })} />
+        </span>
+      )}
+      <span className="tiny muted">Fading to</span>
+      <span className="row headline-line-inks">
+        <button type="button" className={`chip ${value.ink2 ? '' : 'on'}`} onClick={() => value.ink2 && onChange({ ink2: null })}>One colour</button>
+        {colours.map((ink) => (
+          <button key={ink} type="button" className={`headline-ink ${value.ink2 === ink ? 'is-on' : ''}`} style={{ background: ink }}
+            onClick={() => onChange({ ink2: ink })} aria-label={`Fading to ${ink}`} />
+        ))}
+        <AnyColour value={value.ink2 && !colours.includes(value.ink2) ? value.ink2 : null} label="Fading to any colour" onPick={(ink) => onChange({ ink2: ink })} />
+      </span>
+    </div>
+  );
+}
+
+/**
+ * A brush over a cut-out: take off what is still there and should not be, and - when the picture
+ * it was cut from was kept - bring back what was taken by mistake, like the ice in a glass. Done
+ * here in the browser; the result is kept as a new picture. Free.
+ */
+function CutoutBrush({ file, onClose, onSaved }: { file: string; onClose: () => void; onSaved: (file: string) => void }) {
+  const { note } = useToast();
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const original = useRef<HTMLImageElement | null>(null);
+  const originalId = useRef<string | null>(null);
+  const undo = useRef<ImageData[]>([]);
+  const last = useRef<{ x: number; y: number } | null>(null);
+  const [tool, setTool] = useState<'erase' | 'restore'>('erase');
+  const [size, setSize] = useState(0.04);
+  const [ready, setReady] = useState(false);
+  const [canRestore, setCanRestore] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [, setSteps] = useState(0);
+
+  useEffect(() => {
+    let live = true;
+    const load = (src: string) => new Promise<HTMLImageElement>((done, fail) => { const img = new Image(); img.onload = () => done(img); img.onerror = fail; img.src = src; });
+    void (async () => {
+      const img = await load(`/api/drive/files/${file}/content?disposition=inline`).catch(() => null);
+      if (!live) return;
+      if (!img) { note('That picture could not be opened.'); onClose(); return; }
+      const c = canvasRef.current!;
+      c.width = img.naturalWidth;
+      c.height = img.naturalHeight;
+      c.getContext('2d')!.drawImage(img, 0, 0);
+      setReady(true);
+      const res = await fetch(`/api/media/pictures/${file}`, { cache: 'no-store' }).catch(() => null);
+      const body = res?.ok ? ((await res.json()) as { original: string | null }) : { original: null };
+      if (!live || !body.original) return;
+      const o = await load(`/api/drive/files/${body.original}/content?disposition=inline`).catch(() => null);
+      if (!live || !o) return;
+      original.current = o;
+      originalId.current = body.original;
+      setCanRestore(true);
+    })();
+    return () => { live = false; };
+    // Opened once for the file it was opened on.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [file]);
+
+  const at = (e: React.PointerEvent) => {
+    const c = canvasRef.current!;
+    const r = c.getBoundingClientRect();
+    return { x: ((e.clientX - r.left) / r.width) * c.width, y: ((e.clientY - r.top) / r.height) * c.height };
+  };
+  /** One dab of the brush. */
+  const dab = (x: number, y: number) => {
+    const c = canvasRef.current!;
+    const ctx = c.getContext('2d')!;
+    const radius = Math.max(2, size * Math.max(c.width, c.height));
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
+    if (tool === 'erase') {
+      ctx.globalCompositeOperation = 'destination-out';
+      ctx.fill();
+    } else if (original.current) {
+      ctx.clip();
+      ctx.clearRect(x - radius, y - radius, radius * 2, radius * 2);
+      ctx.drawImage(original.current, 0, 0, c.width, c.height);
+    }
+    ctx.restore();
+  };
+  const stroke = (to: { x: number; y: number }) => {
+    const from = last.current ?? to;
+    const c = canvasRef.current!;
+    const step = Math.max(1, size * Math.max(c.width, c.height) * 0.35);
+    const n = Math.max(1, Math.ceil(Math.hypot(to.x - from.x, to.y - from.y) / step));
+    for (let i = 1; i <= n; i++) dab(from.x + ((to.x - from.x) * i) / n, from.y + ((to.y - from.y) * i) / n);
+    last.current = to;
+  };
+  const save = async () => {
+    setSaving(true);
+    const blob = await new Promise<Blob | null>((done) => canvasRef.current!.toBlob(done, 'image/png'));
+    if (!blob) { setSaving(false); return; }
+    const form = new FormData();
+    form.append('file', new File([blob], 'touched-up.png', { type: 'image/png' }));
+    form.append('cut', '0');
+    if (originalId.current) form.append('original', originalId.current);
+    const res = await fetch('/api/media/pictures', { method: 'POST', body: form }).catch(() => null);
+    setSaving(false);
+    if (!res?.ok) { note('It could not be kept. Nothing was changed.'); return; }
+    onSaved(((await res.json()) as { picture: { file: string } }).picture.file);
+  };
+
+  return (
+    <div className="brush-veil" role="dialog" aria-modal="true" aria-label="Fix the cut-out" onPointerDown={(e) => e.stopPropagation()}>
+      <div className="brush-panel">
+        <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <p className="studio-q" style={{ margin: 0 }}>Fix the cut-out</p>
+          <span className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+            <button type="button" className={`chip ${tool === 'erase' ? 'on' : ''}`} onClick={() => setTool('erase')}>Take off</button>
+            <button type="button" className={`chip ${tool === 'restore' ? 'on' : ''}`} onClick={() => setTool('restore')} disabled={!canRestore}
+              title={canRestore ? 'Paint back what was taken by mistake' : 'Only for a picture CIP cut out itself'}>Bring back</button>
+            <button type="button" className="btn btn-ghost btn-sm" disabled={!undo.current.length} onClick={() => {
+              const was = undo.current.pop();
+              if (was) canvasRef.current!.getContext('2d')!.putImageData(was, 0, 0);
+              setSteps((n) => n + 1);
+            }}>Undo</button>
+          </span>
+        </div>
+        <div className="studio-slide">
+          <div className="row" style={{ justifyContent: 'space-between' }}><span className="tiny muted">Brush size</span><span className="tiny">{Math.round(size * 100)}%</span></div>
+          <input type="range" min={0.005} max={0.15} step={0.005} value={size} onChange={(e) => setSize(Number(e.target.value))} aria-label="Brush size" />
+        </div>
+        <div className="brush-board">
+          <canvas
+            ref={canvasRef}
+            className="brush-canvas"
+            style={{ opacity: ready ? 1 : 0.2 }}
+            onPointerDown={(e) => {
+              if (!ready) return;
+              (e.target as Element).setPointerCapture?.(e.pointerId);
+              const c = canvasRef.current!;
+              undo.current.push(c.getContext('2d')!.getImageData(0, 0, c.width, c.height));
+              if (undo.current.length > 12) undo.current.shift();
+              setSteps((n) => n + 1);
+              last.current = null;
+              stroke(at(e));
+            }}
+            onPointerMove={(e) => { if (e.buttons === 1 && ready) stroke(at(e)); }}
+            onPointerUp={() => { last.current = null; }}
+          />
+        </div>
+        <p className="tiny muted" style={{ margin: 0 }}>
+          Paint over what should go. {canRestore ? 'Bring back paints the picture as it came, for anything the cut took by mistake. ' : ''}Kept as a new picture; the old one stays in Drive.
+        </p>
+        <div className="row" style={{ gap: 8, justifyContent: 'flex-end' }}>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={onClose}>Cancel</button>
+          <button type="button" className="btn btn-primary btn-sm" disabled={!ready || saving} onClick={() => void save()}>{saving ? 'Keeping it…' : 'Use it'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AnyColour({ value, label, onPick }: { value: string | null; label: string; onPick: (hex: string) => void }) {
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [shown, setShown] = useState<string | null>(value);
@@ -2648,6 +3219,426 @@ function AnyColour({ value, label, onPick }: { value: string | null; label: stri
  * face, colour, size, lining up, weight, italic, capitals and shadow. Placed
  * and sized on the picture by dragging, like any other piece.
  */
+/** How a picture's look is slid: its range and how it reads. */
+const PIC_SLIDES: { key: 'opacity' | 'bright' | 'shadow'; label: string; min: number; max: number; step: number; plain: number; shows: (v: number) => string }[] = [
+  { key: 'opacity', label: 'Opacity', min: 0.1, max: 1, step: 0.01, plain: 1, shows: (v) => `${Math.round(v * 100)}%` },
+  { key: 'bright', label: 'Light', min: -0.5, max: 0.5, step: 0.01, plain: 0, shows: (v) => (v === 0 ? 'As it is' : `${v > 0 ? '+' : ''}${Math.round(v * 100)}%`) },
+  { key: 'shadow', label: 'Shadow', min: 0, max: 2, step: 0.05, plain: 0, shows: (v) => (v === 0 ? 'None' : `${Math.round(v * 100)}%`) },
+];
+type PictureFind = { id: string; name: string; type: string; mine: boolean; brand: string | null; glass: boolean };
+
+/**
+ * Pictures laid on the post as they are - a glass beside the bottle, ice, a lemon - from the
+ * computer or from Drive. A plain ground (a glass shot on white) can be taken off on the way in.
+ * Nothing is painted and no model is asked: free. Each is dragged, sized and turned on the post.
+ */
+/** The shapes that can be added, each as it first comes. */
+const SHAPE_KINDS: { kind: ShapeC['kind']; label: string; aspect: number; text?: string }[] = [
+  { kind: 'rect', label: 'Box', aspect: 0.6 },
+  { kind: 'round', label: 'Rounded box', aspect: 0.6 },
+  { kind: 'circle', label: 'Circle', aspect: 1 },
+  { kind: 'line', label: 'Band', aspect: 0.04 },
+  { kind: 'badge', label: 'Badge', aspect: 1, text: 'NEW' },
+  { kind: 'button', label: 'Button', aspect: 0.28, text: 'Shop now' },
+];
+
+function StudioPictures({ generationId, pictures, postAspect, selected, onSelect, drafts, onDraft, onChange, inks, fonts, onBrush }: {
+  /** The post, for its brand's glasses and its scene. */
+  generationId: string;
+  /** Where the bottle stands, for a glass set beside it. */
+  bottle: { x: number; y: number; w: number; h: number } | null;
+  pictures: PictureC[];
+  /** The brand's colours, and the faces words may be set in. */
+  inks: string[];
+  fonts: { id: string; label: string; own: boolean }[];
+  /** Open the brush on a picture's file. */
+  onBrush: (file: string) => void;
+  /** The post's height over its width. */
+  postAspect: number;
+  selected: string | null;
+  onSelect: (id: string | null) => void;
+  drafts: Record<string, Partial<PictureC>>;
+  onDraft: (id: string, look: Partial<PictureC>) => void;
+  /** How to change the pictures as they now stand; `settle`: the picture whose slid look this sets, let go of once it is. */
+  onChange: (make: (all: PictureC[]) => PictureC[], settle?: string) => Promise<boolean>;
+}) {
+  const { note } = useToast();
+  const [cut, setCut] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [query, setQuery] = useState('');
+  const [found, setFound] = useState<PictureFind[] | null>(null);
+  /** The post's brand, once known: its pictures are listed first. */
+  const brandRef = useRef<string | null>(null);
+  const look = useCallback(async (q: string) => {
+    const params = new URLSearchParams({ ...(q ? { q } : {}), ...(brandRef.current ? { brand: brandRef.current } : {}) });
+    const res = await fetch(`/api/media/pictures?${params}`, { cache: 'no-store' }).catch(() => null);
+    const body = res?.ok ? ((await res.json()) as { pictures: PictureFind[] }) : { pictures: [] };
+    setFound(body.pictures);
+  }, []);
+  useEffect(() => { void look(''); }, [look]);
+
+  /** A picture laid in the middle of the post, a little apart from the last: a quarter of it wide, no taller than half. */
+  const place = async (picture: { file: string; aspect: number }, size = 0.24): Promise<boolean> => {
+    let w = size;
+    const tall = (v: number) => (v * picture.aspect) / postAspect;
+    if (tall(w) > 0.5) w = (0.5 * postAspect) / picture.aspect;
+    const step = (pictures.length % 4) * 0.04;
+    const pic: PictureC = { id: blockId(), file: picture.file, aspect: picture.aspect, x: 0.5 - w / 2 + step, y: 0.5 - tall(w) / 2 + step, w };
+    const ok = await onChange((all) => [...all, pic]);
+    if (ok) onSelect(pic.id);
+    return ok;
+  };
+
+  // The post's brand, so its own pictures are listed first.
+  const [brandOf, setBrandOf] = useState<{ brand: string } | null>(null);
+  const loadBrand = useCallback(() => {
+    void fetch(`/api/media/generations/${generationId}/glass`, { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((b: typeof brandOf) => { if (b) setBrandOf(b); })
+      .catch(() => undefined);
+  }, [generationId]);
+  useEffect(() => { loadBrand(); }, [loadBrand]);
+  // The list again once the brand is known, its own pictures first.
+  useEffect(() => {
+    if (!brandOf || brandRef.current === brandOf.brand) return;
+    brandRef.current = brandOf.brand;
+    void look(query);
+    // Once per brand; the query is the one shown.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [brandOf]);
+  /** A studio picture taken away (archived in Drive, restorable). */
+  const removePicture = async (f: PictureFind) => {
+    if (!window.confirm(`Remove "${f.name}" from Studio pictures? It stays in Drive's archive.`)) return;
+    const res = await fetch(`/api/media/pictures/${f.id}`, { method: 'DELETE' }).catch(() => null);
+    if (!res?.ok) { note('It could not be removed.'); return; }
+    void look(query);
+  };
+  /** A picture set into the scene where it stands: lit in its light, as bright as it. Free. */
+  const [matching, setMatching] = useState(false);
+  const matchScene = async (pic: PictureC) => {
+    if (!pic.file || matching) return;
+    setMatching(true);
+    const box = { x: pic.x, y: pic.y, w: pic.w, h: (pic.w * pic.aspect) / postAspect };
+    const res = await fetch(`/api/media/generations/${generationId}/match`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ file: pic.file, box }),
+    }).catch(() => null);
+    setMatching(false);
+    if (!res?.ok) { note('The scene could not be matched.'); return; }
+    const look2 = (await res.json()) as { tint: string; tintAmount: number; bright: number };
+    void update(pic.id, { ...look2, ground: pic.ground ?? 0.5 });
+    note('Lit as the scene is - free. Undo puts it back.');
+  };
+
+  /** A picture made ready on the server, then laid on the post. */
+  const add = async (from: { file: File } | { fileId: string }) => {
+    if (pictures.length >= 8) { note('A post takes at most 8 added pictures.'); return; }
+    setBusy(true);
+    let res: Response | null;
+    if ('file' in from) {
+      const form = new FormData();
+      form.append('file', from.file);
+      form.append('cut', cut ? '1' : '0');
+      res = await fetch('/api/media/pictures', { method: 'POST', body: form }).catch(() => null);
+    } else {
+      res = await fetch('/api/media/pictures', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ fileId: from.fileId, cut }),
+      }).catch(() => null);
+    }
+    if (!res?.ok) {
+      setBusy(false);
+      const message = (await res?.json().catch(() => null) as { message?: string } | null)?.message;
+      note(message ?? 'That picture could not be added.');
+      return;
+    }
+    const done = (await res.json()) as { picture: { file: string; aspect: number }; outcome: 'cut' | 'already-clear' | 'not-plain' | 'kept' };
+    const ok = await place(done.picture);
+    setBusy(false);
+    if (!ok) return;
+    if ('file' in from) void look(query);
+    note(cut && done.outcome === 'not-plain'
+      ? 'Added. Its background is not one plain colour, so it was kept as it is.'
+      : cut && done.outcome === 'cut' ? 'Added, its background taken off - free.' : 'Added - free.');
+  };
+
+  const chosen = pictures.find((p) => p.id === selected) ?? null;
+  /** A shape laid in the middle, in the brand's first colour. */
+  const addShape = (k: (typeof SHAPE_KINDS)[number]) => {
+    if (pictures.length >= 8) { note('A post takes at most 8 added pictures and shapes.'); return; }
+    const fill = k.kind === 'button' ? '#ffffff' : inks[0] ?? '#d4202a';
+    const w = k.kind === 'line' ? 0.5 : k.kind === 'button' ? 0.36 : 0.22;
+    const pic: PictureC = {
+      id: blockId(), aspect: k.aspect, x: 0.5 - w / 2, y: 0.5 - (w * k.aspect) / postAspect / 2, w,
+      shape: { kind: k.kind, fill, ...(k.text ? { text: k.text, ink: k.kind === 'button' ? '#141414' : '#ffffff' } : {}) },
+    };
+    void onChange((all) => [...all, pic]).then((ok) => ok && onSelect(pic.id));
+  };
+  /** A look being slid on the chosen one, set into the post when let go. */
+  const letGoAll = () => {
+    if (!chosen) return;
+    const d = drafts[chosen.id];
+    if (d && Object.keys(d).length) void update(chosen.id, d, chosen.id);
+  };
+  const now = chosen ? { ...chosen, ...(drafts[chosen.id] ?? {}) } : null;
+  const range = (label: string, shown: string, v: number, min: number, max: number, step: number, change: (v: number) => Partial<PictureC>) => (
+    <div className="studio-slide" key={label}>
+      <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
+        <span className="tiny muted">{label}</span>
+        <span className="tiny">{shown}</span>
+      </div>
+      <input type="range" min={min} max={max} step={step} value={v} aria-label={label}
+        onChange={(e) => onDraft(chosen!.id, change(Number(e.target.value)))} onPointerUp={letGoAll} onKeyUp={letGoAll} onBlur={letGoAll} />
+    </div>
+  );
+  /** A side cut, the box's shape following it: what was shown stays where it was. */
+  const cropTo = (side: 'l' | 't' | 'r' | 'b', v: number): Partial<PictureC> => {
+    const c = now!.crop ?? { l: 0, t: 0, r: 0, b: 0 };
+    const base = now!.aspect * (1 - c.l - c.r) / (1 - c.t - c.b);
+    const next = { ...c, [side]: v };
+    return { crop: next, aspect: base * (1 - next.t - next.b) / (1 - next.l - next.r) };
+  };
+  const swatches = (value: string | undefined, pick: (ink: string) => void, label: string, extra: string[] = ['#ffffff', '#000000']) => (
+    <span className="row headline-line-inks">
+      {[...extra, ...inks.filter((i) => !extra.includes(i))].map((ink) => (
+        <button key={ink} type="button" className={`headline-ink ${value === ink ? 'is-on' : ''}`} style={{ background: ink }} onClick={() => pick(ink)} aria-label={`${label} ${ink}`} />
+      ))}
+      <AnyColour value={value && ![...extra, ...inks].includes(value) ? value : null} label={`Any colour - ${label}`} onPick={pick} />
+    </span>
+  );
+  const update = (id: string, change: Partial<PictureC>, settle?: string) =>
+    onChange((all) => all.map((p) => (p.id === id ? { ...p, ...change } : p)), settle);
+  /** One step towards the front or the back, among the added pictures. */
+  const move = (id: string, by: 1 | -1) => void onChange((all) => {
+    const at = all.findIndex((p) => p.id === id);
+    const to = at + by;
+    if (at < 0 || to < 0 || to >= all.length) return all;
+    const next = [...all];
+    [next[at], next[to]] = [next[to]!, next[at]!];
+    return next;
+  });
+
+  return (
+    <>
+      <p className="studio-q">A picture, ice, anything - laid on the post</p>
+      <p className="tiny muted" style={{ margin: 0 }}>
+        Bring a picture, or take one from Drive. Drag it on the post, pull its corner to size it, turn it by the round handle. Free - nothing is painted.
+      </p>
+      <label className="row tiny" style={{ gap: 6, alignItems: 'center' }}>
+        <input type="checkbox" checked={cut} onChange={(e) => setCut(e.target.checked)} />
+        Take a plain background off (white, grey, any one colour)
+      </label>
+      <label className={`btn btn-ghost btn-sm studio-upload ${busy ? 'is-off' : ''}`}>
+        <Icon name="upload" size={14} /> {busy ? 'Adding it…' : 'Add a picture from my computer'}
+        <input
+          type="file"
+          accept="image/png,image/jpeg,image/webp"
+          hidden
+          disabled={busy}
+          onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) void add({ file: f }); }}
+        />
+      </label>
+
+      <form className="row" style={{ gap: 6 }} onSubmit={(e) => { e.preventDefault(); void look(query); }}>
+        <input
+          className="field-input"
+          style={{ flex: 1, minWidth: 0 }}
+          placeholder="Find in Drive: ice, lemon, flowers…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          aria-label="Find a picture in Drive"
+        />
+        <button type="submit" className="btn btn-ghost btn-sm">Find</button>
+      </form>
+      {found && found.length > 0 && (
+        <div className="studio-picks">
+          {found.map((f) => (
+            <span key={f.id} className="studio-pick-wrap">
+              <button
+                type="button"
+                className={`studio-pick ${brandOf && f.brand?.toLowerCase() === brandOf.brand.toLowerCase() ? 'is-brand' : ''}`}
+                disabled={busy}
+                onClick={() => void add({ fileId: f.id })}
+                title={`${f.name}${f.brand ? ` - ${f.brand}` : ''}${f.mine ? '' : ' - from Drive'}`}
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={`/api/drive/files/${f.id}/content?size=160`} alt={f.name} loading="lazy" />
+              </button>
+              {f.mine && (
+                <button type="button" className="studio-pick-x" onClick={() => void removePicture(f)} aria-label={`Remove ${f.name}`} title="Remove from Studio pictures">×</button>
+              )}
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="studio-group">
+        <p className="studio-group-title">Shapes and badges</p>
+        <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+          {SHAPE_KINDS.map((k) => (
+            <button key={k.kind} type="button" className="chip" onClick={() => addShape(k)} disabled={busy}>{k.label}</button>
+          ))}
+        </div>
+      </div>
+      {found && found.length === 0 && (
+        <p className="tiny muted" style={{ margin: 0 }}>
+          {query ? 'Nothing in Drive by that name.' : 'Pictures you add are kept in Drive, in "Studio pictures", for every post after.'}
+        </p>
+      )}
+
+      {pictures.length > 0 && (
+        <div className="studio-group">
+          <p className="studio-group-title">On this post</p>
+          <div className="studio-picks is-on-post">
+            {[...pictures].reverse().map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                className={`studio-pick ${p.id === selected ? 'is-on' : ''}`}
+                onClick={() => onSelect(p.id === selected ? null : p.id)}
+                aria-pressed={p.id === selected}
+                title="Choose it to change it"
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={pictureSrc(p, 160)} alt="" style={p.flip ? { transform: 'scaleX(-1)' } : undefined} />
+              </button>
+            ))}
+          </div>
+          {!chosen && <p className="tiny muted" style={{ margin: 0 }}>Choose one, here or on the post, to change it.</p>}
+          {chosen && now && chosen.shape && (
+            <div className="studio-group">
+              <p className="studio-group-title">The shape</p>
+              <label className="tiny muted">Fill</label>
+              {swatches(chosen.shape.fill, (fill) => void update(chosen.id, { shape: { ...chosen.shape!, fill } }), 'Fill')}
+              <label className="tiny muted">Outline</label>
+              {swatches(chosen.shape.stroke, (stroke) => void update(chosen.id, { shape: { ...chosen.shape!, stroke, strokeW: chosen.shape!.strokeW || 0.04 } }), 'Outline')}
+              {range('Outline width', now.shape?.strokeW ? `${Math.round(now.shape.strokeW * 100)}%` : 'None', now.shape?.strokeW ?? 0, 0, 0.3, 0.01,
+                (v) => ({ shape: { ...chosen.shape!, ...now.shape, strokeW: v, stroke: now.shape?.stroke ?? '#ffffff' } }))}
+              {range('Shape', now.aspect < 1 ? 'Wider' : now.aspect > 1 ? 'Taller' : 'Even', Math.log(now.aspect), Math.log(0.02), Math.log(4), 0.01,
+                (v) => ({ aspect: Math.round(Math.exp(v) * 1000) / 1000 }))}
+              {(chosen.shape.kind === 'badge' || chosen.shape.kind === 'button' || chosen.shape.kind === 'round' || chosen.shape.kind === 'circle' || chosen.shape.kind === 'rect') && (
+                <>
+                  <label className="tiny muted">Words in it</label>
+                  <input
+                    key={`${chosen.id}-${chosen.shape.text ?? ''}`}
+                    className="field-input"
+                    defaultValue={chosen.shape.text ?? ''}
+                    maxLength={40}
+                    placeholder="NEW, 20% OFF, Shop now…"
+                    onBlur={(e) => { const text = e.target.value.trim(); if (text !== (chosen.shape!.text ?? '')) void update(chosen.id, { shape: { ...chosen.shape!, text, ink: chosen.shape!.ink ?? '#ffffff' } }); }}
+                    onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                  />
+                  {chosen.shape.text && (
+                    <>
+                      {swatches(chosen.shape.ink, (ink) => void update(chosen.id, { shape: { ...chosen.shape!, ink } }), 'Words in')}
+                      <select className="field-input" value={chosen.shape.font ?? ''} onChange={(e) => void update(chosen.id, { shape: { ...chosen.shape!, font: e.target.value || undefined } })} aria-label="Face for the words">
+                        <option value="">Poppins</option>
+                        {fonts.filter((f) => f.id !== 'poppins').map((f) => <option key={f.id} value={f.id}>{f.label}{f.own ? '' : ' ≈'}</option>)}
+                      </select>
+                    </>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+          {chosen && now && chosen.file && (
+            <div className="studio-group">
+              <p className="studio-group-title">Make it sit in the scene</p>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                style={{ justifySelf: 'start' }}
+                disabled={matching}
+                onClick={() => void matchScene(chosen)}
+                title="Lit in the colour of the light where it stands, and as bright as the scene - free"
+              >
+                {matching ? 'Matching…' : 'Match the scene'}
+              </button>
+              {range('Shadow on the surface', now.ground ? `${Math.round(now.ground * 100)}%` : 'None', now.ground ?? 0, 0, 1, 0.02, (v) => ({ ground: v }))}
+              {range('Reflection on the surface', now.mirror ? `${Math.round(now.mirror * 100)}%` : 'None', now.mirror ?? 0, 0, 1, 0.02, (v) => ({ mirror: v }))}
+              <p className="tiny muted" style={{ margin: 0 }}>Matching lights it as the scene is; the shadow and reflection stand it on the counter. All free.</p>
+            </div>
+          )}
+          {chosen && now && chosen.file && (
+            <div className="studio-group">
+              <p className="studio-group-title">Crop, edges and colour</p>
+              {(['l', 'r', 't', 'b'] as const).map((side) => range(
+                { l: 'Crop the left', r: 'Crop the right', t: 'Crop the top', b: 'Crop the foot' }[side],
+                `${Math.round((now.crop?.[side] ?? 0) * 100)}%`, now.crop?.[side] ?? 0, 0, 0.45, 0.01, (v) => cropTo(side, v)))}
+              {range('Soft edges', now.feather ? `${Math.round(now.feather * 100)}%` : 'Sharp', now.feather ?? 0, 0, 1, 0.02, (v) => ({ feather: v }))}
+              <label className="tiny muted">A colour over it</label>
+              {swatches(chosen.tint, (tint) => void update(chosen.id, { tint, tintAmount: chosen.tintAmount || 0.35 }), 'Colour over it')}
+              {chosen.tint && range('How strong', `${Math.round((now.tintAmount ?? 0) * 100)}%`, now.tintAmount ?? 0, 0, 1, 0.02, (v) => ({ tintAmount: v }))}
+            </div>
+          )}
+          {chosen && (
+            <>
+              {PIC_SLIDES.map((k) => {
+                const v = drafts[chosen.id]?.[k.key] ?? chosen[k.key] ?? k.plain;
+                const letGo = () => {
+                  const d = drafts[chosen.id]?.[k.key];
+                  if (d !== undefined && d !== (chosen[k.key] ?? k.plain)) void update(chosen.id, { [k.key]: d }, chosen.id);
+                };
+                return (
+                  <div key={k.key} className="studio-slide">
+                    <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
+                      <span className="tiny muted">{k.label}</span>
+                      <span className="row" style={{ gap: 6, alignItems: 'center' }}>
+                        <span className="tiny">{k.shows(v)}</span>
+                        {v !== k.plain && (
+                          <button type="button" className="studio-reset" onClick={() => { onDraft(chosen.id, { [k.key]: k.plain }); void update(chosen.id, { [k.key]: k.plain }, chosen.id); }}>
+                            Reset
+                          </button>
+                        )}
+                      </span>
+                    </div>
+                    <input
+                      type="range" min={k.min} max={k.max} step={k.step} value={v} aria-label={k.label}
+                      onChange={(e) => onDraft(chosen.id, { [k.key]: Number(e.target.value) })}
+                      onPointerUp={letGo} onKeyUp={letGo} onBlur={letGo}
+                    />
+                  </div>
+                );
+              })}
+              <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                {chosen.file && (
+                  <button type="button" className="btn btn-ghost btn-sm" onClick={() => onBrush(chosen.file!)} title="Take off, or bring back, what the cut-out got wrong - free">
+                    Fix the cut-out
+                  </button>
+                )}
+                <button type="button" className="btn btn-ghost btn-sm" onClick={() => void update(chosen.id, { flip: !chosen.flip })}>Flip</button>
+                {Boolean(chosen.rotate) && (
+                  <button type="button" className="btn btn-ghost btn-sm" onClick={() => void update(chosen.id, { rotate: 0 })}>Stand it straight</button>
+                )}
+                <button type="button" className="btn btn-ghost btn-sm" disabled={pictures.at(-1)?.id === chosen.id} onClick={() => move(chosen.id, 1)} title="In front of the other pictures">Forward</button>
+                <button type="button" className="btn btn-ghost btn-sm" disabled={pictures[0]?.id === chosen.id} onClick={() => move(chosen.id, -1)} title="Behind the other pictures">Back</button>
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  disabled={pictures.length >= 8}
+                  onClick={() => {
+                    const copy = { ...chosen, id: blockId(), x: chosen.x + 0.04, y: chosen.y + 0.04 };
+                    void onChange((all) => [...all, copy]).then((ok) => ok && onSelect(copy.id));
+                  }}
+                >
+                  Duplicate
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => { onSelect(null); void onChange((all) => all.filter((p) => p.id !== chosen.id)); }}
+                >
+                  Remove
+                </button>
+              </div>
+              <p className="tiny muted" style={{ margin: 0 }}>
+                Behind the bottle or over the words? Move &quot;Pictures&quot; in the order below.
+              </p>
+            </>
+          )}
+        </div>
+      )}
+    </>
+  );
+}
+
 function TextBlocks({ blocks, generation, fonts, inks, selected, onSelect, onChange }: {
   blocks: TextBlockC[];
   generation: MediaGenerationDTO;
@@ -2772,6 +3763,13 @@ function TextBlocks({ blocks, generation, fonts, inks, selected, onSelect, onCha
                   </button>
                 ))}
               </span>
+
+              <label className="tiny muted">Letters</label>
+              <TextLookControls
+                value={b}
+                inks={inks}
+                onChange={(c) => void update(b.id, Object.fromEntries(Object.entries(c).map(([k, v]) => [k, v ?? undefined])) as Partial<TextBlockC>)}
+              />
 
               <label className="tiny muted">Style</label>
               <span className="row" style={{ gap: 4, flexWrap: 'wrap' }}>
@@ -2924,11 +3922,6 @@ function Result({
                 onRated();
               }}
             />
-          )}
-          {/* A post designed layer by layer is not checked here: it is checked,
-              when wanted, on the Creative QC page, once it is arranged. */}
-          {generation.type === 'image' && !generation.layers && (
-            <GenerationCheck generationId={generation.id} live={!compact} />
           )}
         </>
       )}

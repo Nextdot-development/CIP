@@ -1,10 +1,11 @@
 import { requireSession } from '@/server/auth/guards';
 import { activeBrand } from '@/server/brain/activeBrand';
 import { companyMarkets } from '@/server/brain/markets';
-import { coverageFor } from '@/server/brain/qc';
-import { brainStatus } from '@/server/brain/providers';
 import { withCompanyScope } from '@/server/db';
-import { QcSection } from '@/sections/QcSection';
+import { FreeQc } from '@/sections/FreeQc';
+import { PostRulesCheck } from '@/sections/PostRulesCheck';
+import { listGenerations } from '@/server/media/generation';
+import { rulesCheck } from '@/server/media/arrange';
 
 export const metadata = { title: 'Creative QC — CIP' };
 export const dynamic = 'force-dynamic';
@@ -48,25 +49,30 @@ export default async function QcPage() {
       `,
     ),
   ]);
-  const coverage = await coverageFor(scope, { brand: lens.active, market: null });
+  // Posts made in the studio, each checked from its own pieces as the page loads - no model, nothing spent.
+  const made = await listGenerations(scope, { limit: 40, type: 'image' });
+  const posts = (await Promise.all(made.generations
+    .filter((g) => g.status === 'completed' && g.layers)
+    .slice(0, 12)
+    .map(async (g) => {
+      const checked = await rulesCheck(scope, g.id).catch(() => null);
+      return checked ? { id: g.id, prompt: g.prompt, brand: checked.brand, market: checked.market, verdicts: checked.verdicts } : null;
+    })))
+    .filter((p): p is NonNullable<typeof p> => p !== null);
 
   return (
-    <QcSection
-      configured={brainStatus().configured}
-      brands={lens.brands.map((b) => b.name)}
-      activeBrand={lens.active}
-      markets={markets.map((m) => m.market)}
-      coverage={coverage}
-      held={held.map((f) => ({
-        id: f.id,
-        name: f.name,
-        kind: f.mime_type.toLowerCase() === 'application/pdf'
-          ? 'PDF'
-          : f.mime_type.toLowerCase().startsWith('video/')
-            ? 'video'
-            : 'image',
-        sizeMb: Number((f.file_size / 1024 / 1024).toFixed(1)),
-      }))}
-    />
+    <div className="rise">
+      <PostRulesCheck posts={posts} />
+      <FreeQc
+        brands={lens.brands.map((b) => b.name)}
+        activeBrand={lens.active}
+        markets={markets.map((m) => m.market)}
+        held={held.map((f) => ({
+          id: f.id,
+          name: f.name,
+          kind: f.mime_type.toLowerCase() === 'application/pdf' ? 'PDF' : f.mime_type.toLowerCase().startsWith('video/') ? 'video' : 'image',
+        }))}
+      />
+    </div>
   );
 }

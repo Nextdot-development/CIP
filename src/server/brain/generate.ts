@@ -1,4 +1,5 @@
 import 'server-only';
+import { aiPlanning } from './freeBrief';
 import { companyProfile, WORDS } from './category';
 import type { Category, LogoCorner } from './category';
 import type { CompanyScope } from '../db';
@@ -160,6 +161,8 @@ export type BrainGenerateInput = {
   basedOnGenerationId?: unknown;
   /** Which market this is for. The Brain asks when it matters and nobody said. */
   market?: string | null;
+  /** Which brand this is for, chosen on the page. The Brain asks when nobody said and the request does not name one. */
+  brand?: string | null;
   /**
    * Called once the brief exists, before the generator is asked for anything.
    *
@@ -195,6 +198,7 @@ export async function generateWithBrain(
     mediaType: input.mediaType,
     clarification: input.clarification ?? null,
     market: input.market ?? null,
+    brand: input.brand ?? null,
     requestedShape: asked?.label ?? null,
   });
 
@@ -266,7 +270,7 @@ export async function generateWithBrain(
     // A post arranged layer by layer is checked when the person asks, once it
     // is arranged - a check of the first arrangement is spent on a post they
     // are about to change.
-    if (layered()) return { status: 'generated', generation, briefId: plan.briefId, plan: summary, qc: null };
+    if (layered() || !autoQc()) return { status: 'generated', generation, briefId: plan.briefId, plan: summary, qc: null };
     const checked = await checkAndFix(scope, {
       first: generation,
       briefId: plan.briefId,
@@ -351,8 +355,8 @@ export async function generateWithBrain(
   // always be traced back to the decision that produced it.
   await linkBriefToGeneration(scope, plan.briefId, generation.id);
 
-  // A video is made by the worker, minutes from now; it is checked there.
-  if (input.mediaType !== 'image' || generation.status !== 'completed') {
+  // A video is made by the worker, minutes from now; and nothing is checked until a person asks.
+  if (input.mediaType !== 'image' || generation.status !== 'completed' || !autoQc()) {
     return { status: 'generated', generation, briefId: plan.briefId, plan: summary, qc: null };
   }
 
@@ -412,6 +416,8 @@ async function composedPost(
     generatorShape: made,
     market: input.market ?? null,
     layered: layered(),
+    // Laid out from the brand's own layouts and headlines unless planning is the model's: only the picture is paid for.
+    noModel: !aiPlanning(),
   });
 }
 
@@ -422,6 +428,15 @@ async function composedPost(
  */
 function layered(): boolean {
   return process.env.CIP_LAYERED_POSTS !== 'off';
+}
+
+/**
+ * Whether a picture is checked, and remade when it breaks a rule, the moment it is made. Off: a
+ * check is paid for, and a remake is a second picture paid for - so it runs when a person asks for
+ * it, on the post they mean to use. CIP_AUTO_QC=on brings back checking every picture.
+ */
+export function autoQc(): boolean {
+  return process.env.CIP_AUTO_QC === 'on';
 }
 
 /**

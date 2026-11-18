@@ -387,7 +387,52 @@ export type SetLine = {
   shadow: boolean;
   /** Which layer its pixels are on: the headline's, or the added text's. */
   layer?: 'headline' | 'texts';
+  /** An outline round the letters: its width in pixels and its colour. */
+  stroke?: { width: number; colour: string } | null;
+  /** A fill running from `colour` at the top of the letters to this at their foot. */
+  gradient?: string | null;
 };
+
+/**
+ * How words are set beyond their face and size, as a person chose: the room between letters (a
+ * share of the type size), the room between lines (a multiple of it), an outline (its width a
+ * share of the type size) and a second colour the letters fade to from top to foot.
+ */
+export type TextLook = { spacing?: number; lineHeight?: number; stroke?: number; strokeInk?: string; ink2?: string };
+
+/**
+ * Words drawn with their look: the outline first, under the shadow the words have, then the
+ * letters over it - in one colour, or fading to a second.
+ */
+export function inkWords(ctx: SKRSContext2D, words: string, x: number, y: number, px: number, colour: string, look?: TextLook | null) {
+  const strokeW = look?.stroke ? Math.max(0.5, look.stroke * px) : 0;
+  if (strokeW) {
+    ctx.save();
+    ctx.lineWidth = strokeW;
+    ctx.lineJoin = 'round';
+    ctx.miterLimit = 2;
+    ctx.strokeStyle = look?.strokeInk ?? '#000000';
+    ctx.strokeText(words, x, y);
+    ctx.restore();
+    // The shadow fell once, under the outline: the letters over it need none.
+    ctx.shadowColor = 'transparent';
+  }
+  if (look?.ink2) {
+    const g = ctx.createLinearGradient(0, y, 0, y + px);
+    g.addColorStop(0, colour);
+    g.addColorStop(1, look.ink2);
+    ctx.fillStyle = g;
+  } else {
+    ctx.fillStyle = colour;
+  }
+  ctx.fillText(words, x, y);
+}
+
+/** What a set line carries of its look, for the files an editor opens. */
+const lookOf = (look: TextLook | null | undefined, px: number) => ({
+  ...(look?.stroke ? { stroke: { width: Math.max(0.5, look.stroke * px), colour: look.strokeInk ?? '#000000' } } : {}),
+  ...(look?.ink2 ? { gradient: look.ink2 } : {}),
+});
 
 /**
  * The headline set on a picture, in the layout's text block.
@@ -414,11 +459,13 @@ export function measureHeadline(
   const H = 1000;
   const ctx = createCanvas(10, 10).getContext('2d');
   const cased = caseLines(lines.map((l) => l.text), casing, keep);
+  // A script is never set in capitals: "CRAFT GIN" in a swash script cannot be read.
+  const soft = casing === 'upper' ? caseLines(lines.map((l) => l.text), 'sentence', keep) : cased;
   let widest = 0;
   lines.forEach((line, i) => {
     const style = inOwnFace(text.lines.find((l) => l.role === line.role) ?? text.lines[0]!, line.font);
     setFont(ctx, faceFor(style).family, style.size * H, style);
-    const words = style.upper || casing === 'upper' ? cased[i]!.toUpperCase() : cased[i]!;
+    const words = style.script ? soft[i]! : style.upper || casing === 'upper' ? cased[i]!.toUpperCase() : cased[i]!;
     widest = Math.max(widest, ctx.measureText(words).width + (style.box ? style.size * H * 0.4 : 0));
   });
   return { width: widest / (H * ratio), lines: lines.length };
@@ -434,6 +481,8 @@ export async function setHeadline(input: {
   colours?: { ink?: string; accent?: string; boxInk?: string };
   /** Every line's size, scaled: a headline set a little smaller to sit on fewer lines. */
   scale?: number;
+  /** Letter and line spacing, an outline, a second colour - as a person set them. */
+  look?: TextLook | null;
 }): Promise<SetHeadline> {
   const img = Buffer.isBuffer(input.image) ? await loadImage(input.image) : input.image;
   const W = img.width;
@@ -455,8 +504,14 @@ export async function setHeadline(input: {
   const boxInk = input.colours?.boxInk ?? '#141414';
   const casing = input.casing ?? 'sentence';
   const cased = caseLines(input.lines.map((l) => l.text), casing, input.keep);
-  const styleFor = (role: LayoutLine['role']) =>
+  // A script is never set in capitals: "CRAFT GIN" in a swash script cannot be read.
+  const soft = casing === 'upper' ? caseLines(input.lines.map((l) => l.text), 'sentence', input.keep) : cased;
+  const look = input.look ?? null;
+  const designed = (role: LayoutLine['role']) =>
     text.lines.find((l) => l.role === role) ?? text.lines.find((l) => l.role === 'lead') ?? text.lines[0]!;
+  // The room between letters a person chose, in the layout's own measure (thousandths of the size).
+  const styleFor = (role: LayoutLine['role']) =>
+    look?.spacing !== undefined ? { ...designed(role), tracking: look.spacing * 1000 } : designed(role);
 
   // The block's width is what the designer's words took; a headline of other
   // words may take a little more - never past the bottle beside it, or the
@@ -483,7 +538,7 @@ export async function setHeadline(input: {
       const style = inOwnFace(styleFor(line.role), line.font);
       const face = faceFor(style);
       let px = Math.max(8, style.size * H * scale * (input.scale ?? 1));
-      const words = style.upper || casing === 'upper' ? cased[i]!.toUpperCase() : cased[i]!;
+      const words = style.script ? soft[i]! : style.upper || casing === 'upper' ? cased[i]!.toUpperCase() : cased[i]!;
       setFont(ctx, face.family, px, style);
       // A boxed line is one phrase in one box, and a part of the headline
       // that is one short line - the key words, the tail - reads as one:
@@ -504,7 +559,7 @@ export async function setHeadline(input: {
 
   // Lines never closer than their own height, and a little air where one part
   // of the headline gives way to the next.
-  const leading = Math.max(text.leading, 1.05);
+  const leading = look?.lineHeight ?? Math.max(text.leading, 1.05);
   const padOf = (l: Placed) => (l.style.box ? { x: l.px * 0.2, y: l.px * 0.14 } : { x: 0, y: 0 });
   const advance = (l: Placed, next: Placed | undefined) =>
     padOf(l).y * 2 + l.px * (next ? leading : 1) + (next && next.role !== l.role ? l.px * 0.12 : 0);
@@ -544,9 +599,8 @@ export async function setHeadline(input: {
         wctx.shadowOffsetY = line.px * 0.04;
       }
     }
-    wctx.fillStyle = colour;
     wctx.textBaseline = 'top';
-    wctx.fillText(line.text, x, top);
+    inkWords(wctx, line.text, x, top, line.px, colour, line.style.box ? { ...look, stroke: undefined } : look);
     wctx.shadowColor = 'transparent';
     wctx.shadowBlur = 0;
     wctx.shadowOffsetY = 0;
@@ -555,6 +609,7 @@ export async function setHeadline(input: {
       face: line.face.family.replace(/^CIP /, ''), file: line.face.file, substitute: line.face.substitute,
       font: line.style.font ?? line.face.family.replace(/^CIP /, ''),
       px: line.px, colour, spacing: ((line.style.tracking || 0) / 1000) * line.px, boxFill: line.style.box, shadow,
+      ...lookOf(line.style.box ? { ...look, stroke: undefined } : look, line.px),
     });
 
     y += advance(line, placed![i + 1]);
@@ -612,7 +667,7 @@ export type TextBlock = {
   shadow: boolean;
   font?: HeadlineFontId;
   ink?: string;
-};
+} & TextLook;
 
 const PART_SCALE: Record<LayoutLine['role'], number> = { lead: 1, key: 1.4, tail: 0.75 };
 
@@ -640,7 +695,7 @@ export function setTextBlocks(blocks: TextBlock[], W: number, H: number): {
       const name = own && own in CHOICES ? headlineFontName(own, cut) : SHIPPED.poppins!(cut);
       const style: LayoutLine = {
         role: line.role, size: block.size, font: name, weight: block.weight, italic: block.italic,
-        script: own === 'brittany-signature', upper: block.upper, tracking: 0, accent: false, box: null,
+        script: own === 'brittany-signature', upper: block.upper, tracking: (block.spacing ?? 0) * 1000, accent: false, box: null,
       };
       const face = faceFor(style);
       const words = block.upper ? printable(line.text).toUpperCase() : printable(line.text);
@@ -658,21 +713,43 @@ export function setTextBlocks(blocks: TextBlock[], W: number, H: number): {
         ctx.shadowBlur = px * 0.3;
         ctx.shadowOffsetY = px * 0.04;
       }
-      ctx.fillStyle = colour;
       ctx.textBaseline = 'top';
-      ctx.fillText(words, x, y);
+      inkWords(ctx, words, x, y, px, colour, block);
       ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
       lines.push({
         text: words, role: line.role, box: { x, y, w: width, h: px },
         face: face.family.replace(/^CIP /, ''), file: face.file, substitute: face.substitute,
-        font: face.family.replace(/^CIP /, ''), px, colour, spacing: 0, boxFill: null, shadow: block.shadow, layer: 'texts',
+        font: face.family.replace(/^CIP /, ''), px, colour, spacing: (block.spacing ?? 0) * px, boxFill: null, shadow: block.shadow, layer: 'texts',
+        ...lookOf(block, px),
       });
       left = Math.min(left, x); right = Math.max(right, x + width);
-      y += px * 1.12;
+      y += px * (block.lineHeight ?? 1.12);
     }
     if (block.lines.length) {
       boxes.push({ id: block.id, x: left / W, y: block.y, w: (right - left) / W, h: (y - block.y * H) / H });
     }
   }
   return { canvas, lines, boxes };
+}
+
+/**
+ * Words set in the middle of a box - a badge, a button - in one of the headline faces, as big
+ * as fits on one line, and no bigger than the box is tall allows.
+ */
+export function wordsInBox(ctx: SKRSContext2D, text: string, box: { x: number; y: number; w: number; h: number }, ink: string, font?: HeadlineFontId) {
+  const words = printable(text).trim();
+  if (!words) return;
+  const cut = { weight: 'bold' as const, italic: false };
+  const name = font && font in CHOICES ? headlineFontName(font, cut) : SHIPPED.poppins!(cut);
+  const face = faceFor({ font: name, weight: 'bold', italic: false, script: font === 'brittany-signature' });
+  let px = box.h * 0.42;
+  ctx.font = `${px.toFixed(1)}px "${face.family}"`;
+  const wide = ctx.measureText(words).width;
+  if (wide > box.w * 0.82) { px *= (box.w * 0.82) / wide; ctx.font = `${px.toFixed(1)}px "${face.family}"`; }
+  ctx.fillStyle = ink;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(words, box.x + box.w / 2, box.y + box.h / 2 + px * 0.04);
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
 }

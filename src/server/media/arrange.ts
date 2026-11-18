@@ -1,16 +1,21 @@
 import 'server-only';
 import { withCompanyScope } from '../db';
 import type { CompanyScope } from '../db';
-import { STACK, choicesOf, type Corner, type Placement, type PostChoices, type PostStyle, type StackGroup } from '../brain/layouts';
-import { brandDrink, headlineSuggestions, pastScenes } from '../brain/bench';
-import { drinkLine, headlineInks, rebuildPost, type PostBoxes, type PostLayers, type PostRecipe } from './composePost';
+import { STACK, choicesOf, stackOf, type AddedPicture, type ShapeSpec, type Corner, type Placement, type PostChoices, type PostStyle, type StackGroup } from '../brain/layouts';
+import { brandDrink, brandStyle, headlineSuggestions, pastScenes } from '../brain/bench';
+import { styleScene } from '@/lib/brandStyle';
+import { brandAssets } from '../brain/brandAssets';
+import { drinkLine, neverLine, headlineInks, rebuildPost, type PostBoxes, type PostLayers, type PostRecipe } from './composePost';
+import { addStudioPicture, brandGlasses, type StudioPicture } from './studioPictures';
+import { cutPlainBackground, lightOf, seeThrough } from './cutout';
+import { judge, type JudgedRule, type PostFacts, type Verdict } from '../brain/rulesJudge';
 import { generationIn, getGeneration, keepScene, sceneOf, validateProviderChoice } from './generation';
 import { imageGenerationProvider } from './providers';
 import { MEDIA_LIMITS } from './providers/types';
 import { exportPost, type ExportFormat } from './layeredExport';
 import { headlineFrom } from './retext';
 import { forgetMediaAsset, getMediaAsset, mediaStorageKey, putMediaAsset } from './storage';
-import { HEADLINE_FONTS, headlineFontIsOwn, type HeadlineLine, type TextBlock } from './typography';
+import { HEADLINE_FONTS, headlineFontIsOwn, type HeadlineLine, type TextBlock, type TextLook } from './typography';
 import { MediaNotFound, MediaProviderUnavailable, MediaRejected, type MediaGenerationDTO } from './types';
 
 /**
@@ -54,23 +59,121 @@ export function choicesFrom(raw: unknown, current: PostChoices): PostChoices {
   }
   const style = styleFrom(r.style, current.style);
   const texts = r.texts === undefined ? current.texts ?? [] : textsFrom(r.texts);
+  const pictures = r.pictures === undefined ? current.pictures ?? [] : picturesFrom(r.pictures);
   const order = r.order === undefined ? current.order : r.order === null ? undefined : orderFrom(r.order);
+  const locked = r.locked === undefined ? current.locked ?? [] : lockedFrom(r.locked);
   return {
     bottle, size, logo,
     ...(headline === 'none' ? { headline } : {}),
     ...(Object.keys(place).length ? { place } : {}),
     ...(Object.keys(style).length ? { style } : {}),
     ...(texts.length ? { texts } : {}),
-    ...(order && order.join() !== STACK.join() ? { order } : {}),
+    ...(pictures.length ? { pictures } : {}),
+    ...(locked.length ? { locked } : {}),
+    ...(order && stackOf(order).join() !== STACK.join() ? { order: stackOf(order) } : {}),
   };
 }
 
-/** Which piece lies over which, as sent: each of them once. */
+/** Which piece lies over which, as sent: each of them once - one left out goes where it usually lies. */
 export function orderFrom(raw: unknown): StackGroup[] {
-  if (!Array.isArray(raw) || raw.length !== STACK.length || STACK.some((g) => !raw.includes(g))) {
-    throw new MediaRejected('Send the order of the bottle, headline, text and logo, each once.');
+  if (!Array.isArray(raw) || raw.some((g) => !(STACK as readonly unknown[]).includes(g)) || new Set(raw).size !== raw.length) {
+    throw new MediaRejected('Send the order of the bottle, pictures, headline, text and logo, each once.');
   }
-  return raw as StackGroup[];
+  return stackOf(raw as StackGroup[]);
+}
+
+/**
+ * A picture laid on a post of one shape, for a post of another: as big against the short side as
+ * it was, with its middle at the same point - a glass on a square is not as wide as a banner.
+ */
+export function refitPicture(p: AddedPicture, from: number, to: number): AddedPicture {
+  const short = (ratio: number) => Math.max(ratio, 1);
+  const w = p.w * (short(from) / short(to));
+  const cx = p.x + p.w / 2;
+  const cy = p.y + (p.w * p.aspect * from) / 2;
+  return { ...p, w, x: cx - w / 2, y: cy - (w * p.aspect * to) / 2 };
+}
+
+/** An angle as one turn either way, settled upright when within half a degree. */
+const turned = (v: number) => { const d = ((((v + 180) % 360) + 360) % 360) - 180; return Math.abs(d) < 0.5 ? 0 : Math.round(d * 10) / 10; };
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const MAX_PICTURES = 8;
+
+const SHAPES = new Set(['rect', 'round', 'circle', 'line', 'badge', 'button']);
+
+/** A shape as sent: one of the kinds, its colours real ones, its words short. */
+export function shapeFrom(raw: unknown): ShapeSpec {
+  const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  if (typeof r.kind !== 'string' || !SHAPES.has(r.kind)) throw new MediaRejected('That is not a shape CIP can draw.');
+  const ink = (v: unknown) => (typeof v === 'string' && INK.test(v) ? v.toLowerCase() : undefined);
+  const fill = ink(r.fill) ?? '#ffffff';
+  const stroke = ink(r.stroke);
+  const strokeW = typeof r.strokeW === 'number' && Number.isFinite(r.strokeW) ? Math.min(0.3, Math.max(0, r.strokeW)) : 0;
+  const text = typeof r.text === 'string' ? printableShort(r.text) : '';
+  const font = typeof r.font === 'string' && HEADLINE_FONTS.some((f) => f.id === r.font) ? r.font : undefined;
+  return {
+    kind: r.kind as ShapeSpec['kind'], fill,
+    ...(stroke && strokeW ? { stroke, strokeW } : {}),
+    ...(text ? { text, ink: ink(r.ink) ?? '#141414' } : {}),
+    ...(text && font ? { font } : {}),
+  };
+}
+const printableShort = (s: string) => s.replace(/[\u0000-\u001f\u007f]/g, '').replace(/\s+/g, ' ').trim().slice(0, 40);
+
+const LOCKABLE = /^(bottle|logo|text|shadow|reflection|[pt]:[a-z0-9]{4,12})$/;
+/** The pieces held still, as sent: names of pieces, each once. */
+export function lockedFrom(raw: unknown): string[] {
+  if (!Array.isArray(raw)) throw new MediaRejected('Send the pieces held still as a list.');
+  return [...new Set(raw.filter((p): p is string => typeof p === 'string' && LOCKABLE.test(p)))].slice(0, 40);
+}
+
+/** The added pictures as sent, each checked: a Drive file, kept on or near the post, its look in bounds. */
+export function picturesFrom(raw: unknown): AddedPicture[] {
+  if (!Array.isArray(raw)) throw new MediaRejected('Send the added pictures as a list.');
+  if (raw.length > MAX_PICTURES) throw new MediaRejected(`A post takes at most ${MAX_PICTURES} added pictures.`);
+  const seen = new Set<string>();
+  return raw.map((p) => {
+    const r = (p && typeof p === 'object' ? p : {}) as Record<string, unknown>;
+    const id = typeof r.id === 'string' && TEXT_ID.test(r.id) ? r.id : null;
+    if (!id || seen.has(id)) throw new MediaRejected('Each added picture needs an id of its own.');
+    seen.add(id);
+    const shape = r.shape === undefined ? undefined : shapeFrom(r.shape);
+    if (!shape && (typeof r.file !== 'string' || !UUID_RE.test(r.file))) throw new MediaRejected('That picture is not one in Drive.');
+    const num = (key: string, min: number, max: number, plain: number) => {
+      const v = r[key];
+      return typeof v === 'number' && Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : plain;
+    };
+    const rotate = turned(num('rotate', -720, 720, 0));
+    const opacity = num('opacity', 0.1, 1, 1);
+    const bright = num('bright', -0.5, 0.5, 0);
+    const shadow = num('shadow', 0, 2, 0);
+    const ground = num('ground', 0, 1, 0);
+    const mirror = num('mirror', 0, 1, 0);
+    const feather = num('feather', 0, 1, 0);
+    const tintAmount = num('tintAmount', 0, 1, 0);
+    const tint = typeof r.tint === 'string' && INK.test(r.tint) ? r.tint.toLowerCase() : undefined;
+    const c = (r.crop && typeof r.crop === 'object' ? r.crop : null) as Record<string, unknown> | null;
+    const side = (k: string) => (typeof c?.[k] === 'number' && Number.isFinite(c[k]) ? Math.min(0.45, Math.max(0, c[k] as number)) : 0);
+    const crop = c ? { l: side('l'), t: side('t'), r: side('r'), b: side('b') } : null;
+    return {
+      id,
+      ...(shape ? { shape } : { file: (r.file as string).toLowerCase() }),
+      aspect: num('aspect', 0.02, 20, 1),
+      ...(crop && !shape && (crop.l || crop.t || crop.r || crop.b) ? { crop } : {}),
+      ...(feather ? { feather } : {}),
+      ...(tint && tintAmount ? { tint, tintAmount } : {}),
+      x: num('x', -0.6, 1.1, 0.4),
+      y: num('y', -0.6, 1.1, 0.4),
+      w: num('w', 0.02, 1.5, 0.25),
+      ...(rotate ? { rotate } : {}),
+      ...(r.flip === true ? { flip: true } : {}),
+      ...(opacity < 1 ? { opacity } : {}),
+      ...(bright ? { bright } : {}),
+      ...(shadow ? { shadow } : {}),
+      ...(ground ? { ground } : {}),
+      ...(mirror ? { mirror } : {}),
+    };
+  });
 }
 
 const TEXT_ID = /^[a-z0-9]{4,12}$/;
@@ -106,12 +209,31 @@ export function textsFrom(raw: unknown): TextBlock[] {
       shadow: r.shadow !== false,
       ...(font ? { font } : {}),
       ...(ink ? { ink } : {}),
+      ...textLookFrom(r),
     };
   });
 }
 
 const INK = /^#[0-9a-f]{6}$/i;
 const ALIGN = new Set(['left', 'center', 'right']);
+
+/** A block's letter and line spacing, outline and second colour, as sent: in bounds, or left out. */
+function textLookFrom(r: Record<string, unknown>): TextLook {
+  const num = (k: string, min: number, max: number) => {
+    const v = r[k];
+    return typeof v === 'number' && Number.isFinite(v) ? Math.round(Math.min(max, Math.max(min, v)) * 1000) / 1000 : undefined;
+  };
+  const ink = (k: string) => (typeof r[k] === 'string' && INK.test(r[k] as string) ? (r[k] as string).toLowerCase() : undefined);
+  const spacing = num('spacing', -0.08, 0.6);
+  const lineHeight = num('lineHeight', 0.7, 2.5);
+  const stroke = num('stroke', 0, 0.25);
+  return {
+    ...(spacing ? { spacing } : {}),
+    ...(lineHeight !== undefined ? { lineHeight } : {}),
+    ...(stroke ? { stroke, ...(ink('strokeInk') ? { strokeInk: ink('strokeInk') } : {}) } : {}),
+    ...(ink('ink2') ? { ink2: ink('ink2') } : {}),
+  };
+}
 
 /** The look as sent, checked: anything not sent keeps what it was, and null puts it back as the layout has it. */
 export function styleFrom(raw: unknown, current: PostStyle = {}): PostStyle {
@@ -120,7 +242,8 @@ export function styleFrom(raw: unknown, current: PostStyle = {}): PostStyle {
   const r = raw as Record<string, unknown>;
   const out: PostStyle = { ...current };
   const num = (key: 'textSize' | 'shadow' | 'bright' | 'shadowSoft' | 'shadowAngle' | 'shadowLength' | 'reflection' | 'reflectionSoft'
-    | 'logoBright' | 'logoShadow' | 'logoOpacity' | 'bgBright' | 'bgBlur', min: number, max: number) => {
+    | 'logoBright' | 'logoShadow' | 'logoOpacity' | 'bgBright' | 'bgBlur' | 'bgZoom' | 'bgX' | 'bgY' | 'bgOverlayAmount' | 'bgVignette'
+    | 'warmth' | 'contrast' | 'saturation' | 'textSpacing' | 'textLeading' | 'textStroke', min: number, max: number) => {
     const v = r[key];
     if (v === undefined) return;
     if (v === null) { delete out[key]; return; }
@@ -147,6 +270,22 @@ export function styleFrom(raw: unknown, current: PostStyle = {}): PostStyle {
     else if (typeof r.backingInk === 'string' && INK.test(r.backingInk)) out.backingInk = r.backingInk.toLowerCase();
     else throw new MediaRejected('That is not a colour the box can take.');
   }
+  for (const key of ['bgOverlay', 'textStrokeInk', 'ink2'] as const) {
+    const v = r[key];
+    if (v === undefined) continue;
+    if (v === null) delete out[key];
+    else if (typeof v === 'string' && INK.test(v)) out[key] = v.toLowerCase();
+    else throw new MediaRejected('That is not a colour the post can take.');
+  }
+  if (r.bgFlip !== undefined) {
+    if (r.bgFlip === true) out.bgFlip = true;
+    else delete out.bgFlip;
+  }
+  if (r.logoTone !== undefined) {
+    if (r.logoTone === null) delete out.logoTone;
+    else if (r.logoTone === 'light' || r.logoTone === 'dark' || r.logoTone === 'colour') out.logoTone = r.logoTone;
+    else throw new MediaRejected('That is not one of the logos.');
+  }
   if (r.align !== undefined) {
     if (r.align === null) delete out.align;
     else if (typeof r.align === 'string' && ALIGN.has(r.align)) out.align = r.align as PostStyle['align'];
@@ -165,6 +304,17 @@ export function styleFrom(raw: unknown, current: PostStyle = {}): PostStyle {
   num('logoOpacity', 0.15, 1);
   num('bgBright', -0.5, 0.5);
   num('bgBlur', 0, 1);
+  num('bgZoom', 1, 3);
+  num('bgX', -1, 1);
+  num('bgY', -1, 1);
+  num('bgOverlayAmount', 0, 1);
+  num('bgVignette', 0, 1);
+  num('warmth', -1, 1);
+  num('contrast', -0.5, 0.5);
+  num('saturation', -1, 1);
+  num('textSpacing', -0.08, 0.6);
+  num('textLeading', 0.7, 2.5);
+  num('textStroke', 0, 0.25);
   // Back to as the layout has it: nothing to keep.
   if (out.textSize === 1) delete out.textSize;
   if (out.shadow === 1) delete out.shadow;
@@ -178,6 +328,8 @@ export function styleFrom(raw: unknown, current: PostStyle = {}): PostStyle {
   if (out.logoOpacity === 1) delete out.logoOpacity;
   if (out.bgBright === 0) delete out.bgBright;
   if (out.bgBlur === 0) delete out.bgBlur;
+  for (const key of ['bgX', 'bgY', 'bgOverlayAmount', 'bgVignette', 'warmth', 'contrast', 'saturation', 'textStroke'] as const) if (out[key] === 0) delete out[key];
+  if (out.bgZoom === 1) delete out.bgZoom;
   return out;
 }
 
@@ -190,7 +342,6 @@ function placementOf(piece: 'bottle' | 'logo' | 'text' | 'shadow' | 'reflection'
     return Math.min(max, Math.max(min, v));
   };
   // Turned: kept between -180 and 180, and none at all when it is all but upright.
-  const turned = (v: number) => { const d = ((((v + 180) % 360) + 360) % 360) - 180; return Math.abs(d) < 0.5 ? 0 : Math.round(d * 10) / 10; };
   if (piece === 'bottle') {
     const rotate = r.rotate === undefined ? 0 : turned(num('rotate', -720, 720));
     return { cx: num('cx', -0.2, 1.2), base: num('base', 0.1, 1.3), height: num('height', 0.08, 1.2), ...(rotate ? { rotate } : {}) };
@@ -377,7 +528,7 @@ export async function arrangePost(
 
 // --- the layers, one file each ---------------------------------------------------------
 
-export const LAYER_NAMES = ['background', 'shadow', 'reflection', 'bottle', 'headline', 'texts', 'logo'] as const;
+export const LAYER_NAMES = ['background', 'shadow', 'reflection', 'bottle', 'pictures', 'headline', 'texts', 'logo'] as const;
 export type LayerName = (typeof LAYER_NAMES)[number];
 
 const layerKey = (scope: CompanyScope, generationId: string, name: LayerName) =>
@@ -463,7 +614,7 @@ function manifestOf(width: number, height: number, version: string, choices: Pos
     layers: LAYER_NAMES.map((name) => ({
       name,
       present: name === 'background'
-        || (name === 'texts' ? Boolean(choices.texts?.length)
+        || (name === 'texts' ? Boolean(choices.texts?.length) : name === 'pictures' ? Boolean(choices.pictures?.length)
           : name === 'headline' ? choices.headline !== 'none' : name === 'logo' ? choices.logo !== 'none' : choices.bottle !== 'none'),
       v: hashes?.[name] ?? version,
     })),
@@ -549,7 +700,7 @@ export async function exportLayers(scope: CompanyScope, generationId: string, fo
   const ratio = shape ? EXPORT_SHAPES[shape] : undefined;
   const other = ratio !== undefined && Math.abs(ratio - recipe.ratio) > 0.01;
   const arranged: PostRecipe = other
-    ? { ...recipe, ratio: ratio!, choices: { ...sidesOf(choices), place: undefined } }
+    ? { ...recipe, ratio: ratio!, choices: { ...sidesOf(choices), place: undefined, pictures: choices.pictures?.map((p) => refitPicture(p, recipe.ratio, ratio!)) } }
     : { ...recipe, choices };
   const post = await rebuildPost(scope, arranged, await keptScene(scope, generationId, sceneVersion(composed)), headline, { layers: true });
   return exportPost({ bytes: post.bytes, width: post.width, height: post.height, layers: post.layers! }, format);
@@ -741,7 +892,10 @@ export async function newBackground(scope: CompanyScope, generationId: string, r
   const provider = imageGenerationProvider(validateProviderChoice(meta.providerChoice ?? null));
   if (!provider.configured && provider.name !== 'fake-image') throw new MediaProviderUnavailable('Image generation is not configured.');
 
-  const [brandScenes, drink] = await Promise.all([pastScenes(scope, recipe.brand), brandDrink(scope, recipe.brand)]);
+  const [readScenes, drink, style] = await Promise.all([pastScenes(scope, recipe.brand), brandDrink(scope, recipe.brand), brandStyle(scope, recipe.brand)]);
+  // The scene the brand's own posts are set in, as learned, beside the pictures CIP read - and the person's note, when there is one.
+  const learned = styleScene(style, note ?? '');
+  const brandScenes = learned ? [learned, ...readScenes] : readScenes;
   const brief = clearBrief(typeof composed.scenePrompt === 'string' && composed.scenePrompt
     ? composed.scenePrompt
     : fallbackBrief(composed, recipe), brandScenes);
@@ -753,6 +907,7 @@ export async function newBackground(scope: CompanyScope, generationId: string, r
     asked,
     CLEAR,
     drinkLine({ ...drink, variant: recipe.variant }),
+    ...(style.never.length ? [neverLine(style.never)] : []),
     'Still no bottles, packs, labels, text, letters, logos, warnings or disclaimers anywhere.',
   ].join('\n').slice(0, MEDIA_LIMITS.maxPromptChars);
 
@@ -910,4 +1065,178 @@ function fallbackBrief(composed: Composed, recipe: PostRecipe): string {
       'third, clear from left to right, so a bottle can be stood anywhere on it later.',
     '- Above it the frame is calm and uncluttered on both sides, for words. All four corners plain and quiet, for a logo.',
   ].join('\n');
+}
+
+// --- the brand's glasses, and pictures set into the scene -------------------------------
+
+/**
+ * The glasses a post's brand is poured in, as its library holds them - filed like its bottles and
+ * logos - for the studio to set beside the bottle. Read from what is kept; nothing is spent.
+ */
+export async function glassOptions(scope: CompanyScope, generationId: string): Promise<{
+  brand: string; variant: string | null; glasses: { id: string; name: string }[];
+  /** The brand's logos, one of each kind - white, black, colour - for the person to choose between. */
+  logos: { id: string; name: string; tone: 'light' | 'dark' | 'colour' }[];
+}> {
+  const { recipe } = await composedOf(scope, generationId);
+  const [glasses, logos] = await Promise.all([
+    brandGlasses(scope, recipe.brand),
+    brandAssets(scope, { brand: recipe.brand, kind: 'logo' }).catch(() => []),
+  ]);
+  const byTone = new Map<string, { id: string; name: string; tone: 'light' | 'dark' | 'colour' }>();
+  for (const l of logos) {
+    const tone = l.asset.tone === 'light' || l.asset.tone === 'dark' ? l.asset.tone : 'colour';
+    if (!byTone.has(tone)) byTone.set(tone, { id: l.fileId, name: l.name, tone });
+  }
+  return { brand: recipe.brand, variant: recipe.variant ?? null, glasses, logos: [...byTone.values()] };
+}
+
+/**
+ * A picture set into the scene where it stands, as a retoucher would: lit in the colour of the light
+ * there, and lighter or darker to match it. Measured from the post's background and the picture; free.
+ */
+export async function matchScene(scope: CompanyScope, generationId: string, raw: unknown): Promise<{ tint: string; tintAmount: number; bright: number }> {
+  const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  if (typeof r.file !== 'string' || !UUID_RE.test(r.file)) throw new MediaRejected('Choose a picture on the post.');
+  const b = (r.box && typeof r.box === 'object' ? r.box : {}) as Record<string, unknown>;
+  const n = (v: unknown, d: number) => (typeof v === 'number' && Number.isFinite(v) ? Math.min(1.5, Math.max(-0.5, v)) : d);
+  const box = { x: n(b.x, 0.4), y: n(b.y, 0.4), w: Math.max(0.02, n(b.w, 0.2)), h: Math.max(0.02, n(b.h, 0.2)) };
+  await composedOf(scope, generationId);
+  const { createCanvas, loadImage } = await import('@napi-rs/canvas');
+  const { readFile } = await import('../drive/service');
+  const [bg, file] = await Promise.all([layerFile(scope, generationId, 'background'), readFile(scope, r.file).catch(() => null)]);
+  if (!file) throw new MediaRejected('That picture is not in Drive any more.');
+  const scene = await loadImage(bg.bytes);
+  const sx = Math.max(0, Math.round((box.x - box.w * 0.5) * scene.width)); const sy = Math.max(0, Math.round((box.y - box.h * 0.5) * scene.height));
+  const sw = Math.max(8, Math.min(scene.width - sx, Math.round(box.w * 2 * scene.width))); const sh = Math.max(8, Math.min(scene.height - sy, Math.round(box.h * 2 * scene.height)));
+  const area = createCanvas(sw, sh);
+  area.getContext('2d').drawImage(scene, sx, sy, sw, sh, 0, 0, sw, sh);
+  const around = area.getContext('2d').getImageData(0, 0, sw, sh).data;
+  const pic = await loadImage(file.body);
+  const k = Math.min(1, 200 / Math.max(pic.width, pic.height));
+  const small = createCanvas(Math.max(1, Math.round(pic.width * k)), Math.max(1, Math.round(pic.height * k)));
+  small.getContext('2d').drawImage(pic, 0, 0, small.width, small.height);
+  const own = small.getContext('2d').getImageData(0, 0, small.width, small.height).data;
+  const meanLum = (px: Uint8ClampedArray) => {
+    let sum = 0; let wsum = 0;
+    for (let i = 0; i < px.length; i += 4) { const a = px[i + 3]! / 255; if (a < 0.1) continue; sum += a * (0.2126 * px[i]! + 0.7152 * px[i + 1]! + 0.0722 * px[i + 2]!); wsum += a; }
+    return wsum ? sum / wsum / 255 : 0.5;
+  };
+  const light = lightOf(around);
+  const hex = `#${light.map((v) => Math.max(0, Math.min(255, v)).toString(16).padStart(2, '0')).join('')}`;
+  // Halfway to the scene's own brightness: a picture as bright as a studio shot dims into a bar at night.
+  const bright = Math.round(Math.max(-0.45, Math.min(0.3, (meanLum(around) - meanLum(own)) * 0.55)) * 100) / 100;
+  return { tint: hex, tintAmount: 0.22, bright };
+}
+
+/**
+ * A picture of a glass made see-through for a post: cut from a plain ground first when asked, then
+ * its clear parts let through and its lines lit in the colour of the light where it stands. Free.
+ */
+async function glassFor(scope: CompanyScope, generationId: string, bytes: Buffer, cut: boolean, box: { x: number; y: number; w: number; h: number } | null): Promise<Buffer> {
+  const { createCanvas, loadImage } = await import('@napi-rs/canvas');
+  const img = await loadImage(bytes);
+  const k = Math.min(1, 1600 / Math.max(img.width, img.height));
+  const W = Math.max(1, Math.round(img.width * k)); const H = Math.max(1, Math.round(img.height * k));
+  const canvas = createCanvas(W, H);
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(img, 0, 0, W, H);
+  const data = ctx.getImageData(0, 0, W, H);
+  let px = data.data;
+  if (cut) {
+    const done = cutPlainBackground(px, W, H);
+    if (done.outcome === 'cut') px = done.pixels;
+  }
+  // The light where it stands - or across the scene, before it is placed.
+  let light: [number, number, number] = [255, 236, 205];
+  const bg = await layerFile(scope, generationId, 'background').catch(() => null);
+  if (bg) {
+    const scene = await loadImage(bg.bytes);
+    const b = box ?? { x: 0, y: 0, w: 1, h: 1 };
+    const sx = Math.max(0, Math.round((b.x - b.w * 0.5) * scene.width)); const sy = Math.max(0, Math.round((b.y - b.h * 0.5) * scene.height));
+    const sw = Math.max(8, Math.min(scene.width - sx, Math.round(b.w * 2 * scene.width))); const sh = Math.max(8, Math.min(scene.height - sy, Math.round(b.h * 2 * scene.height)));
+    const area = createCanvas(sw, sh);
+    area.getContext('2d').drawImage(scene, sx, sy, sw, sh, 0, 0, sw, sh);
+    light = lightOf(area.getContext('2d').getImageData(0, 0, sw, sh).data);
+  }
+  data.data.set(seeThrough(px, light));
+  ctx.putImageData(data, 0, 0);
+  return canvas.encode('png');
+}
+
+/** A picture already on a post - a glass brought or made - made see-through where it stands. Free. */
+export async function seeThroughPicture(scope: CompanyScope, generationId: string, raw: unknown): Promise<{ picture: StudioPicture }> {
+  if (scope.role === 'viewer') throw new MediaRejected('Viewers cannot change pictures.');
+  const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  if (typeof r.file !== 'string' || !UUID_RE.test(r.file)) throw new MediaRejected('Choose a picture on the post.');
+  const b = (r.box && typeof r.box === 'object' ? r.box : null) as Record<string, unknown> | null;
+  const n = (v: unknown, d: number) => (typeof v === 'number' && Number.isFinite(v) ? Math.min(1.5, Math.max(-0.5, v)) : d);
+  const box = b ? { x: n(b.x, 0), y: n(b.y, 0), w: Math.max(0.02, n(b.w, 0.2)), h: Math.max(0.02, n(b.h, 0.2)) } : null;
+  await composedOf(scope, generationId);
+  const { readFile } = await import('../drive/service');
+  const file = await readFile(scope, r.file).catch(() => null);
+  if (!file) throw new MediaRejected('That picture is not in Drive any more.');
+  const clearGlass = await glassFor(scope, generationId, file.body, false, box);
+  // A brand's glass stays its glass, see-through.
+  const source = r.file;
+  const [was] = await withCompanyScope(scope, (tx) => tx<{ made: string | null; brand: string | null }[]>`
+    select metadata->>'made' as made, metadata->>'brand' as brand from drive_files where id = ${source} and company_id = ${scope.companyId}
+  `);
+  const done = await addStudioPicture(scope, { upload: { bytes: clearGlass, filename: `${file.filename.replace(/\.[a-z0-9]+$/i, '')} (see-through).png` } }, false, null,
+    { seeThrough: true, from_file: source, ...(was?.made === 'glass' && was.brand ? { made: 'glass', brand: was.brand } : {}) });
+  return { picture: done.picture };
+}
+
+// --- a post checked against the rules from its own pieces ---------------------------------
+
+/**
+ * A post made in the studio, checked against every rule that applies to its brand and market - from
+ * what it is made of, never by a model. Each rule comes back passed, broken (and why), for a person
+ * to look at (what the painted scene shows), or not for a picture at all. Nothing is spent.
+ */
+export async function rulesCheck(scope: CompanyScope, generationId: string): Promise<{ brand: string; market: string | null; verdicts: Verdict[] }> {
+  const { composed, recipe, headline } = await composedOf(scope, generationId);
+  const choices = currentChoices(recipe);
+  const style = choices.style ?? {};
+  const [brief] = await withCompanyScope(scope, (tx) => tx<{ market: string | null }[]>`
+    select brief->>'market' as market from generation_briefs
+     where company_id = ${scope.companyId} and generation_id = ${generationId}
+     order by created_at desc limit 1
+  `);
+  const market = brief?.market ?? null;
+  const rules = await withCompanyScope(scope, (tx) => tx<{
+    id: string; rule_code: string | null; domain: string | null; rule_type: string | null; severity: JudgedRule['severity'];
+    requirement: 'required' | 'forbidden'; rule: string; allowed: string[] | null; prohibited: string[] | null; format: JudgedRule['format'];
+  }[]>`
+    select id, rule_code, domain, rule_type, severity, requirement, rule, allowed, prohibited, format from compliance_rules
+     where company_id = ${scope.companyId} and active
+       and (brand is null or lower(brand) = lower(${recipe.brand}))
+       and (market is null or ${market}::text is null or lower(market) = lower(${market}))
+       and format in ('all', 'image')
+     order by severity nulls last, rule
+  `);
+  const words = [
+    ...(choices.headline === 'none' ? [] : (headline ?? []).map((l) => l.text)),
+    ...(choices.texts ?? []).flatMap((b) => b.lines.map((l) => l.text)),
+    ...(choices.pictures ?? []).map((p) => p.shape?.text ?? '').filter(Boolean),
+  ];
+  const post: PostFacts = {
+    brand: recipe.brand,
+    variant: recipe.variant ?? null,
+    words,
+    logo: {
+      on: choices.logo !== 'none' && Boolean(composed.layerBoxes?.logo),
+      box: composed.layerBoxes?.logo ?? null,
+      rotate: choices.place?.logo?.rotate ?? 0,
+      opacity: style.logoOpacity ?? 1,
+      bright: style.logoBright ?? 0,
+      shadow: style.logoShadow ?? 0,
+    },
+    ownBottle: Boolean(recipe.bottleFileId) && choices.bottle !== 'none',
+  };
+  const verdicts = rules.map((r) => judge({
+    id: r.id, code: r.rule_code, domain: r.domain, ruleType: r.rule_type, severity: r.severity, requirement: r.requirement,
+    rule: r.rule, allowed: r.allowed ?? [], prohibited: r.prohibited ?? [], format: r.format,
+  }, post));
+  return { brand: recipe.brand, market, verdicts };
 }

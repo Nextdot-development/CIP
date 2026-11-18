@@ -94,7 +94,7 @@ export async function upcoming(
          and starts_on <= current_date + ${within}::int
          -- An occasion with no market belongs to every market, exactly as a
          -- fact with no brand belongs to every brand.
-         and (${market}::text is null or market is null or market = ${market})
+         and (${market}::text is null or market is null or lower(market) = lower(${market}))
        order by starts_on, occasion
        limit ${limit}
     `;

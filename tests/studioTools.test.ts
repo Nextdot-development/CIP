@@ -514,11 +514,12 @@ describe('the logo, the background and what lies over what', () => {
     const { orderFrom } = await import('../src/server/media/arrange');
     const current = { bottle: 'left' as const, size: 'medium' as const, logo: 'top-right' as const };
     assert.equal(choicesFrom({ place: { logo: { x: 0.8, y: 0.05, w: 0.12, rotate: -15 } } }, current).place!.logo!.rotate, -15);
-    assert.deepEqual(orderFrom(['headline', 'bottle', 'texts', 'logo']), ['headline', 'bottle', 'texts', 'logo']);
+    // An order set before pictures could be added takes them just above the bottle, where they usually lie.
+    assert.deepEqual(orderFrom(['headline', 'bottle', 'texts', 'logo']), ['headline', 'bottle', 'pictures', 'texts', 'logo']);
     assert.throws(() => orderFrom(['bottle', 'bottle', 'texts', 'logo']));
-    assert.throws(() => orderFrom(['bottle', 'headline']));
+    assert.throws(() => orderFrom(['bottle', 'glass']));
     const set = choicesFrom({ order: ['headline', 'bottle', 'texts', 'logo'] }, current);
-    assert.deepEqual(set.order, ['headline', 'bottle', 'texts', 'logo']);
+    assert.deepEqual(set.order, ['headline', 'bottle', 'pictures', 'texts', 'logo']);
     // The usual order is not kept: nothing to say.
     assert.equal(choicesFrom({ order: ['bottle', 'headline', 'texts', 'logo'] }, set).order, undefined);
   });

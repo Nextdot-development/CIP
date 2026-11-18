@@ -3,7 +3,8 @@ import { withCompanyScope } from '../db';
 import type { CompanyScope } from '../db';
 import { brain } from './providers';
 import { BRAIN_LIMITS, BrainFailed, defaultTaskType } from './providers/types';
-import type { GenerationBrief } from './providers/types';
+import type { BriefInput, GenerationBrief } from './providers/types';
+import { aiPlanning, freeBrief } from './freeBrief';
 import { knownSubjects, readBrandDna } from './brandDna';
 import { standingPatterns } from './brandPatterns';
 import { applicableLessons, craftPassages, productShots, ratedExamples, similarAssets, similarPosts } from './retrieval';
@@ -182,7 +183,9 @@ export async function planGeneration(
   // market: Whytehall in Nigeria is still Whytehall, but Magic Moments' voice
   // in a Whytehall brief is simply the wrong brand.
   const brands = await brandNames(scope);
-  const brand = input.brand?.trim() || brandInRequest(requestText, brands) || null;
+  // A brand sent from the page counts only when it is one of this company's - as its roster spells it.
+  const sent = input.brand?.trim().toLowerCase();
+  const brand = (sent ? brands.find((b) => b.toLowerCase() === sent) : undefined) || brandInRequest(requestText, brands) || null;
 
   if (!brand && brands.length > 1) {
     return askWhich(scope, input, requestText, {
@@ -205,7 +208,8 @@ export async function planGeneration(
     // Diwali post, not a post for India. Being handed a list to pick from
     // when the answer is written across the India deck is the software
     // declining to read its own knowledge, so it looks before it asks.
-    (await marketFromEvidence(scope, requestText, marketNames)) ||
+    // Reading the market off the brand's decks asks for an embedding: only when planning is the model's.
+    (aiPlanning() ? await marketFromEvidence(scope, requestText, marketNames) : null) ||
     null;
 
   // More than one market and still nothing to go on: stop and ask. Averaging
@@ -252,16 +256,17 @@ export async function planGeneration(
     // The brand is carried into retrieval, not only into the facts. A
     // sibling's packshot shown to a generator does not argue with the brief —
     // it copies, and what comes back is the other brand.
-    similarAssets(scope, requestText, BRAIN_LIMITS.maxReferences, brand),
+    // Found by meaning, which asks for an embedding - paid: only when planning is the model's.
+    aiPlanning() ? similarAssets(scope, requestText, BRAIN_LIMITS.maxReferences, brand) : Promise.resolve([] as Awaited<ReturnType<typeof similarAssets>>),
     // Individual posts read off this company's PDFs. A whole deck retrieved as
     // one asset says "there is a deck"; the four posts inside it that match
     // the request are the part worth putting in front of the model.
-    similarPosts(scope, requestText, BRAIN_LIMITS.maxReferences, brand),
+    aiPlanning() ? similarPosts(scope, requestText, BRAIN_LIMITS.maxReferences, brand) : Promise.resolve([] as Awaited<ReturnType<typeof similarPosts>>),
     knownSubjects(scope),
     ratedExamples(scope, { mediaType: input.mediaType, brand }),
     // What the team's reference books say about making this. Optional: a
     // company with no books, or an embedder that is down, still gets a brief.
-    craftPassages(scope, requestText).catch(() => []),
+    aiPlanning() ? craftPassages(scope, requestText).catch(() => []) : Promise.resolve([] as Awaited<ReturnType<typeof craftPassages>>),
     // The rules this creative will be judged against, read before it is made.
     rulesForBrief(scope, { brand, market, format: input.mediaType === 'video' ? 'video' : 'image' }),
     // Lessons are fetched for the context the caller already knows. The brief
@@ -276,7 +281,7 @@ export async function planGeneration(
   ]);
 
   const { category } = await companyProfile(scope);
-  const brief = await provider.buildGenerationBrief({
+  const briefInput: BriefInput = {
     category,
     requestText,
     mediaType: input.mediaType,
@@ -346,7 +351,9 @@ export async function planGeneration(
       allowed: rule.allowed ?? [],
       prohibited: rule.prohibited ?? [],
     })),
-  });
+  };
+  // Written by the model only when planning is its; otherwise put together from what CIP holds, for nothing.
+  const brief = aiPlanning() ? await provider.buildGenerationBrief(briefInput) : freeBrief(briefInput);
 
   // Now that the brief has identified the campaign, product and task type, the
   // lessons that actually apply can be fetched. This is the pass that makes
@@ -366,11 +373,10 @@ export async function planGeneration(
   const evidenceCeiling = facts.length === 0 ? 0.4 : 1;
   const confidence = Math.min(brief.confidence, evidenceCeiling);
 
-  const clarification =
-    brief.clarificationQuestion ??
-    (confidence < BRAIN_LIMITS.minBriefConfidence && subjects.campaigns.length > 1
-      ? `Which campaign is this for: ${subjects.campaigns.slice(0, 5).join(', ')}?`
-      : null);
+  // No question once the brief is written: answering one wrote the brief again, paid for twice, for
+  // a doubt the Brain can settle itself - the brand and the market are chosen before it starts.
+  void subjects;
+  const clarification: string | null = null;
 
   // Which of them enough ratings have agreed on. Both kinds reach the brief;
   // the split is reported so a person can tell "the brand does this" from "one

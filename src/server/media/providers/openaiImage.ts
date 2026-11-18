@@ -294,7 +294,8 @@ async function classify(response: Response): Promise<ProviderFailed> {
   }
 
   if (response.status === 400 || response.status === 422) {
-    return new ProviderFailed('INVALID_REQUEST', 'permanent', 'The provider refused that request.');
+    // The provider's own error code - a word like invalid_value, never the body, which can echo the prompt.
+    return new ProviderFailed('INVALID_REQUEST', 'permanent', `The provider refused that request${code ? ` (${code.replace(/[^a-z0-9_.-]/gi, '').slice(0, 40)})` : ''}.`);
   }
   if (response.status >= 500) {
     return new ProviderFailed('PROVIDER_ERROR', 'transient', 'The image provider is having trouble.');

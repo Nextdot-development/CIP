@@ -61,6 +61,8 @@ export async function enqueueOcrEverywhere(): Promise<number> {
        where f.archived_at is null
          and f.bytes_retained
          and f.storage_path is not null
+         -- A file kept as it is - a studio picture, a brief's attachment - is never read by a model.
+         and coalesce(f.metadata->>'noModel', '') <> 'true'
          and (
            -- A PDF whose text layer came back (nearly) empty: a scan.
            (lower(f.file_type) = 'pdf'

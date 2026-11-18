@@ -25,7 +25,25 @@ export type BrandIdentity = {
   variants: string[];
   markets: string[];
   recent: { attribute: string; value: string; ago: string }[];
+  /** How its posts look, in a person's words: background, light, headline, logo, colours. */
+  look: { label: string; value: string }[];
+  /** How it is poured. */
+  serve: string | null;
+  /** Where it is followed: "Instagram @…". */
+  social: string | null;
+  awards: string[];
+  occasions: string[];
 };
+
+const LOOK: [string, RegExp][] = [
+  ['Background', /^(background|setting)$/],
+  ['Light', /^(lighting|light)$/],
+  ['Props', /^props?$/],
+  ['Headline', /^headline style$/],
+  ['Logo', /^logo placement$/],
+  ['Colours', /^colou?r use$/],
+  ['Never', /^never in (the )?scenes?$/],
+];
 
 const LINES = ['campaign line', 'tagline', 'slogan', 'strapline', 'headline text', 'headline', 'secondary headline text', 'pack line', 'signature line'];
 const TONE = /^(tone|tone of voice|personality|brand personality|mood|core personality)$/;
@@ -55,6 +73,9 @@ const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1).trim
  */
 export function spokenWords(raw: string): string | null {
   const value = raw.replace(/\s+/g, ' ').trim();
+  // A line given whole in double quotes is those words, apostrophes and all: "This isn't a label."
+  const whole1 = /^["“]([^"”]{3,80})["”]$/.exec(value)?.[1];
+  if (whole1) return whole1.trim();
   const quoted = [...value.matchAll(/["“'‘]([^"”'’]{3,60})["”'’]/g)].map((m) => m[1]!.trim());
   // "'A Richer way to Unwind' with 'Unwind' in yellow": a word picked out of the line is not more of it.
   const whole = quoted.filter((q, i) => !quoted.some((o, j) => j !== i && o.length > q.length && o.toLowerCase().includes(q.toLowerCase())));
@@ -81,7 +102,9 @@ export async function brandIdentity(scope: CompanyScope, brand: string | null, f
       select attribute, value, evidence_count from brand_dna_facts
        where company_id = ${scope.companyId} and status = 'active'
          and (${brand}::text is null or brand = ${brand})
-         and (attribute = any(${LINES}) or attribute = 'variant' or attribute ~ ${TONE.source})
+         and (attribute = any(${LINES}) or attribute = 'variant' or attribute ~ ${TONE.source}
+              or attribute in ('background', 'setting', 'lighting', 'light', 'props', 'prop', 'headline style', 'logo placement',
+                               'colour use', 'color use', 'never in scene', 'serve', 'social handle', 'award', 'occasion', 'occasions', 'market'))
        order by evidence_count desc, confidence desc, first_seen_at desc
        limit 400
     `;
@@ -121,7 +144,7 @@ export async function brandIdentity(scope: CompanyScope, brand: string | null, f
     if (seenLines.has(key) || [...seenLines].some((k) => k.startsWith(key) || key.startsWith(k))) continue;
     seenLines.add(key);
     lines.push(text);
-    if (lines.length === 4) break;
+    if (lines.length === 6) break;
   }
 
   // How it sounds: the words that come back in what was read - else the house's own words for it.
@@ -154,5 +177,25 @@ export async function brandIdentity(scope: CompanyScope, brand: string | null, f
     .slice(0, 6)
     .map((f) => ({ attribute: f.attribute, value: clip(f.value, 90), ago: agoOf(f.first_seen_at) }));
 
-  return { note, palette, lines, tone, fonts, variants, markets, recent };
+  const first = (re: RegExp) => said.filter((f) => re.test(f.attribute));
+  const look: { label: string; value: string }[] = [];
+  for (const [label, re] of LOOK) {
+    const values = first(re)
+      .map((f) => f.value.trim())
+      // A packshot's plain white is how the bottle was photographed, not how its posts look.
+      .filter((v) => v && !(label === 'Background' && /^(a |the )?(solid |plain |pure )?(white|black)( plain)?( background)?$|photographed against/i.test(v)));
+    if (!values.length) continue;
+    const value = label === 'Colours' ? values.filter((v) => !/#[0-9a-f]{6}/i.test(v))[0] ?? null
+      : label === 'Never' ? values.slice(0, 8).join('; ') : values[0]!;
+    if (value) look.push({ label, value: clip(value.charAt(0).toUpperCase() + value.slice(1), label === 'Never' ? 320 : 140) });
+  }
+  const serve = first(/^serve$/)[0]?.value ?? null;
+  const social = first(/^social handle$/)[0]?.value ?? null;
+  const awards = [...new Set(first(/^award$/).map((f) => clip(f.value, 80)))].slice(0, 4);
+  const occasions = [...new Set(first(/^occasions?$/).flatMap((f) => f.value.split(/,|;/)).map((o) => o.trim()).filter(Boolean))].slice(0, 8);
+  // Markets from the studies too: "India, Ghana and the United States".
+  const saidMarkets = first(/^market$/).flatMap((f) => f.value.split(/,| and /)).map((m) => m.trim()).filter((m) => m && m.length <= 30);
+  const allMarkets = [...new Map([...markets, ...saidMarkets].map((m) => [m.toLowerCase(), m.charAt(0).toUpperCase() + m.slice(1)])).values()].slice(0, 10);
+
+  return { note, palette, lines, tone, fonts, variants, markets: allMarkets, recent, look, serve, social, awards, occasions };
 }

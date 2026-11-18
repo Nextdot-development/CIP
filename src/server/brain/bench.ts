@@ -7,6 +7,7 @@ import { brandLayouts, type BrandLayout, type LayoutSpec } from './layouts';
 import { brain } from './providers';
 import type { BenchDraft } from './providers/types';
 import { printable, type Casing, type HeadlineLine } from '../media/typography';
+import { capitalsFromWords, pickHeadline, styleOf, styleScene, type BrandStyle } from '@/lib/brandStyle';
 
 /**
  * The Bench: a post planned the way a senior creative director, the brand's
@@ -91,7 +92,7 @@ export function givenWords(request: string): string | null {
  * rest is a description of it. A value with no quotes is the words themselves
  * only when it is short and not a sentence about a picture.
  */
-export function pastHeadlines(layoutNames: string[], said: string[]): string[] {
+export function pastHeadlines(layoutNames: string[], said: string[], limit = 12): string[] {
   const lines: string[] = [];
   for (const value of said) {
     // Double quotes first; a single quote only where it is not an apostrophe.
@@ -104,7 +105,7 @@ export function pastHeadlines(layoutNames: string[], said: string[]): string[] {
   return [...new Map([...layoutNames, ...lines]
     .map((l) => printable(l).replace(/\s*[—–-]\s*Caption:.*$/i, ''))
     .filter((l) => words(l) >= 2 && words(l) <= 12 && /\p{L}/u.test(l))
-    .map((l) => [plain(l), l] as const)).values()].slice(0, 12);
+    .map((l) => [plain(l), l] as const)).values()].slice(0, limit);
 }
 
 /**
@@ -166,6 +167,23 @@ export async function pastScenes(scope: CompanyScope, brand: string, limit = 6):
     if (scenes.length >= limit) break;
   }
   return scenes;
+}
+
+/**
+ * How the brand's posts look, as its facts say - its usual background, props, light, how its
+ * headline is set and where its logo sits - learned from its decks, guidelines and the posts it
+ * has published. Read from the Brand DNA already held; no model.
+ */
+export async function brandStyle(scope: CompanyScope, brand: string): Promise<BrandStyle> {
+  const rows = await withCompanyScope(scope, (tx) => tx<{ attribute: string; value: string }[]>`
+    select attribute, value from brand_dna_facts
+     where company_id = ${scope.companyId} and brand = ${brand} and status = 'active'
+       and lower(attribute) in ('background', 'setting', 'scene', 'props', 'prop', 'lighting', 'light', 'colour use', 'color use',
+                                'headline style', 'logo placement', 'serve', 'occasion', 'occasions', 'never in scene')
+     order by evidence_count desc, confidence desc, first_seen_at desc
+     limit 60
+  `).catch(() => []);
+  return styleOf(rows);
 }
 
 /** What a post has placed on it rather than painted into its scene. */
@@ -377,13 +395,41 @@ function splitGiven(given: string, roles: Set<HeadlineLine['role']>): HeadlineLi
   return [{ text: parts[0]!, role: 'lead' }, { text: parts.slice(1).join(' '), role: 'key' }];
 }
 
+/** Words a line cannot end on: broken there, the first half would run on into the second. */
+const RUNS_ON = new Set(['a', 'an', 'the', 'and', 'or', 'but', 'of', 'in', 'on', 'at', 'to', 'by', 'with', 'from', 'for', 'your', 'our', 'my', 'every', 'is', 'are', 'its', 'this']);
+
+/**
+ * One of the brand's own lines in two parts, as its posts set it - a short line over the larger one -
+ * when it has no comma or stop to break at: "India's first / craft gin". Under four words it stays whole.
+ */
+export function inTwo(line: string): HeadlineLine[] {
+  const given = splitGiven(line, new Set(['lead', 'key']));
+  if (given.length > 1) return given;
+  const words = line.trim().split(/\s+/);
+  if (words.length < 4) return given;
+  // Nearest the middle, a little before it, where the first half does not run on.
+  // Each half at least two words: "Let / the silence speak" is not a break.
+  const order = [...Array(Math.max(0, words.length - 3)).keys()].map((i) => i + 2)
+    .sort((a, b) => Math.abs(a - words.length * 0.45) - Math.abs(b - words.length * 0.45));
+  const at = order.find((i) => !RUNS_ON.has(words[i - 1]!.toLowerCase().replace(/[^a-z']/g, '')));
+  if (!at) return given;
+  return [{ text: words.slice(0, at).join(' '), role: 'lead' }, { text: words.slice(at).join(' '), role: 'key' }];
+}
+
 /** What the Bench would have said, from what CIP holds - no model asked. Settled like any other plan. */
-export function freeDraft(request: string, brand: string, examples: string[]): Omit<BenchDraft, 'usage'> {
-  const past = examples.find((e) => e.split(/\s+/).length <= 12) ?? null;
+export function freeDraft(request: string, brand: string, examples: string[], style?: BrandStyle | null): Omit<BenchDraft, 'usage'> {
+  // One of the brand's own lines that suits this request - its Diwali line for a Diwali post.
+  const past = pickHeadline(request, examples, 12);
+  // The scene as the person described it, without the headline they quoted; its light and surface
+  // read off their words - "golden light from the side", "a wooden bar counter".
+  const said = request.replace(/headline\s*:?\s*["“][^"”]*["”]/gi, '').replace(/["“][^"”]*["”]/g, '').replace(/\s+/g, ' ').trim();
+  const light: 'left' | 'right' | 'front' = /from the right|right side|light.{0,12}right/i.test(said) ? 'right' : /from the (left|side)|left side|side ?light|light.{0,12}(left|side)/i.test(said) ? 'left' : 'front';
+  const surface: 'matte' | 'gloss' = /\b(bar|counter|polish|gloss|marble|glass|lacquer|reflect|wet|mirror)/i.test(said) ? 'gloss' : 'matte';
+  const mood = (said.match(/\b(warm|golden|cosy|cozy|moody|evening|night|festive|bright|fresh|cool|elegant|celebrat\w*|calm|dramatic)\b/gi) ?? []).slice(0, 3).join(', ');
   return {
-    creativeDirector: { idea: request.trim() || `A post for ${brand}`, scene: 'A picture the person brought.', mood: '', light: 'front', surface: 'matte', note: '' },
+    creativeDirector: { idea: request.trim() || `A post for ${brand}`, scene: said || `A setting that suits ${brand}`, mood, light, surface, note: '' },
     brandManager: { variant: null, keep: [], risks: [], note: '' },
-    artDirector: { layout: '', casing: 'sentence', headline: past ? splitGiven(past, new Set(['lead', 'key'])) : [], note: '' },
+    artDirector: { layout: '', casing: capitalsFromWords(style?.headlineStyle ?? null) ? 'upper' : 'sentence', headline: past ? inTwo(past) : [], note: '' },
   };
 }
 
@@ -400,8 +446,8 @@ export async function planPost(
      */
     noModel?: boolean;
   },
-): Promise<BenchPlan & { bottleFileId: string | null; rules: string[]; pastScenes: string[]; drink: BrandDrink }> {
-  const [layouts, bottles, everyRule, brands, saidHeadlines, scenes, drink] = await Promise.all([
+): Promise<BenchPlan & { bottleFileId: string | null; rules: string[]; pastScenes: string[]; drink: BrandDrink; style: BrandStyle; ownLayout: boolean }> {
+  const [layouts, bottles, everyRule, brands, saidHeadlines, readScenes, drink, style] = await Promise.all([
     brandLayouts(scope, input.brand),
     brandAssets(scope, { brand: input.brand, kind: 'bottle' }),
     rulesForBrief(scope, { brand: input.brand, market: input.market ?? null, format: 'image' }),
@@ -415,13 +461,23 @@ export async function planPost(
     `).catch(() => []),
     pastScenes(scope, input.brand),
     brandDrink(scope, input.brand),
+    brandStyle(scope, input.brand),
   ]);
+  // The scene its own posts are set in, as learned, first - then the pictures CIP read.
+  const learned = styleScene(style, input.request);
+  const scenes = learned ? [learned, ...readScenes] : readScenes;
   // How this brand writes headlines: its own posts, not every brand's.
   const examples = pastHeadlines(
     layouts.filter((l) => l.brand === input.brand).map((l) => l.name),
     saidHeadlines.map((r) => r.value),
   );
   const maxWords = headlineLimit(examples);
+  // Every line it has said, for choosing the one that suits the request - not only the first twelve.
+  const everyLine = pastHeadlines(
+    layouts.filter((l) => l.brand === input.brand).map((l) => l.name),
+    saidHeadlines.map((r) => r.value),
+    60,
+  );
   // The rules this post can meet. Not the statutory lines: the design team
   // sets those in their approved wording. Asked for them, the reviewer had
   // the scene painted again with a health warning in it - another country's.
@@ -429,7 +485,7 @@ export async function planPost(
   const variants = [...new Map(bottles.filter((b) => b.asset.cutout).map((b) => [b.asset.variant?.toLowerCase() ?? '', b.asset.variant])).values()];
   const usable = layouts.filter((l) => l.spec.text);
 
-  const draft = input.noModel ? freeDraft(input.request, input.brand, examples) : await brain().benchPlan({
+  const draft = input.noModel ? freeDraft(input.request, input.brand, everyLine, style) : await brain().benchPlan({
     request: input.request,
     brand: input.brand,
     variants,
@@ -440,7 +496,10 @@ export async function planPost(
     maxWords,
     pastScenes: scenes,
   });
-  const plan = settlePlan(draft, { request: input.request, brand: input.brand, variants, layouts: usable, brands, maxWords });
+  // The brand's own line is set whole: it was written that long. Only a new line is held to the brand's length.
+  const plan = settlePlan(draft, { request: input.request, brand: input.brand, variants, layouts: usable, brands, maxWords: input.noModel ? Math.max(maxWords, 12) : maxWords });
   const [bottle] = await brandAssets(scope, { brand: input.brand, kind: 'bottle', variant: plan.variant });
-  return { ...plan, bottleFileId: bottle?.asset.cutout ? bottle.fileId : null, rules: rules.map((r) => r.rule), pastScenes: scenes, drink };
+  // A layout the brand's own designers made keeps its own places; one borrowed from the house or another brand takes this brand's style.
+  const ownLayout = layouts.some((l) => l.brand === input.brand && l.name === plan.layout.name);
+  return { ...plan, bottleFileId: bottle?.asset.cutout ? bottle.fileId : null, rules: rules.map((r) => r.rule), pastScenes: scenes, drink, style, ownLayout };
 }

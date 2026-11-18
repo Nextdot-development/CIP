@@ -1,5 +1,6 @@
 import 'server-only';
-import { STACK, type StackGroup } from '../brain/layouts';
+import { inkWords } from './typography';
+import { stackOf, type StackGroup } from '../brain/layouts';
 import { readFileSync } from 'node:fs';
 import { PDFDocument, createCanvas, loadImage, type SKRSContext2D } from '@napi-rs/canvas';
 import { writePsdBuffer, type Layer, type Psd } from 'ag-psd';
@@ -96,11 +97,12 @@ async function toPsd(post: Post): Promise<Buffer> {
   // In the order the pieces lie on the post, from the bottom up - the person's, when they changed it.
   const groups: Record<StackGroup, (Layer | null)[]> = {
     bottle: [await raster('Bottle shadow', layers.shadow), await raster('Bottle reflection', layers.reflection ?? null), await raster('Bottle', layers.bottle)],
+    pictures: [await raster('Pictures', layers.pictures ?? null)],
     headline: [words.length ? { name: 'Headline', opened: true, children: words.reverse() } : null],
     texts: [added.length ? { name: 'Text', opened: true, children: added.reverse() } : null],
     logo: [await raster('Logo', layers.logo)],
   };
-  const children = [await raster('Background', layers.background), ...(layers.order ?? STACK).flatMap((g) => groups[g])]
+  const children = [await raster('Background', layers.background), ...stackOf(layers.order).flatMap((g) => groups[g])]
     .filter((l): l is Layer => l !== null);
 
   const psd: Psd = { width: W, height: H, imageData: await pixels(post.bytes), children };
@@ -139,8 +141,13 @@ function toSvg(post: Post): string {
     const box = line.boxFill
       ? `<rect x="${(line.box.x - line.px * 0.2).toFixed(1)}" y="${(line.box.y - line.px * 0.14).toFixed(1)}" width="${(line.box.w + line.px * 0.4).toFixed(1)}" height="${(line.px * 1.28).toFixed(1)}" fill="${line.boxFill}"/>`
       : '';
-    return `${box}<text id="headline-${i + 1}" x="${line.box.x.toFixed(1)}" y="${(line.box.y + line.px * 0.8).toFixed(1)}" ` +
-      `font-family="${escape(line.font)}, ${escape(line.face)}" font-size="${line.px.toFixed(1)}" fill="${line.colour}" ` +
+    const grad = line.gradient ? `fade-${which}-${i}` : null;
+    const defs = grad
+      ? `<defs><linearGradient id="${grad}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${line.colour}"/><stop offset="1" stop-color="${line.gradient}"/></linearGradient></defs>`
+      : '';
+    const outline = line.stroke ? ` stroke="${line.stroke.colour}" stroke-width="${line.stroke.width.toFixed(1)}" stroke-linejoin="round" paint-order="stroke"` : '';
+    return `${defs}${box}<text id="headline-${i + 1}" x="${line.box.x.toFixed(1)}" y="${(line.box.y + line.px * 0.8).toFixed(1)}" ` +
+      `font-family="${escape(line.font)}, ${escape(line.face)}" font-size="${line.px.toFixed(1)}" fill="${grad ? `url(#${grad})` : line.colour}"${outline} ` +
       `letter-spacing="${line.spacing.toFixed(2)}"${line.shadow ? ' filter="url(#soft)"' : ''}>${escape(line.text)}</text>`;
   }).join('');
   return `<?xml version="1.0" encoding="UTF-8"?>\n` +
@@ -148,10 +155,11 @@ function toSvg(post: Post): string {
     `<defs><style>${fontFaces(layers.lines)}</style>` +
     '<filter id="soft" x="-20%" y="-40%" width="140%" height="180%"><feDropShadow dx="0" dy="2" stdDeviation="6" flood-color="#000" flood-opacity="0.55"/></filter></defs>' +
     `<g id="Background">${image('background', layers.background)}</g>` +
-    (layers.order ?? STACK).map((g) => ({
+    stackOf(layers.order).map((g) => ({
       bottle: `<g id="Bottle-shadow">${image('bottle-shadow', layers.shadow)}</g>` +
         `<g id="Bottle-reflection">${image('bottle-reflection', layers.reflection ?? null)}</g>` +
         `<g id="Bottle">${image('bottle', layers.bottle)}</g>`,
+      pictures: `<g id="Pictures">${image('pictures', layers.pictures ?? null)}</g>`,
       headline: `<g id="Headline">${svgLines('headline')}</g>`,
       texts: `<g id="Text">${svgLines('texts')}</g>`,
       logo: `<g id="Logo">${image('logo', layers.logo)}</g>`,
@@ -184,9 +192,9 @@ async function toPdf(post: Post): Promise<Buffer> {
     }
     ctx.font = `${line.px.toFixed(1)}px "CIP ${line.face}"`;
     (ctx as unknown as { letterSpacing: string }).letterSpacing = `${line.spacing}px`;
-    ctx.fillStyle = line.colour;
     ctx.textBaseline = 'top';
-    ctx.fillText(line.text, line.box.x, line.box.y);
+    inkWords(ctx, line.text, line.box.x, line.box.y, line.px, line.colour,
+      { ...(line.stroke ? { stroke: line.stroke.width / line.px, strokeInk: line.stroke.colour } : {}), ...(line.gradient ? { ink2: line.gradient } : {}) });
     ctx.shadowColor = 'transparent';
     ctx.shadowBlur = 0;
     ctx.shadowOffsetY = 0;
@@ -194,8 +202,9 @@ async function toPdf(post: Post): Promise<Buffer> {
   };
   await draw(layers.background);
   // In the order the pieces lie on the post, from the bottom up.
-  for (const g of layers.order ?? STACK) {
+  for (const g of stackOf(layers.order)) {
     if (g === 'bottle') for (const png of [layers.shadow, layers.reflection ?? null, layers.bottle]) await draw(png);
+    if (g === 'pictures') await draw(layers.pictures);
     if (g === 'headline') write('headline');
     if (g === 'texts') write('texts');
     if (g === 'logo') await draw(layers.logo);

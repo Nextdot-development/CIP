@@ -8,72 +8,63 @@ import type { OpenQuestion } from '@/server/brain/questions';
 
 /**
  * A brand at a glance, at the top of its Brand Brain: its name in its own
- * colours, how it sounds, how much of its DNA CIP has, and then its colours,
- * lines, type, packs and markets - each read from what CIP holds, each left
- * plainly empty where it holds nothing.
+ * colours and how it sounds, then four plain cards - how its posts look, what
+ * it says, what it pours, and where and when. Each is read from what CIP holds
+ * and left plainly empty where it holds nothing.
  */
 export function BrandHero({ product, reportHref }: { product: ProductBrainDTO; reportHref: string }) {
   const { note } = useToast();
   const id = product.identity;
   const [a, b] = [id.palette[0]?.hex, id.palette[1]?.hex ?? id.palette[0]?.hex];
-  // The card takes the brand's own colours for its glow; the house's, when there are none.
+  // The card takes the brand's own colours for its accent; the house's, when there are none.
   const style = { ...(a ? { '--b1': a } : {}), ...(b ? { '--b2': b } : {}) } as CSSProperties;
-  const share = product.covered / 6;
+  const share = Math.round((product.covered / 6) * 100);
 
   const copy = (hex: string) => {
     void navigator.clipboard?.writeText(hex).then(() => note(`${hex} copied`), () => undefined);
   };
 
   return (
-    <section className="bh" style={style} aria-label={`${product.brand ?? 'All brands'} at a glance`}>
-      <div className="bh-top">
-        <div className="bh-id">
-          <p className="eyebrow">Product Brain</p>
-          <h1 className="bh-name">{product.brand ?? 'All brands'}</h1>
-          <p className="bh-note">
-            {id.note ?? (product.brand
-              ? 'Everything CIP has learned about this brand, mapped and connected.'
-              : 'Choose a brand in the sidebar to see one on its own.')}
-          </p>
-          {id.tone.length > 0 && (
-            <div className="bh-tone" aria-label="How it sounds">
-              {id.tone.map((t) => <span key={t} className="bh-chip is-tone">{t}</span>)}
-            </div>
-          )}
-        </div>
-
-        <div className="bh-meter">
-          <div className="bh-ring" role="img" aria-label={`${product.covered} of 6 DNA areas covered`}>
-            <svg viewBox="0 0 120 120" width="132" height="132" aria-hidden="true">
-              <defs>
-                <linearGradient id="bh-ring-ink" x1="0" y1="0" x2="1" y2="1">
-                  <stop offset="0%" stopColor="var(--b1, var(--brand))" />
-                  <stop offset="100%" stopColor="var(--b2, var(--brand-deep))" />
-                </linearGradient>
-              </defs>
-              <circle cx="60" cy="60" r="50" className="bh-ring-track" />
-              <circle
-                cx="60" cy="60" r="50" className="bh-ring-fill"
-                strokeDasharray={`${(2 * Math.PI * 50 * share).toFixed(1)} ${(2 * Math.PI * 50).toFixed(1)}`}
-              />
-            </svg>
-            <span className="bh-ring-text"><b>{product.covered}</b><small>of 6 areas</small></span>
+    <>
+      <section className="bh" style={style} aria-label={`${product.brand ?? 'All brands'} at a glance`}>
+        <div className="bh-top">
+          <div className="bh-id">
+            <p className="eyebrow">Brand Brain</p>
+            <h1 className="bh-name">{product.brand ?? 'All brands'}</h1>
+            <p className="bh-note">
+              {id.note ?? (product.brand
+                ? 'Everything CIP has learned about this brand, in one place.'
+                : 'Choose a brand in the sidebar to see one on its own.')}
+            </p>
+            {(id.tone.length > 0 || id.social) && (
+              <div className="bh-tone" aria-label="How it sounds">
+                {id.tone.map((t) => <span key={t} className="bh-chip is-tone">{t}</span>)}
+                {id.social && <span className="bh-chip is-social">{id.social}</span>}
+              </div>
+            )}
           </div>
-          <dl className="bh-stats">
-            <div><dt>Assets</dt><dd>{product.assets.toLocaleString('en-IN')}</dd></div>
-            <div><dt>Patterns</dt><dd>{product.facts.toLocaleString('en-IN')}</dd></div>
-            {product.updatedAgo && <div><dt>Learned</dt><dd>{product.updatedAgo}</dd></div>}
-          </dl>
-          <a className="exportbtn" href={reportHref} download>
-            <Icon name="download" size={14} /> Brand DNA report
-          </a>
-        </div>
-      </div>
 
-      <div className="bh-grid">
-        <div className="bh-tile">
-          <span className="bh-k"><Icon name="palette" size={14} /> Colours</span>
-          {id.palette.length ? (
+          <div className="bh-meter">
+            <div className="bh-progress" role="img" aria-label={`${product.covered} of 6 areas known`}>
+              <div className="bh-progress-head"><b>{product.covered}</b> of 6 areas known</div>
+              <div className="bh-bar"><i style={{ width: `${share}%` }} /></div>
+            </div>
+            <dl className="bh-stats">
+              <div><dt>Files</dt><dd>{product.assets.toLocaleString('en-IN')}</dd></div>
+              <div><dt>Facts</dt><dd>{product.facts.toLocaleString('en-IN')}</dd></div>
+              {product.updatedAgo && <div><dt>Updated</dt><dd>{product.updatedAgo}</dd></div>}
+            </dl>
+            <a className="exportbtn" href={reportHref} download>
+              <Icon name="download" size={14} /> Download report
+            </a>
+          </div>
+        </div>
+      </section>
+
+      <div className="bb-grid" style={style}>
+        <section className="bb-card is-wide" aria-label="How its posts look">
+          <h2 className="bb-h"><Icon name="image" size={15} /> How its posts look</h2>
+          {id.palette.length > 0 && (
             <div className="bh-swatches">
               {id.palette.map((p) => (
                 <button key={p.hex} type="button" className="bh-swatch" onClick={() => copy(p.hex)} title={`Copy ${p.hex}`}>
@@ -82,42 +73,57 @@ export function BrandHero({ product, reportHref }: { product: ProductBrainDTO; r
                 </button>
               ))}
             </div>
-          ) : <p className="bh-empty">No colours learned yet.</p>}
-        </div>
+          )}
+          {id.look.length || id.fonts.length ? (
+            <dl className="bb-rows">
+              {id.look.map((l) => (
+                <div key={l.label}><dt>{l.label}</dt><dd>{l.value}</dd></div>
+              ))}
+              {id.fonts.length > 0 && <div><dt>Type</dt><dd>{id.fonts.join(' · ')}</dd></div>}
+            </dl>
+          ) : !id.palette.length && <p className="bh-empty">Nothing learned about its look yet.</p>}
+        </section>
 
-        <div className="bh-tile is-wide">
-          <span className="bh-k"><Icon name="megaphone" size={14} /> What it says</span>
+        <section className="bb-card" aria-label="What it says">
+          <h2 className="bb-h"><Icon name="megaphone" size={15} /> What it says</h2>
           {id.lines.length ? (
             <ul className="bh-lines">
               {id.lines.map((l) => <li key={l}>{l}</li>)}
             </ul>
-          ) : <p className="bh-empty">No lines learned yet - its campaign lines appear here as CIP reads them.</p>}
-        </div>
+          ) : <p className="bh-empty">No lines learned yet.</p>}
+        </section>
 
-        <div className="bh-tile">
-          <span className="bh-k"><Icon name="doc" size={14} /> Type</span>
-          {id.fonts.length ? (
-            <ul className="bh-fonts">
-              {id.fonts.map((f, i) => <li key={f} className={i === 0 ? 'is-lead' : ''}>{f}</li>)}
-            </ul>
-          ) : <p className="bh-empty">No type learned yet.</p>}
-        </div>
-
-        <div className="bh-tile is-wide">
-          <span className="bh-k"><Icon name="box" size={14} /> Packs</span>
-          {id.variants.length ? (
+        <section className="bb-card" aria-label="What it pours">
+          <h2 className="bb-h"><Icon name="box" size={15} /> Packs and serve</h2>
+          {id.variants.length > 0 && (
             <div className="bh-chips">{id.variants.map((v) => <span key={v} className="bh-chip">{v}</span>)}</div>
-          ) : <p className="bh-empty">No packs named yet.</p>}
-        </div>
+          )}
+          {id.serve && <p className="bb-text">{id.serve}</p>}
+          {!id.variants.length && !id.serve && <p className="bh-empty">No packs named yet.</p>}
+        </section>
 
-        <div className="bh-tile is-wide">
-          <span className="bh-k"><Icon name="compass" size={14} /> Sold in</span>
-          {id.markets.length ? (
-            <div className="bh-chips">{id.markets.map((m) => <span key={m} className="bh-chip is-market">{m}</span>)}</div>
-          ) : <p className="bh-empty">No markets yet.</p>}
-        </div>
+        <section className="bb-card is-wide" aria-label="Where and when">
+          <h2 className="bb-h"><Icon name="compass" size={15} /> Where and when</h2>
+          <dl className="bb-rows">
+            <div>
+              <dt>Sold in</dt>
+              <dd>{id.markets.length
+                ? <span className="bh-chips is-inline">{id.markets.map((m) => <span key={m} className="bh-chip is-market">{m}</span>)}</span>
+                : <span className="bh-empty is-inline">No markets yet.</span>}</dd>
+            </div>
+            {id.occasions.length > 0 && (
+              <div>
+                <dt>Occasions</dt>
+                <dd><span className="bh-chips is-inline">{id.occasions.map((o) => <span key={o} className="bh-chip">{o}</span>)}</span></dd>
+              </div>
+            )}
+            {id.awards.length > 0 && (
+              <div><dt>Awards</dt><dd>{id.awards.join(' · ')}</dd></div>
+            )}
+          </dl>
+        </section>
       </div>
-    </section>
+    </>
   );
 }
 

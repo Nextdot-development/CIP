@@ -125,6 +125,8 @@ before(async () => {
   process.env.CIP_FORCE_LOCAL_STORAGE = 'true';
   process.env.CIP_FORCE_FAKE_BRAIN = 'true';
   process.env.CIP_FORCE_FAKE_PROVIDERS = 'true';
+  // These tests are about the Brain planning a picture with the model; off by default, so only the picture is paid for.
+  process.env.CIP_AI_PLANNING = 'on';
 
   const { migrate } = await import('../src/server/migrate');
   await migrate(() => {}, { skip: db.skipMigrations });
@@ -680,7 +682,7 @@ describe('planning a generation', () => {
 });
 
 describe('clarification', () => {
-  it('asks when several campaigns exist and the request names none', async () => {
+  it('does not stop to ask which campaign: it plans with what it has', async () => {
     // Two campaigns on record makes "a promo image" genuinely ambiguous.
     for (const campaign of ['Diwali', 'World Heart Day']) {
       await adminSql`
@@ -690,8 +692,8 @@ describe('clarification', () => {
     }
 
     const plan = await planner.planGeneration(mm, { requestText: 'Make a promo image', mediaType: 'image' });
-    assert.ok(plan.clarificationQuestion, 'the Brain guessed instead of asking');
-    assert.match(plan.clarificationQuestion!, /Diwali|World Heart Day/);
+    // Asking wrote the brief again, paid for twice: the Brain settles it itself.
+    assert.equal(plan.clarificationQuestion, null);
   });
 
   it('does not ask when the request already says which campaign', async () => {
@@ -709,7 +711,7 @@ describe('clarification', () => {
     assert.equal(plan.clarificationQuestion, null, 'the Brain asked a question it could answer itself');
   });
 
-  it('generation stops and asks rather than producing something arbitrary', async () => {
+  it('generation goes on rather than stopping to ask which campaign', async () => {
     for (const campaign of ['Diwali', 'World Heart Day']) {
       await adminSql`
         insert into brand_dna_facts (company_id, section, attribute, value, kind, confidence, evidence_count)
@@ -722,10 +724,7 @@ describe('clarification', () => {
       mediaType: 'image',
     });
 
-    assert.equal(result.status, 'needs_clarification');
-    // and nothing was generated on the way to asking
-    const generated = await adminSql<{ n: number }[]>`select count(*)::int n from media_generations`;
-    assert.equal(generated[0]!.n, 0);
+    assert.equal(result.status, 'generated');
   });
 });
 
@@ -3104,6 +3103,10 @@ describe('what the Brain hands the generator', () => {
 });
 
 describe('generation integration', () => {
+  // Checking every picture as it is made is off unless asked for; these tests are about that check.
+  before(() => { process.env.CIP_AUTO_QC = 'on'; });
+  after(() => { delete process.env.CIP_AUTO_QC; });
+
   it('the existing image provider receives the Brain prompt, not the raw request', async () => {
     await uploadText(mm, 'voice.txt', 'Warm and cinematic.');
     await extractAll();

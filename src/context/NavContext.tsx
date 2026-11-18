@@ -9,7 +9,8 @@ import type { ReactNode } from 'react';
  *  - pod:     your people take it, check it and hand back finished work.
  */
 export type AskMode = 'instant' | 'pod';
-export type AskSeed = { text: string; mode: AskMode };
+/** A request handed to the composer; with a shape and market when the brief it came from names them. */
+export type AskSeed = { text: string; mode: AskMode; shape?: string | null; market?: string | null; brand?: string | null };
 
 /**
  * Carries a request typed on Home across to Ask.

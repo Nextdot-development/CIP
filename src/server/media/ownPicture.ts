@@ -22,9 +22,10 @@ export async function postOnOwnPicture(
 ): Promise<MediaGenerationDTO> {
   const request = typeof input.request === 'string' ? input.request.replace(/\s+/g, ' ').trim().slice(0, 1000) : '';
   // The brand sent, else the one the request names, else the one chosen at the top of the page.
-  const given = typeof input.brand === 'string' ? input.brand.trim() : '';
-  const brand = given
-    || brandInRequest(request, (await companyBrands(scope)).map((b) => b.name))
+  const roster = (await companyBrands(scope)).map((b) => b.name);
+  const sent = typeof input.brand === 'string' ? input.brand.trim().toLowerCase() : '';
+  const brand = (sent ? roster.find((b) => b.toLowerCase() === sent) : undefined)
+    || brandInRequest(request, roster)
     || (await activeBrand(scope)).active
     || '';
   if (!brand) throw new MediaRejected('Say which brand it is for - "Whytehall Honey", say - or choose the brand at the top.');

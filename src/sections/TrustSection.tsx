@@ -113,6 +113,8 @@ export function TrustSection({
 
           <Rulebook rulebook={rulebook} />
 
+          <details className="bb-more">
+            <summary><Icon name="graph" size={15} /> The full map, and every fact with its files</summary>
           <div className="graphcard">
             <BrandBrainGraph brain={product} />
           </div>
@@ -126,6 +128,7 @@ export function TrustSection({
             </button>
           </div>
           {tab === 'learned' ? <BrainSection initial={brain} /> : <Files overview={overview} />}
+          </details>
         </>
       ) : (
         <>

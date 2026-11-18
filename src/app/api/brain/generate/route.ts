@@ -33,6 +33,8 @@ type Body = {
   idempotencyKey?: unknown;
   clarification?: unknown;
   market?: unknown;
+  /** The brand chosen on the page. */
+  brand?: unknown;
   /** An earlier generation to build on, by id. */
   basedOn?: unknown;
 };
@@ -128,6 +130,7 @@ export async function POST(request: Request) {
       idempotencyKey: body.idempotencyKey,
       clarification: typeof body.clarification === 'string' ? body.clarification : null,
       market: typeof body.market === 'string' ? body.market : null,
+      brand: typeof body.brand === 'string' ? body.brand.slice(0, 120) : null,
       // Resolved against this company's own generations, like any other id.
       basedOnGenerationId: typeof body.basedOn === 'string' ? body.basedOn : null,
     };

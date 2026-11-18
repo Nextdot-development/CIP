@@ -3,12 +3,13 @@ import { createCanvas, loadImage } from '@napi-rs/canvas';
 import type { Canvas } from '@napi-rs/canvas';
 import { withCompanyScope, type CompanyScope } from '../db';
 import { planPost, type BenchPlan } from '../brain/bench';
+import { alignFromWords, cornerFromWords, fontFromWords, inkFromWords, type BrandStyle } from '@/lib/brandStyle';
 import { brandAssets, type BrandAsset } from '../brain/brandAssets';
-import { adaptLayout, arrangeLayout, choicesOf, fitLayout, placeLayout, type FittedLayout, type LayoutSpec, type Placement, type PostChoices, type PostStyle, STACK, type StackGroup } from '../brain/layouts';
+import { adaptLayout, arrangeLayout, choicesOf, fitLayout, placeLayout, type FittedLayout, type LayoutSpec, type Placement, type PostChoices, type PostStyle, STACK, stackOf, type AddedPicture, type ShapeSpec, type StackGroup } from '../brain/layouts';
 import { readFile } from '../drive/service';
 import { placeBottle } from './bottleComposite';
 import { imageGenerationProvider } from './providers';
-import { measureHeadline, setHeadline, setTextBlocks, withHeadlineFont, type Casing, type HeadlineFontId, type HeadlineLine, type SetLine, type TextBlock } from './typography';
+import { measureHeadline, setHeadline, setTextBlocks, withHeadlineFont, type Casing, type HeadlineFontId, type HeadlineLine, type SetLine, type TextBlock, wordsInBox } from './typography';
 import { reviewAndFix, type ReviewRound } from './postReview';
 import { brain } from '../brain/providers';
 import { readPalette } from '../brain/palette';
@@ -96,13 +97,53 @@ export function scenePrompt(
     brandScenes?: string[];
     /** What the brand pours, for any glass in the scene. */
     drink?: { kind: string | null; colour: string | null; variant?: string | null };
+    /** What never goes in this brand's scenes. */
+    never?: string[];
   } = {},
+): string {
+  // Within what the generator takes, whatever the planner wrote: the brand's past scenes are let go
+  // first, then the scene's own description is shortened - every place and every "no text" kept.
+  const description = plan.scene.description.replace(/\s+/g, ' ').trim();
+  const scenes = (options.brandScenes ?? []).slice(0, 5).map((x) => clipWords(x.replace(/\s+/g, ' ').trim(), 180));
+  let said = sceneLines(plan, layout, postRatio, genRatio, packColours, options, description, scenes);
+  if (said.length > SCENE_PROMPT_MAX) said = sceneLines(plan, layout, postRatio, genRatio, packColours, options, description, []);
+  if (said.length > SCENE_PROMPT_MAX) {
+    const room = Math.max(120, description.length - (said.length - SCENE_PROMPT_MAX));
+    said = sceneLines(plan, layout, postRatio, genRatio, packColours, options, clipWords(description, room), []);
+  }
+  return said.slice(0, SCENE_PROMPT_MAX);
+}
+
+/** What never goes in the brand's scenes, said once and plainly. */
+export function neverLine(never: string[]): string {
+  return `Never in this scene, for this brand: ${never.slice(0, 8).join('; ')}.`;
+}
+
+/** What the generator takes at most, with a little room for a note added to it. */
+const SCENE_PROMPT_MAX = 3_800;
+
+/** Cut at a word, and said to be cut. */
+function clipWords(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const cut = text.slice(0, max - 1);
+  return `${cut.slice(0, Math.max(cut.lastIndexOf(' '), Math.floor(max * 0.6)))}…`;
+}
+
+function sceneLines(
+  plan: Pick<BenchPlan, 'scene'>,
+  layout: FittedLayout,
+  postRatio: number,
+  genRatio: number,
+  packColours: string[],
+  options: { open?: boolean; brandScenes?: string[]; drink?: { kind: string | null; colour: string | null; variant?: string | null }; never?: string[] },
+  description: string,
+  brandScenes: string[],
 ): string {
   const lines: string[] = [];
   lines.push(
     'A photograph for a premium spirits advertisement, made by a top still-life photographer: the background ' +
     'plate only, into which the product will be placed afterwards. ' +
-    `${plan.scene.description.replace(/\s+/g, ' ').trim()}`,
+    description,
   );
   lines.push(
     `Mood: ${plan.scene.mood}. ${plan.scene.light === 'front' ? 'Soft frontal key light' : `Key light from the ${plan.scene.light}`}, ` +
@@ -115,13 +156,14 @@ export function scenePrompt(
     'focus and cleanly lit, with no blur, no bokeh, no haze, fog, smoke, dust, grain or glow over anything. ' +
     'Rich, true colour grade with deep but detailed shadows; no HDR look, no oversharpening.',
   );
-  if (options.brandScenes?.length) {
+  if (brandScenes.length) {
     lines.push(
       'In the brand\'s own photographic style - its posts have been set like this, and this scene belongs with them ' +
-      `in place, props, light and colour, without copying any: ${options.brandScenes.slice(0, 5).join(' / ')}.`,
+      `in place, props, light and colour, without copying any: ${brandScenes.join(' / ')}.`,
     );
   }
   lines.push(drinkLine(options.drink));
+  if (options.never?.length) lines.push(neverLine(options.never));
   const named = [...new Set(packColours.map(colourName).filter(Boolean))];
   if (named.length) {
     lines.push(`The product's own colours are ${named.join(', ')}: choose tones for the scene that flatter them and let the product stand out, never matching it exactly.`);
@@ -213,6 +255,8 @@ export type PostLayers = {
   /** The bottle's mirror on a glossy surface. Absent on layers set before it was its own. */
   reflection?: Buffer | null;
   bottle: Buffer | null;
+  /** The pictures a person added - a glass, ice - all on one layer. Absent when there are none. */
+  pictures?: Buffer | null;
   headline: Buffer;
   /** The text a person added besides the headline, all its blocks on one layer. Absent when there is none. */
   texts?: Buffer | null;
@@ -379,6 +423,8 @@ export async function buildPost(input: {
   turn?: { bottle?: number; logo?: number; shadow?: Placement['shadow']; reflection?: Placement['reflection'] };
   /** Which piece lies over which, from the bottom up. */
   order?: StackGroup[];
+  /** Pictures a person added, with their files' bytes. */
+  pictures?: { pic: AddedPicture; bytes: Buffer }[];
 }): Promise<BuiltPost> {
   const { width: W, height: H } = postSize(input.ratio);
   const tweaks = input.tweaks ?? NO_TWEAKS;
@@ -389,7 +435,19 @@ export async function buildPost(input: {
   const scene = await loadImage(input.scene);
   const canvas = createCanvas(W, H);
   const ctx = canvas.getContext('2d');
-  drawScene(ctx, scene, W, H);
+  // Drawn bigger, moved within the frame, or mirrored, as a person set it - never leaving an edge bare.
+  const look = input.style ?? {};
+  const zoom = look.bgZoom ?? 1;
+  if (zoom > 1.001 || look.bgFlip) {
+    ctx.save();
+    ctx.translate(W / 2 + (look.bgX ?? 0) * ((zoom - 1) / 2) * W, H / 2 + (look.bgY ?? 0) * ((zoom - 1) / 2) * H);
+    ctx.scale(look.bgFlip ? -zoom : zoom, zoom);
+    ctx.translate(-W / 2, -H / 2);
+    drawScene(ctx, scene, W, H);
+    ctx.restore();
+  } else {
+    drawScene(ctx, scene, W, H);
+  }
   // Lighter or darker, and softened, as a person asked: the bottle and the words stand out against it.
   const bgBright = input.style?.bgBright ?? 0;
   const bgBlur = input.style?.bgBlur ?? 0;
@@ -406,6 +464,23 @@ export async function buildPost(input: {
     // Over the picture as it was, so a softened edge blends into it rather than into nothing.
     ctx.drawImage(copy, 0, 0);
     ctx.restore();
+  }
+
+  // A colour rising from the foot, and the edges darkened, as a person asked.
+  if ((look.bgOverlayAmount ?? 0) > 0.005) {
+    const [r, g, b] = rgbOf(look.bgOverlay ?? '#000000');
+    const rise = ctx.createLinearGradient(0, H, 0, H * 0.25);
+    rise.addColorStop(0, `rgba(${r},${g},${b},${(0.9 * look.bgOverlayAmount!).toFixed(3)})`);
+    rise.addColorStop(1, `rgba(${r},${g},${b},0)`);
+    ctx.fillStyle = rise;
+    ctx.fillRect(0, 0, W, H);
+  }
+  if ((look.bgVignette ?? 0) > 0.005) {
+    const v = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.35, W / 2, H / 2, Math.hypot(W, H) / 2);
+    v.addColorStop(0, 'rgba(0,0,0,0)');
+    v.addColorStop(1, `rgba(0,0,0,${(0.85 * look.bgVignette!).toFixed(3)})`);
+    ctx.fillStyle = v;
+    ctx.fillRect(0, 0, W, H);
   }
 
   // The words' ground: a scene that left it busy or bright gets the soft
@@ -456,6 +531,18 @@ export async function buildPost(input: {
     reflectionPivot = placed.reflectionPivot;
   }
 
+  // The pictures a person added - a glass beside the bottle, say - over the bottle and under the words.
+  const pictured = input.pictures?.length ? await drawPictures(input.pictures, W, H) : null;
+  if (pictured) {
+    // Never drawn on the background itself, which is a layer of its own.
+    if (picture === background) {
+      const copy = createCanvas(W, H);
+      copy.getContext('2d').drawImage(background, 0, 0);
+      picture = copy;
+    }
+    picture.getContext('2d').drawImage(pictured, 0, 0);
+  }
+
   // The headline.
   // Lined up and coloured as the person chose, when they did.
   const align = input.style?.align;
@@ -474,7 +561,10 @@ export async function buildPost(input: {
     : layout;
   // Words in a box read in the colour chosen for them - else whichever of near-black and white reads on it.
   const boxInk = boxFill ? input.style?.ink ?? (luminanceOf(boxFill) > 0.5 ? '#141414' : '#ffffff') : undefined;
-  const set = await setHeadline({ image: picture, layout: wordsLayout, lines: input.plan.headline, casing: input.plan.casing, keep: input.plan.keep, scale: tweaks.textScale,
+  const textLook = input.style && (input.style.textSpacing !== undefined || input.style.textLeading !== undefined || input.style.textStroke || input.style.ink2)
+    ? { spacing: input.style.textSpacing, lineHeight: input.style.textLeading, stroke: input.style.textStroke, strokeInk: input.style.textStrokeInk, ink2: input.style.ink2 }
+    : null;
+  const set = await setHeadline({ image: picture, layout: wordsLayout, lines: input.plan.headline, casing: input.plan.casing, keep: input.plan.keep, scale: tweaks.textScale, look: textLook,
     colours: input.style?.ink || boxInk ? { ...(input.style?.ink ? { ink: input.style.ink } : {}), ...(boxInk ? { boxInk } : {}) } : undefined });
   // A line of the plan broken down to a lone word means the block was too
   // narrow for it: set again, wider, as far as the bottle allows.
@@ -499,8 +589,10 @@ export async function buildPost(input: {
     const c = mark.getContext('2d');
     const box = layout.logoBox;
     const under = toneOf(out.getContext('2d').getImageData(Math.round(box.x * W), Math.round(box.y * H), Math.max(1, Math.round(box.w * W)), Math.max(1, Math.round(box.h * H))).data).mean;
-    const wanted = under < 0.55 ? 'light' : 'dark';
-    const logo = input.logos.find((l) => l.asset.tone === wanted) ?? input.logos.find((l) => l.asset.tone === 'colour') ?? input.logos[0]!;
+    // The one the person chose; else the one that stands out against where it lands.
+    const wanted = input.style?.logoTone ?? (under < 0.55 ? 'light' : 'dark');
+    const logo = (wanted === 'colour' ? input.logos.find((l) => l.asset.tone !== 'light' && l.asset.tone !== 'dark') : undefined)
+      ?? input.logos.find((l) => l.asset.tone === wanted) ?? input.logos.find((l) => l.asset.tone === 'colour') ?? input.logos[0]!;
     const pic = await loadImage(logo.bytes);
     const [lx, ly, lw, lh] = logo.asset.bbox;
     const w = box.w * W;
@@ -547,18 +639,27 @@ export async function buildPost(input: {
   }
 
   // Laid together again in the order a person put the pieces, when it is not the usual one.
-  const order = input.order;
+  const order = input.order ? stackOf(input.order) : null;
   if (order && order.join() !== STACK.join()) {
     const flat = createCanvas(W, H);
     const f = flat.getContext('2d');
     f.drawImage(background, 0, 0);
     for (const group of order) {
       if (group === 'bottle' && packLayers) for (const c of [packLayers.shadow, packLayers.reflection, packLayers.bottle]) f.drawImage(c, 0, 0);
+      if (group === 'pictures' && pictured) f.drawImage(pictured, 0, 0);
       if (group === 'headline') f.drawImage(set.layerCanvas, 0, 0);
       if (group === 'texts' && added) f.drawImage(added.canvas, 0, 0);
       if (group === 'logo' && markCanvas) f.drawImage(markCanvas, 0, 0);
     }
     picture = flat;
+  }
+
+  // The whole post warmer or cooler, with more or less contrast and colour: the flat picture and
+  // every layer alike, so the layers laid together look as the post does.
+  if (graded(input.style)) {
+    const all = new Set<Canvas>([picture, background, set.layerCanvas]);
+    for (const c of [packLayers?.shadow, packLayers?.reflection, packLayers?.bottle, pictured, added?.canvas, logoLayer]) if (c) all.add(c);
+    for (const c of all) grade(c, input.style!);
   }
 
   const substitutes = [...new Set(set.lines.filter((l) => l.substitute).map((l) => l.face))];
@@ -569,7 +670,7 @@ export async function buildPost(input: {
   // The flat post, when it can follow the answer, is encoded only when asked for.
   let flatPng: Promise<Buffer> | null = input.flatLater ? null : picture.encode('png');
   const flat = () => (flatPng ??= picture.encode('png'));
-  const [bytes, bg, shadow, mirror, pack, words, extra, mark] = await Promise.all([
+  const [bytes, bg, shadow, mirror, pack, words, extra, mark, pics] = await Promise.all([
     input.flatLater ? null : flatPng,
     input.layers ? png(background) : null,
     input.layers ? png(packLayers?.shadow ?? null) : null,
@@ -579,9 +680,10 @@ export async function buildPost(input: {
     input.layers ? png(set.layerCanvas) : null,
     input.layers && added ? png(added.canvas) : null,
     input.layers ? png(logoLayer) : null,
+    input.layers && pictured ? png(pictured) : null,
   ]);
   const layers: PostLayers | undefined = input.layers
-    ? { background: bg!, shadow, reflection: mirror, bottle: pack, headline: words!, texts: extra, logo: mark, lines: [...set.lines, ...(added?.lines ?? [])], order: input.order }
+    ? { background: bg!, shadow, reflection: mirror, bottle: pack, headline: words!, texts: extra, pictures: pics, logo: mark, lines: [...set.lines, ...(added?.lines ?? [])], order: order ?? undefined }
     : undefined;
   // The words' box is where they were set, not where the layout meant them.
   const set_ = set.lines;
@@ -694,6 +796,11 @@ async function assemble(
     held(`bottles:${scope.companyId}:${r.brand}:${r.variant ?? ''}`, () => brandAssets(scope, { brand: r.brand, kind: 'bottle', variant: r.variant })),
   ]);
   const logos = r.spec.logo ? allLogos : [];
+  // The pictures a person added, read once each; one taken out of Drive since is left off, not an error.
+  const pictures = (await Promise.all((r.choices?.pictures ?? []).map((pic) =>
+    pic.shape || !pic.file ? Promise.resolve({ pic, bytes: Buffer.alloc(0) })
+      : brandFile(scope, pic.file).then((f) => ({ pic, bytes: f.body }), () => null))))
+    .filter((p): p is { pic: AddedPicture; bytes: Buffer } => p !== null);
   const bottleAsset = bottles.find((b) => b.fileId === r.bottleFileId)?.asset ?? null;
   const bottleAspect = bottleAsset ? (bottleAsset.bbox[2] * bottleAsset.width) / (bottleAsset.bbox[3] * bottleAsset.height) : 0.32;
   const logoAspect = logos[0] ? aspectOf(logos[0].asset) : 0.8;
@@ -711,9 +818,9 @@ async function assemble(
     bottle,
     layout,
     build: (scene: Buffer, tweaks: PostTweaks, options: { layers?: boolean; flatLater?: boolean } = {}) =>
-      buildPost({ scene, ratio: r.ratio, layout, plan, bottle: bottle?.body ?? null, logos: sameShape.length ? sameShape : logos, tweaks, layers: options.layers, flatLater: options.flatLater, style: r.choices?.style, texts: r.choices?.texts,
+      buildPost({ scene, ratio: r.ratio, layout, plan, bottle: bottle?.body ?? null, logos: r.choices?.style?.logoTone || !sameShape.length ? logos : sameShape, tweaks, layers: options.layers, flatLater: options.flatLater, style: r.choices?.style, texts: r.choices?.texts,
         turn: { bottle: r.choices?.place?.bottle?.rotate, logo: r.choices?.place?.logo?.rotate, shadow: r.choices?.place?.shadow, reflection: r.choices?.place?.reflection },
-        order: r.choices?.order }),
+        order: r.choices?.order, pictures }),
   };
 }
 
@@ -789,8 +896,9 @@ function near(a: string, b: string): boolean {
  * been arranged yet. Read from the posts already kept; nothing is asked of a
  * model. The headline is always shown on a new post, whatever was done before.
  */
-export async function learnedChoices(scope: CompanyScope, brand: string, ratio: number, spec: LayoutSpec): Promise<PostChoices> {
-  const own = choicesOf(spec);
+export async function learnedChoices(scope: CompanyScope, brand: string, ratio: number, spec: LayoutSpec, style?: { house: boolean; brand: BrandStyle } | null): Promise<PostChoices> {
+  // On the house layout, the brand's own way first: its logo's corner and its headline's face, colour and alignment.
+  const own = style?.house ? styledChoices(choicesOf(spec), style.brand) : choicesOf(spec);
   const [last] = await withCompanyScope(scope, (tx) => tx<{ choices: PostChoices | null }[]>`
     select output_metadata->'composed'->'recipe'->'choices' as choices
       from media_generations
@@ -802,6 +910,20 @@ export async function learnedChoices(scope: CompanyScope, brand: string, ratio: 
      limit 1
   `).catch(() => []);
   return mergeLearned(own, last?.choices ?? null);
+}
+
+/** A post's starting places in the brand's own style: the corner its logo sits in, the face, colour and alignment of its headline. */
+export function styledChoices(own: PostChoices, style: BrandStyle): PostChoices {
+  const corner = cornerFromWords(style.logoPlacement);
+  const font = fontFromWords(style.headlineStyle);
+  const ink = inkFromWords(style.headlineStyle);
+  const align = alignFromWords(style.headlineStyle);
+  const look: PostStyle = { ...(font ? { font } : {}), ...(ink ? { ink } : {}), ...(align ? { align } : {}) };
+  return {
+    ...own,
+    ...(corner && own.logo !== 'none' ? { logo: corner } : {}),
+    ...(Object.keys(look).length ? { style: { ...(own.style ?? {}), ...look } } : {}),
+  };
 }
 
 /** The layout's own places, with what a person chose before laid over them - only for pieces this layout has. */
@@ -857,13 +979,13 @@ export async function preparePost(
     casing: plan.casing,
     keep: plan.keep,
     surface: plan.scene.surface,
-    ...(input.layered ? { choices: await learnedChoices(scope, input.brand, input.ratio, plan.layout.spec) } : {}),
+    ...(input.layered ? { choices: await learnedChoices(scope, input.brand, input.ratio, plan.layout.spec, { house: !plan.ownLayout, brand: plan.style }) } : {}),
   };
   const { bottle, layout, build } = await assemble(scope, { ...recipe, headline: plan.headline });
   const [gw, gh] = input.generatorShape.split(':').map(Number);
   // The pack's own colours, measured from its photograph, for a scene that flatters them.
   const packColours = bottle ? (await readPalette(bottle.body, 'image/png')).filter((c) => c.share >= 0.08).slice(0, 3).map((c) => c.hex) : [];
-  const prompt = scenePrompt(plan, layout, input.ratio, gw && gh ? gw / gh : input.ratio, packColours, { open: input.layered, brandScenes: plan.pastScenes, drink: { ...plan.drink, variant: plan.variant } });
+  const prompt = scenePrompt(plan, layout, input.ratio, gw && gh ? gw / gh : input.ratio, packColours, { open: input.layered, brandScenes: plan.pastScenes, drink: { ...plan.drink, variant: plan.variant }, never: plan.style.never });
   const headline = plan.headline.map((l) => l.text).join(' / ');
   return {
     plan,
@@ -998,4 +1120,190 @@ function brandFile(scope: CompanyScope, fileId: string): ReturnType<typeof readF
   read.catch(() => brandFiles.delete(key));
   if (brandFiles.size > BRAND_FILES_KEPT) brandFiles.delete(brandFiles.keys().next().value!);
   return read;
+}
+
+/**
+ * The pictures a person added, on one transparent layer: each at its place and width, its height
+ * from its own shape, turned about its middle, mirrored, lighter or darker, see-through and
+ * shadowed as asked - in the order they were added, the last on top.
+ */
+export async function drawPictures(pictures: { pic: AddedPicture; bytes: Buffer }[], W: number, H: number): Promise<Canvas> {
+  const layer = createCanvas(W, H);
+  const c = layer.getContext('2d');
+  for (const { pic, bytes } of pictures) {
+    const w = pic.w * W;
+    const piece = pic.shape ? shapeCanvas(pic.shape, w, w * pic.aspect) : await pictureCanvas(pic, bytes, w);
+    if (!piece) continue;
+    const h = piece.height * (w / piece.width);
+    // A shadow on the surface at its foot, so it stands on the table.
+    if ((pic.ground ?? 0) > 0.01) {
+      c.save();
+      c.filter = `blur(${Math.max(2, w * 0.04).toFixed(1)}px)`;
+      c.fillStyle = `rgba(0,0,0,${Math.min(0.75, 0.7 * pic.ground!).toFixed(2)})`;
+      c.beginPath();
+      c.ellipse(pic.x * W + w / 2, pic.y * H + h * 0.985, w * 0.42, Math.max(2, w * 0.045), 0, 0, Math.PI * 2);
+      c.fill();
+      c.restore();
+    }
+    c.save();
+    c.globalAlpha = pic.opacity ?? 1;
+    if ((pic.shadow ?? 0) > 0.01) {
+      const k = pic.shadow!;
+      c.shadowColor = `rgba(0,0,0,${Math.min(0.8, 0.4 * k).toFixed(2)})`;
+      c.shadowBlur = Math.max(w, h) * 0.05 * k;
+      c.shadowOffsetY = h * 0.02 * k;
+    }
+    if (Math.abs(pic.bright ?? 0) > 0.005) c.filter = `brightness(${(1 + pic.bright!).toFixed(3)})`;
+    c.translate(pic.x * W + w / 2, pic.y * H + h / 2);
+    c.rotate(((pic.rotate ?? 0) * Math.PI) / 180);
+    if (pic.flip) c.scale(-1, 1);
+    c.drawImage(piece, -w / 2, -h / 2, w, h);
+    c.restore();
+    // Its reflection on a glossy surface, as the bottle's: upside down below its foot, fading away.
+    if ((pic.mirror ?? 0) > 0.01 && Math.abs(pic.rotate ?? 0) < 8) {
+      const deep = Math.max(1, Math.round(h * 0.55));
+      const m = createCanvas(Math.max(1, Math.round(w)), deep);
+      const mc = m.getContext('2d');
+      mc.translate(0, h);
+      mc.scale(pic.flip ? -1 : 1, -1);
+      if (pic.flip) mc.translate(-w, 0);
+      mc.drawImage(piece, 0, 0, w, h);
+      mc.setTransform(1, 0, 0, 1, 0, 0);
+      const fade = mc.createLinearGradient(0, 0, 0, deep);
+      fade.addColorStop(0, 'rgba(0,0,0,1)');
+      fade.addColorStop(1, 'rgba(0,0,0,0)');
+      mc.globalCompositeOperation = 'destination-in';
+      mc.fillStyle = fade;
+      mc.fillRect(0, 0, m.width, deep);
+      c.save();
+      c.globalAlpha = Math.min(0.6, 0.45 * pic.mirror!) * (pic.opacity ?? 1);
+      c.drawImage(m, pic.x * W, pic.y * H + h * 0.99);
+      c.restore();
+    }
+  }
+  return layer;
+}
+
+/** A picture as it is laid: cropped, a colour laid over it, its edges faded - at the width it is drawn. */
+async function pictureCanvas(pic: AddedPicture, bytes: Buffer, w: number): Promise<Canvas | null> {
+  const img = await loadImage(bytes).catch(() => null);
+  if (!img || !img.width || !img.height) return null;
+  const crop = pic.crop ?? { l: 0, t: 0, r: 0, b: 0 };
+  const sx = img.width * crop.l;
+  const sy = img.height * crop.t;
+  const sw = Math.max(1, img.width * (1 - crop.l - crop.r));
+  const sh = Math.max(1, img.height * (1 - crop.t - crop.b));
+  const cw = Math.max(1, Math.round(w));
+  const ch = Math.max(1, Math.round(w * (sh / sw)));
+  const out = createCanvas(cw, ch);
+  const c = out.getContext('2d');
+  c.drawImage(img, sx, sy, sw, sh, 0, 0, cw, ch);
+  if (pic.tint && (pic.tintAmount ?? 0) > 0.005) {
+    // Over the picture only, never its clear ground.
+    c.globalCompositeOperation = 'source-atop';
+    c.globalAlpha = pic.tintAmount!;
+    c.fillStyle = pic.tint;
+    c.fillRect(0, 0, cw, ch);
+    c.globalAlpha = 1;
+    c.globalCompositeOperation = 'source-over';
+  }
+  if ((pic.feather ?? 0) > 0.005) feathered(out, pic.feather!);
+  return out;
+}
+
+/** Its edges faded out, further in the more `amount` is. */
+function feathered(canvas: Canvas, amount: number) {
+  const { width: w, height: h } = canvas;
+  // At most six tenths of the way to its middle: faded as far as it may go, it is still there.
+  const r = Math.max(1, (Math.min(w, h) / 2) * amount * 0.6);
+  const mask = createCanvas(w, h);
+  const m = mask.getContext('2d');
+  m.filter = `blur(${(r / 2).toFixed(1)}px)`;
+  m.fillStyle = '#000';
+  m.fillRect(r / 2, r / 2, Math.max(1, w - r), Math.max(1, h - r));
+  const c = canvas.getContext('2d');
+  c.globalCompositeOperation = 'destination-in';
+  c.drawImage(mask, 0, 0);
+  c.globalCompositeOperation = 'source-over';
+}
+
+/** A shape drawn at its size: a box, a rounded box, a circle, a band, a badge, a button - with its words. */
+export function shapeCanvas(shape: ShapeSpec, w: number, h: number): Canvas {
+  const cw = Math.max(1, Math.round(w));
+  const ch = Math.max(1, Math.round(h));
+  const out = createCanvas(cw, ch);
+  const c = out.getContext('2d');
+  const sw = shape.stroke && shape.strokeW ? Math.max(1, shape.strokeW * Math.min(cw, ch)) : 0;
+  const i = sw / 2;
+  c.beginPath();
+  if (shape.kind === 'circle') {
+    c.ellipse(cw / 2, ch / 2, Math.max(1, cw / 2 - i), Math.max(1, ch / 2 - i), 0, 0, Math.PI * 2);
+  } else if (shape.kind === 'badge') {
+    // A burst of sixteen points, as a price or "new" badge has.
+    const points = 16;
+    for (let k = 0; k < points * 2; k++) {
+      const a = (k / (points * 2)) * Math.PI * 2 - Math.PI / 2;
+      const rr = k % 2 === 0 ? 1 : 0.84;
+      const x = cw / 2 + Math.cos(a) * (cw / 2 - i) * rr;
+      const y = ch / 2 + Math.sin(a) * (ch / 2 - i) * rr;
+      if (k === 0) c.moveTo(x, y); else c.lineTo(x, y);
+    }
+    c.closePath();
+  } else {
+    const radius = shape.kind === 'button' ? Math.min(cw, ch) / 2 : shape.kind === 'round' ? Math.min(cw, ch) * 0.18 : 0;
+    c.roundRect(i, i, Math.max(1, cw - sw), Math.max(1, ch - sw), Math.max(0, radius - i));
+  }
+  c.fillStyle = shape.fill;
+  c.fill();
+  if (sw) { c.lineWidth = sw; c.strokeStyle = shape.stroke!; c.stroke(); }
+  if (shape.text) {
+    const pad = shape.kind === 'badge' || shape.kind === 'circle' ? 0.16 : 0.06;
+    wordsInBox(c, shape.text, { x: cw * pad, y: ch * pad, w: cw * (1 - 2 * pad), h: ch * (1 - 2 * pad) }, shape.ink ?? '#141414', shape.font as HeadlineFontId | undefined);
+  }
+  return out;
+}
+
+/** Whether a post has any of the whole-post grading. */
+function graded(style?: PostStyle): boolean {
+  return Math.abs(style?.warmth ?? 0) > 0.005 || Math.abs(style?.contrast ?? 0) > 0.005 || Math.abs(style?.saturation ?? 0) > 0.005;
+}
+
+/**
+ * A canvas graded in place: contrast, then colour, each a pass of its own (given both at once
+ * the canvas keeps only the first), then warmth - red up and blue down, or the other way.
+ */
+export function grade(canvas: Canvas, style: PostStyle) {
+  const { width: w, height: h } = canvas;
+  const c = canvas.getContext('2d');
+  for (const filter of [
+    Math.abs(style.contrast ?? 0) > 0.005 ? `contrast(${(1 + style.contrast!).toFixed(3)})` : null,
+    Math.abs(style.saturation ?? 0) > 0.005 ? `saturate(${(1 + style.saturation!).toFixed(3)})` : null,
+  ]) {
+    if (!filter) continue;
+    const copy = createCanvas(w, h);
+    copy.getContext('2d').drawImage(canvas, 0, 0);
+    c.save();
+    c.clearRect(0, 0, w, h);
+    c.filter = filter;
+    c.drawImage(copy, 0, 0);
+    c.restore();
+  }
+  const warm = style.warmth ?? 0;
+  if (Math.abs(warm) > 0.005) {
+    const data = c.getImageData(0, 0, w, h);
+    const px = data.data;
+    const red = 1 + 0.14 * warm;
+    const blue = 1 - 0.14 * warm;
+    for (let k = 0; k < px.length; k += 4) {
+      if (px[k + 3] === 0) continue;
+      px[k] = Math.min(255, px[k]! * red);
+      px[k + 2] = Math.min(255, px[k + 2]! * blue);
+    }
+    c.putImageData(data, 0, 0);
+  }
+}
+
+function rgbOf(hex: string): [number, number, number] {
+  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})/i.exec(hex);
+  return m ? [parseInt(m[1]!, 16), parseInt(m[2]!, 16), parseInt(m[3]!, 16)] : [0, 0, 0];
 }

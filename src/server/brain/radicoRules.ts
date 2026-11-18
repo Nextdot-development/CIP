@@ -23,7 +23,8 @@
  * individual Rampur variants, Kohinoor, Contessa, Morpheus, Jaisalmer, Burn
  * Barrel, Brown Barley, 8PM Premium Black, Virasat, Sangam, Ankahi - and says
  * plainly: "Do not fabricate product rules for these products." There are none
- * here for them.
+ * here for them - except Ankahi's, which come from Ankahi's own brand
+ * guidelines (v1, June 2025), handed over since, each with the page it is on.
  *
  * Section 10 and 11 describe 8PM's visual and copy preferences at length -
  * bold, premium, avoid cartoonish, avoid slang. Those are preferences, and the
@@ -1124,6 +1125,147 @@ export const RADICO_QC_RULES: QcRuleSeed[] = [
     category: 'other',
   },
 
+  // ---- Ankahi, from its own brand guidelines (v1, June 2025) -------------
+  // Not in the QC document, which listed Ankahi as incomplete (§37). Typed from
+  // the guidelines, page by page; nothing here goes further than they do.
+  {
+    code: 'ANKAHI-BG-001',
+    from: 'Ankahi Brand Guidelines v1 (June 2025), p.12 Incorrect applications of the logo',
+    brand: 'Ankahi',
+    product: null,
+    market: null,
+    domain: 'Logo',
+    ruleType: 'prohibited',
+    severity: 'major',
+    rule: 'The Ankahi logo is used as supplied: never outlined, recoloured, stretched, squashed, tilted, re-set in another font, or given drop shadows, embossing or gradients.',
+    rationale: 'Page 12 shows each of these crossed out.',
+    allowed: ['The full-colour logo', 'The single-colour logo where colour printing is not possible'],
+    prohibited: ['Outline round the logo', 'A changed logo colour', 'Distortion', 'Tilt', 'Changed fonts', 'Drop shadow, embossing or gradient'],
+    humanReview: false,
+    requirement: 'forbidden',
+    category: 'placement',
+  },
+  {
+    code: 'ANKAHI-BG-002',
+    from: 'Ankahi Brand Guidelines v1 (June 2025), p.10 Logo clearspace; p.11 Logo size',
+    brand: 'Ankahi',
+    product: null,
+    market: null,
+    domain: 'Logo',
+    ruleType: 'mandatory',
+    severity: 'minor',
+    rule: 'The Ankahi logo stands horizontally with its clear space kept, and is never smaller than 35 mm x 16.5 mm in print.',
+    rationale: 'Page 10 sets an exclusion zone round the mark and says always use it horizontally; page 11 gives the minimum size and says the aspect ratio must not be altered.',
+    allowed: [],
+    prohibited: ['Text or graphics inside the clear space', 'The logo set vertically', 'The logo below 35 mm x 16.5 mm'],
+    humanReview: true,
+    requirement: 'required',
+    category: 'placement',
+  },
+  {
+    code: 'ANKAHI-BG-003',
+    from: 'Ankahi Brand Guidelines v1 (June 2025), p.21 Voice & messaging, tagline usage',
+    brand: 'Ankahi',
+    product: null,
+    market: null,
+    domain: 'Copy',
+    ruleType: 'prohibited',
+    severity: 'major',
+    rule: '"Untold Stories from India" is used as a closer, and never paired with a call to action or a promotional offer.',
+    rationale: 'Page 21: "Untold Stories from India is used as a closer. It must not be paired with CTAs or promotional offers."',
+    allowed: ['The tagline closing a piece on its own'],
+    prohibited: ['The tagline beside "Shop now", "Buy", a price or an offer'],
+    humanReview: false,
+    requirement: 'forbidden',
+    category: 'claim',
+  },
+  {
+    code: 'ANKAHI-BG-004',
+    from: 'Ankahi Brand Guidelines v1 (June 2025), p.7 Brand essence; p.8 Brand foundation; p.21 Copy tone',
+    brand: 'Ankahi',
+    product: null,
+    market: null,
+    domain: 'Copy',
+    ruleType: 'preferred',
+    severity: 'informational',
+    rule: 'Ankahi copy is poised, reflective and understated - quietly confident, metaphoric without exaggeration - drawing on its keywords: unspoken, rooted, remembered, herbal, rare, infused, fire, fragrance, memory, stillness.',
+    rationale: 'The voice the guidelines set: "quiet, deliberate, and rooted in culture". A preference: absence alone is not a violation.',
+    allowed: ['Let the silence speak', 'Infused with memory', '21 botanicals. One untold story.', 'A new chapter begins with saffron'],
+    prohibited: ['Loud, salesy or slang copy', 'Exaggerated claims'],
+    humanReview: false,
+    requirement: 'required',
+    category: 'other',
+  },
+  {
+    code: 'ANKAHI-BG-005',
+    from: 'Ankahi Brand Guidelines v1 (June 2025), p.18 Colour palette',
+    brand: 'Ankahi',
+    product: null,
+    market: null,
+    domain: 'Colour',
+    ruleType: 'preferred',
+    severity: 'minor',
+    rule: "Ankahi's colours are Indigo Ink (#39557C) for the wordmark, Saffron Gold (#CD9F52), Dark Molasses (#665045), Parchment Cream (#F8E3CA), and Brick Red (#DF2826) only as an accent for the medallion and variant marks.",
+    rationale: 'Page 18 gives each colour its role. The page prints Indigo Ink as #39547C beside RGB 57/85/124, which is #39557C; a person is asked which is right.',
+    allowed: ['Indigo Ink', 'Saffron Gold', 'Dark Molasses', 'Parchment Cream', 'Brick Red as an accent'],
+    prohibited: ['Brick Red as a main colour'],
+    humanReview: false,
+    requirement: 'required',
+    category: 'other',
+  },
+  {
+    code: 'ANKAHI-BG-006',
+    from: 'Ankahi Brand Guidelines v1 (June 2025), p.17 Typographic hierarchy; p.22 Print',
+    brand: 'Ankahi',
+    product: null,
+    market: null,
+    domain: 'Layout',
+    ruleType: 'preferred',
+    severity: 'informational',
+    rule: 'Ankahi layouts are minimal, with serif headlines - capitals for the first, italic for the second - textured backgrounds and plenty of empty space: archival rather than promotional.',
+    rationale: 'Pages 16, 17 and 22: "Use of negative space is essential."',
+    allowed: ['AN UNTOLD STORY / Waiting to be discovered'],
+    prohibited: ['Crowded layouts', 'Sans-serif headlines'],
+    humanReview: false,
+    requirement: 'required',
+    category: 'other',
+  },
+  {
+    code: 'ANKAHI-BG-007',
+    from: 'Ankahi Brand Guidelines v1 (June 2025), p.23 Retail and display',
+    brand: 'Ankahi',
+    product: null,
+    market: null,
+    domain: 'Retail',
+    ruleType: 'conditional',
+    severity: 'minor',
+    rule: 'Ankahi retail and display pieces use dark wood, unpolished brass or etched stone - never plexiglass, gloss or plastic.',
+    rationale: 'Page 23. Applies to shelf, display and booth designs, not to social posts.',
+    allowed: ['Dark wood', 'Unpolished brass', 'Etched stone'],
+    prohibited: ['Plexiglass', 'Gloss finish', 'Plastic'],
+    humanReview: true,
+    requirement: 'forbidden',
+    category: 'medium',
+    format: 'image',
+  },
+  {
+    code: 'ANKAHI-BG-008',
+    from: 'Ankahi Brand Guidelines v1 (June 2025), p.9 Logo & wordmark; p.13 Symbol system',
+    brand: 'Ankahi',
+    product: null,
+    market: null,
+    domain: 'Brand Identity',
+    ruleType: 'preferred',
+    severity: 'informational',
+    rule: 'Ankahi pack shots keep its signatures in view where they show: the parchment label with its diagonal tear, the "21" botanical medallion, "Untold Stories" etched on the side, the rope at the neck and the gold closure.',
+    rationale: 'Pages 9, 13 and 19 call these signature marks, "not a decorative element".',
+    allowed: [],
+    prohibited: ['A re-drawn or altered pack'],
+    humanReview: false,
+    requirement: 'required',
+    category: 'other',
+  },
+
   // ---- §19 the rest of Royal Ranthambore --------------------------------
   {
     code: 'RR_TERR_001',
@@ -1316,4 +1458,52 @@ export const RADICO_QC_RULES: QcRuleSeed[] = [
     requirement: 'required',
     category: 'other',
   }),
+  // ---- Sangam, Kohinoor Reserve, Jaisalmer: the rules every other brand has --------
+  // The QC document gives these three no rules of their own. At the team's request
+  // (17 Nov 2026) each takes the same rules the other brands carry - its logo, a premium
+  // treatment, its tagline, no claims about a variant - in the same words, with its own
+  // tagline as its own posts and pack carry it.
+  ...sameAsOthers('Sangam', 'SANGAM', 'A beautiful harmony'),
+  ...sameAsOthers('Kohinoor Reserve', 'KOHINOOR', 'A Timeless Taste as Rare as the Gem'),
+  ...sameAsOthers('Jaisalmer', 'JAISALMER', 'The Royalty Awaits'),
 ];
+
+
+/** The rules the other brands carry, written once for a brand the document left without any. */
+function sameAsOthers(brand: string, prefix: string, tagline: string | null): QcRuleSeed[] {
+  const from = 'Same as the other brands (Rampur §17, Royal Ranthambore §19), at the team\'s request';
+  return [
+    {
+      code: `${prefix}_LOGO_001`, from, brand, product: null, market: null,
+      domain: 'Logo', ruleType: 'mandatory', severity: 'major',
+      rule: `The ${brand} logo keeps its approved form: used as supplied, never redrawn, recoloured, stretched or re-set.`,
+      rationale: 'Placement follows the Radico standard: top-right on an image, centred on the end card of a video.',
+      allowed: [`The approved ${brand} logo`], prohibited: ['Redrawn logo', 'Recoloured logo', 'Distorted logo'],
+      humanReview: false, requirement: 'required', category: 'placement',
+    },
+    {
+      code: `${prefix}_LUX_001`, from, brand, product: null, market: null,
+      domain: 'Visual', ruleType: 'preferred', severity: 'minor',
+      rule: 'Luxury must come from the whole execution — copy, composition, light, props, typography — not one visual cue.',
+      rationale: 'Avoid mass-market, cheap, casual or loud treatment where it conflicts with the product.',
+      allowed: [], prohibited: ['Mass-market treatment', 'Cheap treatment', 'Excessively loud treatment'],
+      humanReview: true, requirement: 'required', category: 'other',
+    },
+    ...(tagline ? [{
+      code: `${prefix}_COPY_001`, from, brand, product: null, market: null,
+      domain: 'Copy', ruleType: 'preferred' as const, severity: 'informational' as const,
+      rule: `"${tagline}" is the established tagline, but it is not required in every execution.`,
+      rationale: 'Only force it where the campaign brief requires it.',
+      allowed: [tagline], prohibited: [],
+      humanReview: false, requirement: 'required' as const, category: 'other' as const,
+    }] : []),
+    {
+      code: `${prefix}_VAR_001`, from, brand, product: null, market: null,
+      domain: 'Brand Identity', ruleType: 'human_review', severity: 'minor',
+      rule: `Do not make specific claims about an individual ${brand} variant — send it to a person.`,
+      rationale: 'No product rules have been given for its variants; a claim about one is checked by a person.',
+      allowed: [], prohibited: [],
+      humanReview: true, requirement: 'required', category: 'other',
+    },
+  ];
+}
