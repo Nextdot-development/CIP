@@ -1466,6 +1466,8 @@ export const RADICO_QC_RULES: QcRuleSeed[] = [
   ...sameAsOthers('Sangam', 'SANGAM', 'A beautiful harmony'),
   ...sameAsOthers('Kohinoor Reserve', 'KOHINOOR', 'A Timeless Taste as Rare as the Gem'),
   ...sameAsOthers('Jaisalmer', 'JAISALMER', 'The Royalty Awaits'),
+  // Ankahi's own guidelines already set its logo and its tagline; it takes the other two the brands carry.
+  ...sameAsOthers('Ankahi', 'ANKAHI', null).filter((r) => !r.code.endsWith('_LOGO_001')),
 ];
 
 
