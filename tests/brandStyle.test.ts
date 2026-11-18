@@ -13,6 +13,19 @@ const kohinoor = styleOf([
 ]);
 
 describe('brand style, read from its facts', () => {
+  it('takes a look said for one market or pack only for that market or pack', () => {
+    const facts = [
+      { attribute: 'background', value: 'Nigeria: bright flat colour cards with fruit' },
+      { attribute: 'background', value: 'Europe: dark nostalgic evenings' },
+      { attribute: 'background', value: 'Honey: sunny daylight by a pool' },
+      { attribute: 'background', value: 'A bar at night' },
+    ];
+    assert.deepEqual(styleOf(facts, { market: 'Nigeria', request: 'a weekend post' }).backgrounds, ['bright flat colour cards with fruit', 'A bar at night']);
+    assert.deepEqual(styleOf(facts, { market: 'Europe', request: '' }).backgrounds, ['dark nostalgic evenings', 'A bar at night']);
+    assert.deepEqual(styleOf(facts, { market: 'Ghana', request: 'Honey summer post' }).backgrounds, ['sunny daylight by a pool', 'A bar at night']);
+    assert.deepEqual(styleOf(facts).backgrounds, ['A bar at night']);
+  });
+
   it('keeps what never goes in the scene', () => {
     const s = styleOf([{ attribute: 'never in scene', value: 'plastic cups' }, { attribute: 'Never in scene', value: 'neon signs' }]);
     assert.deepEqual(s.never, ['plastic cups', 'neon signs']);

@@ -99,6 +99,8 @@ export function scenePrompt(
     drink?: { kind: string | null; colour: string | null; variant?: string | null };
     /** What never goes in this brand's scenes. */
     never?: string[];
+    /** The brand's posts are bright and colourful: white words stand on a rich colour, not on black. */
+    bright?: boolean;
   } = {},
 ): string {
   // Within what the generator takes, whatever the planner wrote: the brand's past scenes are let go
@@ -119,6 +121,24 @@ export function neverLine(never: string[]): string {
   return `Never in this scene, for this brand: ${never.slice(0, 8).join('; ')}.`;
 }
 
+/**
+ * What the place for the words must be, for words of this ink: dark under white words - unless the brand's
+ * posts are bright and colourful, when a rich, saturated colour carries white words as well, and black would
+ * turn a sunny brand into a moody one.
+ */
+function calmFor(lightInk: boolean, bright?: boolean): string {
+  if (!lightInk) return 'plain and evenly light';
+  return bright ? 'plain and even in tone - a rich, saturated colour or a deep sky, never black or dark brown' : 'plain and evenly dark';
+}
+
+/** Whether a brand's own look is bright and colourful rather than dark and moody, as its scenes say. */
+export function looksBright(scene: string | null | undefined): boolean {
+  if (!scene) return false;
+  const bright = (scene.match(/\b(bright|daylight|sunny|sunlit|colou?rful|flat colou?r|pastel|saturated|vibrant|pop|tropical|pool|beach)\b/gi) ?? []).length;
+  const dark = (scene.match(/\b(dark|moody|low-key|candle\w*|black|night|dim)\b/gi) ?? []).length;
+  return bright > dark;
+}
+
 /** What the generator takes at most, with a little room for a note added to it. */
 const SCENE_PROMPT_MAX = 3_800;
 
@@ -135,7 +155,7 @@ function sceneLines(
   postRatio: number,
   genRatio: number,
   packColours: string[],
-  options: { open?: boolean; brandScenes?: string[]; drink?: { kind: string | null; colour: string | null; variant?: string | null }; never?: string[] },
+  options: { open?: boolean; brandScenes?: string[]; drink?: { kind: string | null; colour: string | null; variant?: string | null }; never?: string[]; bright?: boolean },
   description: string,
   brandScenes: string[],
 ): string {
@@ -181,7 +201,7 @@ function sceneLines(
       `front edge about ${pct(base.y + base.h + 0.02)} down, sharp and clear from the left edge to the right, so a bottle about ` +
       `${pct(base.h)} of the frame's height can be stood anywhere on it later - left, centre or right. Nothing stands on its ` +
       'front; props sit only behind, low, or at the very edges.',
-      `- Above the surface the frame is calm and uncluttered on both sides, plain and evenly ${light ? 'dark' : 'light'}, ` +
+      `- Above the surface the frame is calm and uncluttered on both sides, ${calmFor(light, options.bright)}, ` +
       'with no bright lights, no busy detail and no faces: words may go on either side, or across the top.',
       '- All four corners plain and quiet, for a logo.',
     );
@@ -200,7 +220,7 @@ function sceneLines(
     const light = luminanceOf(layout.text?.ink ?? '#ffffff') > 0.5;
     lines.push(
       `- The area from ${pct(t.x)} to ${pct(t.x + t.w)} across and ${pct(t.y - 0.04)} to ${pct(t.y + t.h + 0.04)} down is for words: ` +
-      `calm, uncluttered, plain and evenly ${light ? 'dark' : 'light'}, with no bright lights, no busy detail and no faces in it.`,
+      `calm, uncluttered, ${calmFor(light, options.bright)}, with no bright lights, no busy detail and no faces in it.`,
     );
   }
   if (layout.logoBox && layout.logo && !options.open) {
@@ -985,7 +1005,7 @@ export async function preparePost(
   const [gw, gh] = input.generatorShape.split(':').map(Number);
   // The pack's own colours, measured from its photograph, for a scene that flatters them.
   const packColours = bottle ? (await readPalette(bottle.body, 'image/png')).filter((c) => c.share >= 0.08).slice(0, 3).map((c) => c.hex) : [];
-  const prompt = scenePrompt(plan, layout, input.ratio, gw && gh ? gw / gh : input.ratio, packColours, { open: input.layered, brandScenes: plan.pastScenes, drink: { ...plan.drink, variant: plan.variant }, never: plan.style.never });
+  const prompt = scenePrompt(plan, layout, input.ratio, gw && gh ? gw / gh : input.ratio, packColours, { open: input.layered, brandScenes: plan.pastScenes, drink: { ...plan.drink, variant: plan.variant }, never: plan.style.never, bright: looksBright(plan.pastScenes[0]) });
   const headline = plan.headline.map((l) => l.text).join(' / ');
   return {
     plan,

@@ -1,3 +1,4 @@
+import { inScope, scopeOf } from '@/lib/brandStyle';
 import type { BriefInput, CreativeFormat, GenerationBrief } from './providers/types';
 
 /**
@@ -32,8 +33,10 @@ const LOOK = /(lighting|light|palette|colou?r|mood|tone|setting|background|scene
  */
 export function freeBrief(input: BriefInput): GenerationBrief {
   const words = input.requestText.toLowerCase();
+  // A look said for one market or pack only where the request names it: no Nigeria colour cards on a Europe post.
+  const ours = (v: string) => { const { scope } = scopeOf(v); return !scope || inScope(scope, { request: input.requestText }); };
   const look = input.brandFacts
-    .filter((f) => f.section === 'visual' && LOOK.test(f.attribute) && !/^#[0-9a-f]{6}$/i.test(f.value.trim()))
+    .filter((f) => f.section === 'visual' && LOOK.test(f.attribute) && !/^#[0-9a-f]{6}$/i.test(f.value.trim()) && ours(f.value))
     .sort((a, b) => b.confidence - a.confidence)
     .slice(0, 8)
     .map((f) => `${f.attribute}: ${f.value}`);

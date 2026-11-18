@@ -174,7 +174,7 @@ export async function pastScenes(scope: CompanyScope, brand: string, limit = 6):
  * headline is set and where its logo sits - learned from its decks, guidelines and the posts it
  * has published. Read from the Brand DNA already held; no model.
  */
-export async function brandStyle(scope: CompanyScope, brand: string): Promise<BrandStyle> {
+export async function brandStyle(scope: CompanyScope, brand: string, context?: { market?: string | null; request?: string | null }): Promise<BrandStyle> {
   const rows = await withCompanyScope(scope, (tx) => tx<{ attribute: string; value: string }[]>`
     select attribute, value from brand_dna_facts
      where company_id = ${scope.companyId} and brand = ${brand} and status = 'active'
@@ -183,7 +183,7 @@ export async function brandStyle(scope: CompanyScope, brand: string): Promise<Br
      order by evidence_count desc, confidence desc, first_seen_at desc
      limit 60
   `).catch(() => []);
-  return styleOf(rows);
+  return styleOf(rows, context);
 }
 
 /** What a post has placed on it rather than painted into its scene. */
@@ -257,7 +257,9 @@ export function settlePlan(
   const has = (v: string | null) => context.variants.some((x) => (x ?? '').toLowerCase() === (v ?? '').toLowerCase());
   let variant = bm.variant && has(bm.variant) ? context.variants.find((x) => x?.toLowerCase() === bm.variant!.toLowerCase())! : null;
   if (!variant) {
-    const named = context.variants.find((v) => v && new RegExp(`\\b${v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(context.request));
+    // Of the packs the request names, the one it names first: "a pouring shot… bring some fire" is the pouring bottle.
+    const at = (v: string) => context.request.search(new RegExp(`\\b${v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i'));
+    const named = context.variants.filter((v): v is string => Boolean(v) && at(v!) >= 0).sort((x, y) => at(x) - at(y) || y.length - x.length)[0];
     if (named) variant = named;
     else if (!has(null) && context.variants.length) variant = context.variants.find((v) => STANDARD.test(v ?? '')) ?? context.variants[0]!;
     if (bm.variant) settled.push(`There is no "${bm.variant}" pack in the library; used the ${variant ?? 'standard'} pack.`);
@@ -461,7 +463,7 @@ export async function planPost(
     `).catch(() => []),
     pastScenes(scope, input.brand),
     brandDrink(scope, input.brand),
-    brandStyle(scope, input.brand),
+    brandStyle(scope, input.brand, { market: input.market ?? null, request: input.request }),
   ]);
   // The scene its own posts are set in, as learned, first - then the pictures CIP read.
   const learned = styleScene(style, input.request);
@@ -483,7 +485,13 @@ export async function planPost(
   // the scene painted again with a health warning in it - another country's.
   const rules = rulesFor(everyRule, { generated: true, composed: true });
   const variants = [...new Map(bottles.filter((b) => b.asset.cutout).map((b) => [b.asset.variant?.toLowerCase() ?? '', b.asset.variant])).values()];
-  const usable = layouts.filter((l) => l.spec.text);
+  // A layout made for one market - "Magic Moments (Nigeria) 1" - is that market's: first for it, not offered to another.
+  const marketOfLayout = (name: string) => /\(([^)]+)\)/.exec(name)?.[1]?.trim().toLowerCase() ?? null;
+  const market = (input.market ?? '').toLowerCase();
+  const usable = layouts
+    .filter((l) => l.spec.text)
+    .filter((l) => { const m = marketOfLayout(l.name); return !m || m === market; })
+    .sort((a, b) => Number(marketOfLayout(b.name) === market && Boolean(market)) - Number(marketOfLayout(a.name) === market && Boolean(market)));
 
   const draft = input.noModel ? freeDraft(input.request, input.brand, everyLine, style) : await brain().benchPlan({
     request: input.request,

@@ -24,8 +24,37 @@ export type Corner = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
 
 const has = (s: string, re: RegExp) => re.test(s.toLowerCase());
 
-export function styleOf(facts: StyleFact[]): BrandStyle {
-  const of = (re: RegExp) => [...new Set(facts.filter((f) => re.test(f.attribute.toLowerCase())).map((f) => f.value.trim()).filter(Boolean))];
+/**
+ * A look said for one market or one pack - "Nigeria: bright flat colour cards", "Honey: sunny daylight" -
+ * belongs to a post for that market, or one whose request names that pack. The words before the colon
+ * are its scope; a look said for every post has none.
+ */
+export function scopeOf(value: string): { scope: string | null; text: string } {
+  const m = /^([A-Z][A-Za-z'’ ]{1,28}):\s+(.+)$/s.exec(value.trim());
+  return m && m[1]!.trim().split(/\s+/).length <= 3 ? { scope: m[1]!.trim(), text: m[2]!.trim() } : { scope: null, text: value.trim() };
+}
+
+/** Whether a scoped look is this post's: its market, or a pack its request names. */
+export function inScope(scope: string, context: { market?: string | null; request?: string | null }): boolean {
+  const s = scope.toLowerCase();
+  if ((context.market ?? '').toLowerCase() === s) return true;
+  return new RegExp(`\\b${s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(context.request ?? '');
+}
+
+export function styleOf(facts: StyleFact[], context?: { market?: string | null; request?: string | null }): BrandStyle {
+  // A look for this market or pack first, then the brand's look for every post; one for another market or pack, not at all.
+  const of = (re: RegExp) => {
+    const own: string[] = [];
+    const every: string[] = [];
+    for (const f of facts) {
+      if (!re.test(f.attribute.toLowerCase())) continue;
+      const { scope, text } = scopeOf(f.value);
+      if (!text) continue;
+      if (!scope) every.push(text);
+      else if (context && inScope(scope, context)) own.push(text);
+    }
+    return [...new Set([...own, ...every])];
+  };
   return {
     // A packshot's plain white or black is how the bottle was photographed, not a scene for a post.
     backgrounds: of(/^(background|setting|scene)$/).filter((b) => !/^(a |the )?(solid |plain |pure )?(white|black)( plain)?( background)?$/i.test(b) && !/photographed against/i.test(b)),
@@ -172,7 +201,7 @@ export function styleScene(style: BrandStyle, request: string): string | null {
   const light = style.lighting[0] ?? '';
   const parts = [
     setting,
-    light ? (/\blight/i.test(light) ? light : `${light} light`) : '',
+    light ? (/light\b/i.test(light) ? light : `${light} light`) : '',
     props.length ? `props: ${props.join(', ')}` : '',
     colours.join('; '),
   ].filter(Boolean);
