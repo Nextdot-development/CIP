@@ -748,3 +748,14 @@ a.gtag:hover { color: var(--ink-900); border-color: var(--ink-400); }
 .studio-box-crop.is-l { left: -4px; } .studio-box-crop.is-r { right: -4px; }
 .studio-box-crop.is-t { top: -4px; } .studio-box-crop.is-b { bottom: -4px; }
 .studio-crop-box { position: absolute; z-index: 4; pointer-events: none; border: 2px dashed var(--brand); box-shadow: 0 0 0 9999px rgba(0,0,0,.35); }
+
+/* Undo and redo, plain to see: one pill, each step counted. */
+.studio-history { display: inline-flex; border: 1px solid var(--line, #d9d9de); border-radius: 999px; overflow: hidden; background: var(--surface, #fff); }
+.studio-history-btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; font: inherit; font-size: 13px; font-weight: 600; background: none; border: 0; color: inherit; cursor: pointer; }
+.studio-history-btn + .studio-history-btn { border-left: 1px solid var(--line, #d9d9de); }
+.studio-history-btn:hover:not(:disabled) { background: var(--brand-soft, rgba(0,0,0,.05)); }
+.studio-history-btn:disabled { opacity: .4; cursor: default; }
+.studio-history-n { min-width: 18px; padding: 0 5px; border-radius: 9px; background: var(--brand, #333); color: #fff; font-size: 11px; line-height: 18px; text-align: center; }
+/* Templates: chosen, used or let go, and the post kept as one. */
+.studio-templates { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.studio-templates select { width: auto; min-width: 150px; padding-top: 5px; padding-bottom: 5px; }

@@ -1411,6 +1411,76 @@ function preload(id: string, manifest: Manifest): Promise<void> {
   }))).then(() => undefined);
 }
 
+type PostTemplateC = { id: string; name: string; savedAt: string; choices: Partial<Manifest['choices']> };
+/**
+ * Templates: a post's arrangement - where the bottle, glasses, logo and text stand, and how each looks -
+ * saved for the brand, and laid on another post of it in one click. Free; nothing is painted.
+ */
+function TemplateBar({ generationId, apply, note }: {
+  generationId: string;
+  apply: (choices: Partial<Manifest['choices']>) => Promise<boolean>;
+  note: (message: string) => void;
+}) {
+  const [list, setList] = useState<PostTemplateC[] | null>(null);
+  const [brand, setBrand] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [pick, setPick] = useState('');
+  const take = (b: { brand?: string; templates?: PostTemplateC[] } | null) => {
+    if (!b) return;
+    setBrand(b.brand ?? '');
+    setList(b.templates ?? []);
+  };
+  useEffect(() => {
+    void fetch(`/api/media/generations/${generationId}/templates`, { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : null)).then(take).catch(() => undefined);
+  }, [generationId]);
+  const call = async (init: RequestInit, query = '') => {
+    setBusy(true);
+    const res = await fetch(`/api/media/generations/${generationId}/templates${query}`, init).catch(() => null);
+    setBusy(false);
+    if (!res?.ok) {
+      const message = (await res?.json().catch(() => null) as { message?: string } | null)?.message;
+      note(message ?? 'That could not be done.');
+      return false;
+    }
+    take(await res.json());
+    return true;
+  };
+  const save = async () => {
+    const name = window.prompt(`Name this template for ${brand || 'the brand'} - e.g. "Bottle right, two glasses"`)?.trim();
+    if (!name) return;
+    if (await call({ method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name }) })) {
+      note(`Saved as "${name}" - start any ${brand} post from it. Free.`);
+    }
+  };
+  const chosen = list?.find((t) => t.id === pick) ?? null;
+  return (
+    <span className="studio-templates">
+      <select className="field-input" value={pick} disabled={busy || !list?.length} aria-label="Start from a template"
+        onChange={(e) => setPick(e.target.value)}>
+        <option value="">{list?.length ? `Templates · ${list.length}` : 'No templates yet'}</option>
+        {(list ?? []).map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+      </select>
+      {chosen && (
+        <>
+          <button type="button" className="btn btn-primary btn-sm" disabled={busy}
+            onClick={() => void apply(chosen.choices).then((ok) => { if (ok) note(`Laid out as "${chosen.name}" - Undo puts it back.`); })}>
+            Use
+          </button>
+          <button type="button" className="btn btn-ghost btn-sm" disabled={busy} title="Delete this template"
+            onClick={() => { if (window.confirm(`Delete the template "${chosen.name}"?`)) void call({ method: 'DELETE' }, `?template=${chosen.id}`).then(() => setPick('')); }}>
+            Delete
+          </button>
+        </>
+      )}
+      <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => void save()}
+        title="Keep where every piece stands and how it looks, to start the next post of this brand from it">
+        Save as template
+      </button>
+    </span>
+  );
+}
+
 /**
  * A post designed layer by layer, as a designer builds one: the background
  * first, alone on the canvas; then the bottle, the logo and the headline,
@@ -2540,12 +2610,17 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
           {guides.y.map((y) => <span key={`y${y}`} className="studio-guide is-h" style={{ top: `${y * 100}%` }} />)}
         </div>
         <div className="row" style={{ gap: 8, justifyContent: 'center', alignItems: 'center', marginTop: 10, flexWrap: 'wrap' }}>
-          <button type="button" className="btn btn-ghost btn-sm" disabled={!undos.current.length} onClick={() => void arrange(null, [], 'undo')} title="Undo (Ctrl+Z)">
-            Undo
-          </button>
-          <button type="button" className="btn btn-ghost btn-sm" disabled={!redos.current.length} onClick={() => void arrange(null, [], 'redo')} title="Redo (Ctrl+Shift+Z)">
-            Redo
-          </button>
+          <span className="studio-history" role="group" aria-label="Undo and redo">
+            <button type="button" className="studio-history-btn" disabled={!undos.current.length} onClick={() => void arrange(null, [], 'undo')} title="Undo (Ctrl+Z)">
+              <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M6 3 2.5 6.5 6 10M3 6.5h6.5a4 4 0 0 1 0 8H7" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+              Undo{undos.current.length ? <span className="studio-history-n">{undos.current.length}</span> : null}
+            </button>
+            <button type="button" className="studio-history-btn" disabled={!redos.current.length} onClick={() => void arrange(null, [], 'redo')} title="Redo (Ctrl+Shift+Z)">
+              Redo{redos.current.length ? <span className="studio-history-n">{redos.current.length}</span> : null}
+              <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M10 3l3.5 3.5L10 10M13 6.5H6.5a4 4 0 0 0 0 8H9" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+            </button>
+          </span>
+          {manifest && <TemplateBar generationId={generation.id} apply={(choices) => arrange({ choices })} note={note} />}
           {Boolean(selected) && (
             <span className="studio-tools" role="toolbar" aria-label="Line up">
               {([
@@ -3663,6 +3738,25 @@ function StudioPictures({ generationId, bottleFiles, bottle, pictures, postAspec
     note('Lit as the scene is - free. Undo puts it back.');
   };
 
+  /** Every glass and added bottle lit as the scene is where it stands, in one go: one change, one undo. Free. */
+  const matchAll = async () => {
+    const all = pictures.filter((pic) => pic.file && !pic.shape);
+    if (!all.length || matching) return;
+    setMatching(true);
+    const looks = await Promise.all(all.map(async (pic) => {
+      const box = { x: pic.x, y: pic.y, w: pic.w, h: (pic.w * pic.aspect) / postAspect };
+      const res = await fetch(`/api/media/generations/${generationId}/match`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ file: pic.file, box }),
+      }).catch(() => null);
+      return res?.ok ? [pic.id, (await res.json()) as { tint: string; tintAmount: number; bright: number }] as const : null;
+    }));
+    setMatching(false);
+    const got = new Map(looks.filter((x): x is NonNullable<typeof x> => x !== null));
+    if (!got.size) { note('The scene could not be matched.'); return; }
+    void onChange((now) => now.map((pic) => (got.has(pic.id) ? { ...pic, ...got.get(pic.id)!, ground: pic.ground ?? 0.5 } : pic)));
+    note(`${got.size} matched to the scene - free. Undo puts them back.`);
+  };
+
   /** A picture made ready on the server, then laid on the post. */
   const add = async (from: { file: File } | { fileId: string }) => {
     if (pictures.length >= 8) { note('A post takes at most 8 added pictures.'); return; }
@@ -3755,6 +3849,15 @@ function StudioPictures({ generationId, bottleFiles, bottle, pictures, postAspec
             ))}
           </div>
           <p className="tiny muted" style={{ margin: 0 }}>Click one: it stands beside the bottle on the same surface, with its shadow and reflection. Click again to add another - up to 8 pictures on a post. Drag, resize, turn or crop each in the list below. Free.</p>
+        </div>
+      )}
+      {pictures.filter((pic) => pic.file && !pic.shape).length > 1 && (
+        <div className="studio-group">
+          <button type="button" className="btn btn-secondary btn-sm" style={{ justifySelf: 'start' }} disabled={matching} onClick={() => void matchAll()}
+            title="Each glass and bottle lit in the colour and brightness of the scene where it stands - free">
+            {matching ? 'Matching…' : `Match all ${pictures.filter((pic) => pic.file && !pic.shape).length} to the scene`}
+          </button>
+          <p className="tiny muted" style={{ margin: 0 }}>Sets the light on every glass and bottle at once, as the background is lit. Fine-tune any one after by clicking it.</p>
         </div>
       )}
       <p className="studio-q">A picture, ice, anything - laid on the post</p>

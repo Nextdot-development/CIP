@@ -310,6 +310,7 @@ export async function brandLayouts(scope: CompanyScope, brand: string | null): P
   const rows = await withCompanyScope(scope, (tx) => tx<{ id: string; brand: string | null; name: string; source: string | null; spec: LayoutSpec }[]>`
     select id, brand, name, source, spec from brand_layouts
      where company_id = ${scope.companyId} and (brand is null or brand = ${brand})
+       and coalesce(source, '') <> ${TEMPLATE_SOURCE}
      order by (brand is null), name
   `);
   return rows;
@@ -321,6 +322,39 @@ export async function saveLayout(scope: CompanyScope, layout: { brand: string | 
     values (${scope.companyId}, ${layout.brand}, ${layout.name}, ${layout.source}, ${layout.spec.ratio}, ${tx.json(layout.spec as never)})
     on conflict (company_id, name) do update set brand = excluded.brand, source = excluded.source,
       ratio = excluded.ratio, spec = excluded.spec
+  `);
+}
+
+// --- templates: a post as a person arranged it, to start the next one from ---------------
+
+/** Kept beside the brand's layouts, marked so: a template is never picked as a layout. */
+const TEMPLATE_SOURCE = 'studio-template';
+export type PostTemplate = { id: string; brand: string; name: string; savedAt: string; choices: Partial<PostChoices> };
+
+export async function postTemplates(scope: CompanyScope, brand: string): Promise<PostTemplate[]> {
+  const rows = await withCompanyScope(scope, (tx) => tx<{ id: string; brand: string; spec: { name?: string; savedAt?: string; template?: Partial<PostChoices> } }[]>`
+    select id, brand, spec from brand_layouts
+     where company_id = ${scope.companyId} and brand = ${brand} and source = ${TEMPLATE_SOURCE}
+     order by created_at desc
+  `);
+  return rows.filter((r) => r.spec?.template).map((r) => ({
+    id: r.id, brand: r.brand, name: r.spec.name ?? 'Template', savedAt: r.spec.savedAt ?? '', choices: r.spec.template!,
+  }));
+}
+
+/** Saved under its name for this brand; a second one by the same name takes its place. */
+export async function savePostTemplate(scope: CompanyScope, brand: string, name: string, choices: Partial<PostChoices>): Promise<void> {
+  const spec = { ratio: 1, logo: null, bottle: null, text: null, name, savedAt: new Date().toISOString(), template: choices };
+  await withCompanyScope(scope, (tx) => tx`
+    insert into brand_layouts (company_id, brand, name, source, ratio, spec)
+    values (${scope.companyId}, ${brand}, ${`Template · ${brand} · ${name}`}, ${TEMPLATE_SOURCE}, 1, ${tx.json(spec as never)})
+    on conflict (company_id, name) do update set spec = excluded.spec, source = excluded.source, brand = excluded.brand
+  `);
+}
+
+export async function deletePostTemplate(scope: CompanyScope, id: string): Promise<void> {
+  await withCompanyScope(scope, (tx) => tx`
+    delete from brand_layouts where id = ${id} and company_id = ${scope.companyId} and source = ${TEMPLATE_SOURCE}
   `);
 }
 

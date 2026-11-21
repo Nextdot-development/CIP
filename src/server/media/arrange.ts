@@ -1,7 +1,7 @@
 import 'server-only';
 import { withCompanyScope } from '../db';
 import type { CompanyScope } from '../db';
-import { STACK, choicesOf, stackOf, type AddedPicture, type ShapeSpec, type Corner, type Placement, type PostChoices, type PostStyle, type StackGroup } from '../brain/layouts';
+import { STACK, choicesOf, deletePostTemplate, postTemplates, savePostTemplate, stackOf, type PostTemplate, type AddedPicture, type ShapeSpec, type Corner, type Placement, type PostChoices, type PostStyle, type StackGroup } from '../brain/layouts';
 import { brandStyle, headlineSuggestions, pastScenes } from '../brain/bench';
 import { asksForGlass, styleScene } from '@/lib/brandStyle';
 import { COLLECTION, packFamily } from '@/lib/packs';
@@ -451,6 +451,33 @@ async function keptScene(scope: CompanyScope, generationId: string, version: str
   // A handful of posts at a time; the oldest goes first.
   if (scenes.size > 12) scenes.delete(scenes.keys().next().value!);
   return scene;
+}
+
+/** The templates saved for a post's brand: each a post's arrangement to start another from. Free. */
+export async function templatesFor(scope: CompanyScope, generationId: string): Promise<{ brand: string; templates: PostTemplate[] }> {
+  const { recipe } = await composedOf(scope, generationId);
+  return { brand: recipe.brand, templates: await postTemplates(scope, recipe.brand) };
+}
+
+/**
+ * A post's arrangement kept as a template for its brand: where each piece stands, its look, the glasses
+ * and bottles added, the text added. Not the pack: a template is laid on a post of any of the brand's packs.
+ */
+export async function saveTemplate(scope: CompanyScope, generationId: string, raw: unknown): Promise<{ brand: string; templates: PostTemplate[] }> {
+  const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  const name = typeof r.name === 'string' ? r.name.replace(/s+/g, ' ').trim().slice(0, 60) : '';
+  if (!name) throw new MediaRejected('Give the template a name.');
+  const { recipe } = await composedOf(scope, generationId);
+  const { bottleFile: _pack, ...choices } = currentChoices(recipe);
+  await savePostTemplate(scope, recipe.brand, name, choices);
+  return { brand: recipe.brand, templates: await postTemplates(scope, recipe.brand) };
+}
+
+export async function dropTemplate(scope: CompanyScope, generationId: string, templateId: string): Promise<{ brand: string; templates: PostTemplate[] }> {
+  if (!UUID.test(templateId)) throw new MediaRejected('That template is not here.');
+  const { recipe } = await composedOf(scope, generationId);
+  await deletePostTemplate(scope, templateId);
+  return { brand: recipe.brand, templates: await postTemplates(scope, recipe.brand) };
 }
 
 /** Where a post's layers are now, for a post that has never been arranged as well as one that has. */
