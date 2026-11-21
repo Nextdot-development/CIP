@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { alignFromWords, capitalsFromWords, cornerFromWords, fontFromWords, inkFromWords, pickHeadline, styleOf, styleScene } from '../src/lib/brandStyle';
+import { alignFromWords, asksForGlass, capitalsFromWords, cornerFromWords, fontFromWords, inkFromWords, pickHeadline, styleOf, styleScene } from '../src/lib/brandStyle';
 
 const kohinoor = styleOf([
   { attribute: 'background', value: 'black background' },
@@ -20,10 +20,18 @@ describe('brand style, read from its facts', () => {
       { attribute: 'background', value: 'Honey: sunny daylight by a pool' },
       { attribute: 'background', value: 'A bar at night' },
     ];
-    assert.deepEqual(styleOf(facts, { market: 'Nigeria', request: 'a weekend post' }).backgrounds, ['bright flat colour cards with fruit', 'A bar at night']);
-    assert.deepEqual(styleOf(facts, { market: 'Europe', request: '' }).backgrounds, ['dark nostalgic evenings', 'A bar at night']);
-    assert.deepEqual(styleOf(facts, { market: 'Ghana', request: 'Honey summer post' }).backgrounds, ['sunny daylight by a pool', 'A bar at night']);
+    assert.deepEqual(styleOf(facts, { market: 'Nigeria', request: 'a weekend post' }).backgrounds, ['Nigeria: bright flat colour cards with fruit', 'A bar at night']);
+    assert.deepEqual(styleOf(facts, { market: 'Europe', request: '' }).backgrounds, ['Europe: dark nostalgic evenings', 'A bar at night']);
+    assert.deepEqual(styleOf(facts, { market: 'Ghana', request: 'Honey summer post' }).backgrounds, ['Honey: sunny daylight by a pool', 'A bar at night']);
     assert.deepEqual(styleOf(facts).backgrounds, ['A bar at night']);
+    // The scene says it without the scope.
+    assert.match(styleScene(styleOf(facts, { market: 'Nigeria', request: '' }), 'a weekend post', 'Nigeria') ?? '', /^bright flat colour cards/);
+  });
+
+  it('chooses the line that shares the flavour of the post, not the brand name', () => {
+    const lines = ['Make tonight a Magic Moment', 'A burst of orange in every sip', 'Pure raspberry bliss'];
+    assert.equal(pickHeadline('Magic Moments orange flavour post', lines, 12, 'Magic Moments'), 'A burst of orange in every sip');
+    assert.equal(pickHeadline('a raspberry night', lines, 12, 'Magic Moments'), 'Pure raspberry bliss');
   });
 
   it('keeps what never goes in the scene', () => {
@@ -64,5 +72,27 @@ describe('brand style, read from its facts', () => {
       assert.ok(!/Diwali|Holi/.test(pickHeadline(ask, lines) ?? ''), ask);
     }
     assert.equal(pickHeadline('anything', []), null);
+  });
+});
+
+describe('a scene painted with no glass in it', () => {
+  it('leaves glasses, ice and drinks to be laid on afterwards, and keeps the rest', () => {
+    const s = styleOf([{ attribute: 'background', value: 'Dark lounge' }, { attribute: 'props', value: 'A cut-crystal rocks glass with large ice cubes; Honey: honeycomb and a honey dipper; playing cards, a cocktail' }], { request: 'Honey: a post' });
+    const scene = styleScene(s, 'Honey: a post') ?? '';
+    assert.match(scene, /honeycomb/);
+    assert.doesNotMatch(scene, /glass|ice|cocktail/i);
+  });
+});
+
+describe('a glass painted only when it is asked for', () => {
+  it('reads a glass or a drink in the request', () => {
+    assert.equal(asksForGlass('A Honey post with a rocks glass and ice cubes'), true);
+    assert.equal(asksForGlass('A G&T for summer'), true);
+    assert.equal(asksForGlass('A sunny afternoon by the pool'), false);
+  });
+  it('keeps the brand glass and serve in the scene when asked', () => {
+    const s = styleOf([{ attribute: 'background', value: 'Dark lounge' }, { attribute: 'props', value: 'A cut-crystal rocks glass with large ice cubes; playing cards' }, { attribute: 'serve', value: 'Neat in a rocks glass' }]);
+    assert.match(styleScene(s, 'A post with a glass of whisky') ?? '', /rocks glass/);
+    assert.doesNotMatch(styleScene(s, 'A quiet evening post') ?? '', /glass/);
   });
 });

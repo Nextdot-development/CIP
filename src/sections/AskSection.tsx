@@ -149,6 +149,8 @@ export function AskSection({
   providers,
   markets,
   brands = [],
+  packs = {},
+  brandMarkets = {},
   activeBrand = null,
   ideation,
 }: {
@@ -160,6 +162,10 @@ export function AskSection({
   markets: string[];
   /** The company's brands, and the one chosen at the top of the page. */
   brands?: string[];
+  /** Each brand's packs from its library: Whytehall → Standard, Chocolate, Fire, Honey, Royal, Collection. */
+  packs?: Record<string, string[]>;
+  /** Each brand's markets: Magic Moments → Nigeria, Europe. A brand not listed is offered every market. */
+  brandMarkets?: Record<string, string[]>;
   activeBrand?: string | null;
 }) {
   const workspace = useWorkspace();
@@ -175,7 +181,8 @@ export function AskSection({
     setSeenSeed(seed);
     if (seed?.text) setDraft(seed.text);
   }
-  const [mediaType, setMediaType] = useState<MediaType>('image');
+  // CIP makes pictures; video is not offered here.
+  const [mediaType] = useState<MediaType>('image');
   // Named explicitly rather than left to the default. Sending no provider is
   // how a request quietly went to a key Google had revoked while a working one
   // sat next to it.
@@ -201,6 +208,28 @@ export function AskSection({
   const [shape, setShape] = useState<string | null>(null);
   // The brand chosen at the top of the page to start with; unset, the request names it or CIP asks.
   const [brand, setBrand] = useState<string | null>(activeBrand ?? (brands.length === 1 ? brands[0]! : null));
+  // Sangam is one of Rampur's: chosen under Rampur, made as Sangam.
+  const shownBrands = brands.includes('Rampur') ? brands.filter((b) => b !== 'Sangam') : brands;
+  const brandRow = brand === 'Sangam' && brands.includes('Rampur') ? 'Rampur' : brand;
+  /** The brand's packs to choose from, Sangam among Rampur's. */
+  const packChoices = brandRow
+    ? [
+        ...(packs[brandRow] ?? []),
+        ...(brandRow === 'Rampur' && brands.includes('Sangam') ? ['Sangam'] : []),
+        // Magic Moments: several flavours on one background - the background is made, the bottles are set on it in the studio.
+        ...(brandRow === 'Magic Moments' && !(packs[brandRow] ?? []).includes('Collection') ? ['Collection'] : []),
+      ]
+    : [];
+  const [pack, setPack] = useState<string | null>(null);
+  /** The markets offered: only those the chosen brand is sold in. */
+  const marketChoices = brand && brandMarkets[brand]?.length ? brandMarkets[brand]! : markets;
+  // A market the newly chosen brand is not sold in is let go, not carried over.
+  if (market && !marketChoices.includes(market)) setMarket(null);
+  const choosePack = (name: string) => {
+    if (brandRow === 'Rampur' && name === 'Sangam') { setBrand(pack === 'Sangam' ? 'Rampur' : 'Sangam'); setPack(pack === 'Sangam' ? null : 'Sangam'); return; }
+    if (brandRow === 'Rampur') setBrand('Rampur');
+    setPack(pack === name ? null : name);
+  };
   // A picture of the person's own to set the post on, instead of one painted for it: free.
   const [ownPicture, setOwnPicture] = useState<File | null>(null);
   const [placing, setPlacing] = useState(false);
@@ -265,6 +294,7 @@ export function AskSection({
           ...(mediaType === 'image' && basedOn ? { basedOn: basedOn.id } : {}),
           ...(market ? { market } : {}),
           ...(brand ? { brand } : {}),
+          ...(pack && pack !== 'Sangam' ? { pack } : {}),
           ...(clarification ? { clarification } : {}),
         }),
       });
@@ -373,7 +403,8 @@ export function AskSection({
   // Chosen before anything starts, wherever there is a choice - so CIP never stops to ask.
   const missing = [
     ...(brands.length > 1 && !brand ? ['brand'] : []),
-    ...(markets.length > 1 && !market ? ['market'] : []),
+    ...(packChoices.length > 1 && !pack ? ['pack'] : []),
+    ...(marketChoices.length > 1 && !market ? ['market'] : []),
   ];
 
   return (
@@ -391,20 +422,6 @@ export function AskSection({
 
       <Card className="pad">
         <div className="row" style={{ gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
-          <button
-            type="button"
-            className={`chip ${mediaType === 'image' ? 'on' : ''}`}
-            onClick={() => setMediaType('image')}
-          >
-            <Icon name="image" size={15} /> Image
-          </button>
-          <button
-            type="button"
-            className={`chip ${mediaType === 'video' ? 'on' : ''}`}
-            onClick={() => setMediaType('video')}
-          >
-            <Icon name="video" size={15} /> Video
-          </button>
 
           {/* Which generator, named rather than assumed. One with no working
               key is shown as unavailable instead of being quietly chosen. */}
@@ -436,41 +453,55 @@ export function AskSection({
         {/* Which brand, when this company has more than one: the one chosen at
             the top of the page to start with. Unset, the request names it or CIP asks. */}
         {brands.length > 1 && (
-          <div className="row" style={{ gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
-            <span className="tiny muted" style={{ marginRight: 2 }}>Brand:</span>
-            {brands.map((name) => (
+          <div className="pick-row">
+            <span className="pick-step"><b>1</b> Brand</span>
+            {shownBrands.map((name) => (
               <button
                 key={name}
                 type="button"
-                className={`chip ${brand === name ? 'on' : ''}`}
-                aria-pressed={brand === name}
-                onClick={() => setBrand(brand === name ? null : name)}
+                className={`chip pick ${brandRow === name ? 'on' : ''}`}
+                aria-pressed={brandRow === name}
+                onClick={() => { setBrand(brandRow === name ? null : name); setPack(null); }}
               >
-                {name}
+                {brandRow === name && <Icon name="check" size={13} />}{name}
               </button>
             ))}
-            {brand === null && (
-              <span className="tiny muted">— or name it in the request</span>
-            )}
           </div>
         )}
 
-        {markets.length > 1 && (
-          <div className="row" style={{ gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
-            <span className="tiny muted" style={{ marginRight: 2 }}>For:</span>
-            {markets.map((name) => (
+        {packChoices.length > 1 && (
+          <div className="pick-row">
+            <span className="pick-step"><b>2</b> {brandRow === 'Rampur' ? 'Expression' : 'Flavour / pack'}</span>
+            {packChoices.map((name) => (
               <button
                 key={name}
                 type="button"
-                className={`chip ${market === name ? 'on' : ''}`}
-                onClick={() => setMarket(market === name ? null : name)}
+                className={`chip pick ${pack === name ? 'on' : ''}`}
+                aria-pressed={pack === name}
+                onClick={() => choosePack(name)}
+                title={name === 'Collection' ? 'Several of its packs together' : undefined}
               >
-                {name}
+                {pack === name && <Icon name="check" size={13} />}{name}
               </button>
             ))}
-            {market === null && (
-              <span className="tiny muted">— CIP will ask if you do not say</span>
-            )}
+            {!pack && <span className="tiny muted">— its look, its bottle and its lines follow this</span>}
+          </div>
+        )}
+
+        {marketChoices.length > 1 && (
+          <div className="pick-row">
+            <span className="pick-step"><b>{packChoices.length > 1 ? 3 : 2}</b> Market</span>
+            {marketChoices.map((name) => (
+              <button
+                key={name}
+                type="button"
+                className={`chip pick ${market === name ? 'on' : ''}`}
+                aria-pressed={market === name}
+                onClick={() => setMarket(market === name ? null : name)}
+              >
+                {market === name && <Icon name="check" size={13} />}{name}
+              </button>
+            ))}
           </div>
         )}
 
@@ -494,13 +525,14 @@ export function AskSection({
             a story is 9:16 wherever it runs, and asking for one in words and
             hoping was how a banner came back square. */}
         {mediaType === 'image' && (
-          <div className="row" style={{ gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
-            <span className="tiny muted" style={{ marginRight: 2 }}>Size:</span>
+          <div className="pick-row">
+            <span className="pick-step"><b>{(packChoices.length > 1 ? 3 : 2) + (markets.length > 1 ? 1 : 0)}</b> Size</span>
             {shapes.map((option) => (
               <button
                 key={option.value ?? '__auto'}
                 type="button"
-                className={`chip ${shape === option.value ? 'on' : ''}`}
+                className={`chip pick ${shape === option.value ? 'on' : ''}`}
+                aria-pressed={shape === option.value}
                 onClick={() => setShape(option.value)}
                 disabled={busy}
                 title={
@@ -511,7 +543,7 @@ export function AskSection({
                       : 'Made at the nearest size the generator has, then cut to this one'
                 }
               >
-                {option.label}
+                {shape === option.value && <Icon name="check" size={13} />}{option.label}
               </button>
             ))}
           </div>
@@ -1073,6 +1105,8 @@ type PictureC = {
   ground?: number;
   /** Its reflection on a glossy surface: 0 to 1. */
   mirror?: number;
+  groundSoft?: number;
+  mirrorSoft?: number;
 };
 /** A shape laid on the post: a box, a band, a badge, a button - with words, for the last two. */
 type ShapeC = { kind: 'rect' | 'round' | 'circle' | 'line' | 'badge' | 'button'; fill: string; stroke?: string; strokeW?: number; text?: string; ink?: string; font?: string };
@@ -1112,7 +1146,7 @@ type Manifest = {
     logo: Frac | null; text: Frac | null; textAnchor: { x: number } | null;
     texts?: { id: string; x: number; y: number; w: number; h: number }[];
   };
-  choices: { bottle: Layers['bottle']; size: Layers['size']; logo: Layers['logo']; headline?: 'shown' | 'none'; place?: Placement; style?: PostStyle; texts?: TextBlockC[]; pictures?: PictureC[]; order?: StackGroupC[]; locked?: string[] };
+  choices: { bottle: Layers['bottle']; size: Layers['size']; logo: Layers['logo']; headline?: 'shown' | 'none'; place?: Placement; style?: PostStyle; texts?: TextBlockC[]; pictures?: PictureC[]; order?: StackGroupC[]; locked?: string[]; bottleFile?: string; logoFile?: string };
   /** What measuring the post found to look at, each with the change that puts it right when there is one. */
   checks?: (string | { text: string; fix?: { choices: Record<string, unknown> } })[];
 };
@@ -1125,6 +1159,8 @@ type PostStyle = {
   reflection?: number; reflectionSoft?: number;
   logoBright?: number; logoShadow?: number; logoOpacity?: number; bgBright?: number; bgBlur?: number;
   logoTone?: 'light' | 'dark' | 'colour';
+  bottleCrop?: { l: number; t: number; r: number; b: number };
+  logoCrop?: { l: number; t: number; r: number; b: number };
   bgZoom?: number; bgX?: number; bgY?: number; bgFlip?: boolean; bgOverlay?: string; bgOverlayAmount?: number; bgVignette?: number;
   warmth?: number; contrast?: number; saturation?: number;
   textSpacing?: number; textLeading?: number; textStroke?: number; textStrokeInk?: string; ink2?: string;
@@ -1144,7 +1180,6 @@ const POST_LOOKS: { label: string; style: Partial<Record<'warmth' | 'contrast' |
 /** The pieces that can lie over or under one another, from the bottom up as CIP lays them. */
 const STACK_C = ['bottle', 'pictures', 'headline', 'texts', 'logo'] as const;
 type StackGroupC = (typeof STACK_C)[number];
-const STACK_LABEL: Record<StackGroupC, string> = { bottle: 'Bottle', pictures: 'Pictures', headline: 'Headline', texts: 'Text', logo: 'Logo' };
 const STACK_LAYERS: Record<StackGroupC, LayerName[]> = { bottle: ['shadow', 'reflection', 'bottle'], pictures: ['pictures'], headline: ['headline'], texts: ['texts'], logo: ['logo'] };
 /** An order made whole, as the server makes it: a piece it does not name goes where it usually lies. */
 function stackOfC(order?: readonly StackGroupC[] | null): StackGroupC[] {
@@ -1218,6 +1253,8 @@ const restoring = (s: Snapshot) => ({
     pictures: s.choices.pictures ?? [],
     order: s.choices.order ?? null,
     locked: s.choices.locked ?? [],
+    bottleFile: s.choices.bottleFile ?? null,
+    logoFile: s.choices.logoFile ?? null,
     place: {
       bottle: s.choices.place?.bottle ?? null, shadow: s.choices.place?.shadow ?? null, reflection: s.choices.place?.reflection ?? null,
       logo: s.choices.place?.logo ?? null, text: s.choices.place?.text ?? null,
@@ -1230,7 +1267,7 @@ const restoring = (s: Snapshot) => ({
       shadowAngle: s.choices.style?.shadowAngle ?? null, shadowLength: s.choices.style?.shadowLength ?? null,
       reflection: s.choices.style?.reflection ?? null, reflectionSoft: s.choices.style?.reflectionSoft ?? null,
       logoBright: s.choices.style?.logoBright ?? null, logoShadow: s.choices.style?.logoShadow ?? null,
-      logoOpacity: s.choices.style?.logoOpacity ?? null, logoTone: s.choices.style?.logoTone ?? null, bgBright: s.choices.style?.bgBright ?? null, bgBlur: s.choices.style?.bgBlur ?? null,
+      logoOpacity: s.choices.style?.logoOpacity ?? null, logoTone: s.choices.style?.logoTone ?? null, bottleCrop: s.choices.style?.bottleCrop ?? null, logoCrop: s.choices.style?.logoCrop ?? null, bgBright: s.choices.style?.bgBright ?? null, bgBlur: s.choices.style?.bgBlur ?? null,
       bgZoom: s.choices.style?.bgZoom ?? null, bgX: s.choices.style?.bgX ?? null, bgY: s.choices.style?.bgY ?? null, bgFlip: s.choices.style?.bgFlip ?? null,
       bgOverlay: s.choices.style?.bgOverlay ?? null, bgOverlayAmount: s.choices.style?.bgOverlayAmount ?? null, bgVignette: s.choices.style?.bgVignette ?? null,
       warmth: s.choices.style?.warmth ?? null, contrast: s.choices.style?.contrast ?? null, saturation: s.choices.style?.saturation ?? null,
@@ -1274,12 +1311,8 @@ const shiftBox = (b: Frac, dx: number, dy: number): Frac => ({
 });
 
 const SHAPES: { value: string | null; label: string }[] = [
-  { value: null, label: 'As made' }, { value: '1:1', label: 'Square 1:1' }, { value: '4:5', label: 'Portrait 4:5' },
-  { value: '9:16', label: 'Story 9:16' }, { value: '16:9', label: 'Wide 16:9' },
-  // Print and retail, as Radico's briefs ask for them.
-  { value: '1:1.414', label: 'Poster A2/A3' }, { value: '1:2', label: 'Standee 36x72in' }, { value: '4:3', label: 'Billboard 4x3m' },
-  { value: '5:1', label: 'Jumia desktop 1200x240' }, { value: '720:261', label: 'Jumia mobile 720x261' },
-  { value: '41:16', label: 'Shelf top 41x16in' }, { value: '18:60', label: 'Shelf side 18x60in' },
+  { value: null, label: 'As made' }, { value: '1:1', label: 'Square 1:1' }, { value: '3:2', label: 'Landscape 3:2' },
+  { value: '2:3', label: 'Portrait 2:3' }, { value: '4:5', label: 'Portrait 4:5' },
 ];
 
 type HeadlineOption = { from: 'words' | 'brand'; lines: HeadlineLine[] };
@@ -1288,7 +1321,7 @@ type HeadlineOption = { from: 'words' | 'brand'; lines: HeadlineLine[] };
 const STUDIO_STEPS: { id: 'background' | 'bottle' | 'pictures' | 'logo' | 'words' | 'download'; label: string; adds: LayerName[] }[] = [
   { id: 'background', label: 'Background', adds: ['background'] },
   { id: 'bottle', label: 'Bottle', adds: ['shadow', 'reflection', 'bottle'] },
-  { id: 'pictures', label: 'Pictures', adds: ['pictures'] },
+  { id: 'pictures', label: 'Glass', adds: ['pictures'] },
   { id: 'logo', label: 'Logo', adds: ['logo'] },
   { id: 'words', label: 'Headline', adds: ['headline', 'texts'] },
   { id: 'download', label: 'Download', adds: [] },
@@ -1398,10 +1431,25 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
   const { note } = useToast();
   const [step, setStep] = useState(fresh ? 0 : STUDIO_STEPS.length - 1);
   const [manifest, setManifest] = useState<Manifest | null>(null);
-  const [hidden, setHidden] = useState<Set<LayerName>>(new Set());
+  const [hidden] = useState<Set<LayerName>>(new Set());
   const [selected, setSelected] = useState<Piece | null>(null);
   /** Which of the bottle, its shadow and its reflection the bottle step is setting: the one last chosen. */
   const [part, setPart] = useState<'bottle' | 'shadow' | 'reflection'>('bottle');
+  /** The furthest step come to, so going back to an earlier one leaves what was added after it on the post. */
+  const [furthest, setFurthest] = useState(step);
+  useEffect(() => { setFurthest((f) => Math.max(f, step)); }, [step]);
+  /** A piece clicked on the post: its own settings opened - the bottle's, a glass's or added bottle's, the logo's, the words'. */
+  const openSettingsFor = (piece: Piece) => {
+    const id: (typeof STUDIO_STEPS)[number]['id'] | null =
+      piece === 'bottle' || piece === 'shadow' || piece === 'reflection' ? 'bottle'
+        : isPic(piece) ? 'pictures'
+          : piece === 'logo' ? 'logo'
+            : piece === 'text' || piece.startsWith('t:') ? 'words'
+              : null;
+    if (!id) return;
+    const at = STUDIO_STEPS.findIndex((x) => x.id === id);
+    if (at >= 0) setStep(at);
+  };
   useEffect(() => {
     if (selected === 'bottle' || selected === 'shadow' || selected === 'reflection') setPart(selected);
   }, [selected]);
@@ -1410,14 +1458,65 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
   const [saving, setSaving] = useState(false);
   /** A piece turned on or off, shown so at once while the post catches up. */
   const [want, setWant] = useState<{ logo?: boolean; headline?: boolean }>({});
-  /** The brand's logos, one of each kind - white, black, colour - for the person to choose between. Free. */
-  const [logoVersions, setLogoVersions] = useState<{ id: string; name: string; tone: 'light' | 'dark' | 'colour' }[]>([]);
+  /** Every bottle and logo in the brand's library - each flavour, each pack, each logo - to choose from on the post. Free. */
+  const [library, setLibrary] = useState<{
+    brand: string | null;
+    bottles: { id: string; name: string; variant: string | null }[];
+    allBottles: { id: string; name: string; variant: string | null }[];
+    logos: { id: string; name: string; tone: 'light' | 'dark' | 'colour'; variant: string | null }[];
+    bottleFile: string | null;
+  }>({ brand: null, bottles: [], allBottles: [], logos: [], bottleFile: null });
+  /** The bottle's crop as it is being slid, set on the post when let go. */
+  const [cropDraft, setCropDraft] = useState<{ l: number; t: number; r: number; b: number } | null>(null);
+  /** The bottle's height or the logo's width as it is being slid, set on the post when let go. */
+  const [sizeDraft, setSizeDraft] = useState<{ bottle?: number; logo?: number }>({});
+  /** The logo's crop as it is being slid. */
+  const [logoCropDraft, setLogoCropDraft] = useState<{ l: number; t: number; r: number; b: number } | null>(null);
+  // Asked for once the post's layers are here - before that the post may not be laid out, and nothing comes -
+  // and asked again on each step until it has come, so the library never needs the page reloaded.
+  const libraryHere = useRef(false);
+  const libraryAsking = useRef(false);
+  const layersHere = Boolean(manifest);
   useEffect(() => {
+    if (!layersHere || libraryHere.current || libraryAsking.current) return;
+    libraryAsking.current = true;
     void fetch(`/api/media/generations/${generation.id}/glass`, { cache: 'no-store' })
       .then((r) => (r.ok ? r.json() : null))
-      .then((b: { logos?: { id: string; name: string; tone: 'light' | 'dark' | 'colour' }[] } | null) => setLogoVersions(b?.logos ?? []))
-      .catch(() => undefined);
-  }, [generation.id]);
+      .then((b: Partial<typeof library> | null) => {
+        if (!b?.brand) return;
+        libraryHere.current = true;
+        setLibrary({ brand: b.brand ?? null, bottles: b.bottles ?? [], allBottles: b.allBottles ?? [], logos: b.logos ?? [], bottleFile: b.bottleFile ?? null });
+      })
+      .catch(() => undefined)
+      .finally(() => { libraryAsking.current = false; });
+  }, [generation.id, layersHere, step]);
+  /** Another bottle stood on the same surface beside the bottle, as tall as it: for several flavours together. */
+  const addBottle = async (file: string) => {
+    const now = manifest?.choices.pictures ?? [];
+    if (now.length >= 8) { note('A post takes at most 8 added pictures.'); return; }
+    const box = manifest?.boxes.bottle ?? null;
+    const aspect = await new Promise<number>((done) => {
+      const img = new Image();
+      img.onload = () => done(img.naturalWidth ? img.naturalHeight / img.naturalWidth : 3);
+      img.onerror = () => done(3);
+      img.src = `/api/drive/files/${file}/content?size=320`;
+    });
+    const postAspect = manifest ? manifest.height / manifest.width : 1.25;
+    const h = box ? box.h : 0.55;
+    const w = Math.min(0.5, (h * postAspect) / aspect);
+    const foot = box ? box.y + box.h : 0.92;
+    // Alternately right and left of the bottle, one step further out each time.
+    const k = now.filter((pc) => pc.file && !pc.shape).length;
+    const sideRight = k % 2 === 0;
+    const step = Math.floor(k / 2) + 1;
+    const cx = box ? box.x + box.w / 2 + (sideRight ? 1 : -1) * step * (box.w * 0.95) : 0.5;
+    const pic: PictureC = {
+      id: blockId(), file, aspect, w,
+      x: Math.min(0.98 - w, Math.max(0.02, cx - w / 2)), y: foot - (w * aspect) / postAspect,
+      ground: 0.6, mirror: 0.45,
+    };
+    await arrange({ choices: { pictures: [...now, pic] } });
+  };
   const [painting, setPainting] = useState(false);
   const [backgroundNote, setBackgroundNote] = useState('');
   const [exportShape, setExportShape] = useState<string | null>(null);
@@ -1431,6 +1530,11 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
   const [inline, setInline] = useState<HeadlineLine[] | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const drag = useRef<{ piece: Piece; mode: 'move' | 'resize' | 'turn'; x: number; y: number; from: Frac; others?: { piece: Piece; from: Frac }[] } | null>(null);
+  /** An edge being pulled to crop a piece, as on any editor: where its box would end, shown until let go. */
+  const cropDrag = useRef<{ piece: Piece; side: 'l' | 'r' | 't' | 'b'; x: number; y: number; from: Frac } | null>(null);
+  const [cropBox, setCropBox] = useState<{ piece: Piece; box: Frac } | null>(null);
+  /** The bottle or the logo as just cropped, shown cut on its layer until the post comes back cut. */
+  const [clips, setClips] = useState<Partial<Record<'bottle' | 'logo', Frac>>>({});
   /** Pieces chosen together - Shift and click - to move, line up or hold still as one. */
   const [group, setGroup] = useState<Set<Piece>>(new Set());
   /** A picture or a block of text copied, to paste here or on another post. */
@@ -1519,6 +1623,11 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
       for (const p of settles) w.seen.set(p, dropped(p));
       return w.run;
     }
+    // Pictures are drawn on this page: a change to them is shown at once, the post set behind it.
+    if (mode === 'do' && given?.choices && Array.isArray((given.choices as { pictures?: unknown }).pictures)) {
+      const pictures = (given.choices as { pictures: PictureC[] }).pictures;
+      setManifest((m) => (m ? { ...m, choices: { ...m.choices, pictures } } : m));
+    }
     pending.current += 1;
     setSaving(true);
     const seen = new Map(settles.map((p) => [p, dropped(p)] as const));
@@ -1556,6 +1665,9 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
       if (!res?.ok) {
         const message = (await res?.json().catch(() => null) as { message?: string } | null)?.message;
         note(message ?? 'That change could not be made.');
+        // What was shown at once goes back to the post as it is.
+        const back = latest.current;
+        if (back) setManifest((m) => (m ? { ...m, choices: back.choices } : m));
         // Nothing changed, so nothing is kept to go back to.
         if (mode === 'do') undos.current.pop();
         else { to.pop(); from.push(target!); }
@@ -1612,7 +1724,8 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
   };
 
   // What the steps so far have put on the canvas, less what was hidden by hand.
-  const reached = new Set(STUDIO_STEPS.slice(0, step + 1).flatMap((s) => s.adds));
+  // Every layer of the furthest step come to stays shown: going back to set a piece hides nothing after it.
+  const reached = new Set(STUDIO_STEPS.slice(0, Math.max(step, furthest) + 1).flatMap((s) => s.adds));
   const present = new Set(manifest?.layers.filter((l) => l.present).map((l) => l.name) ?? []);
   // Turned off here: gone at once. Turned on: shown as soon as its picture is set.
   if (want.logo === false) present.delete('logo');
@@ -1650,6 +1763,13 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
    */
   const pieceShowing = (name: LayerName): Piece | undefined =>
     name === 'shadow' || name === 'reflection' ? (moved[name] ? name : moved.bottle ? 'bottle' : undefined) : PIECE_OF[name];
+  /** A layer cut to a piece's new crop while the post catches up: everything outside the cropped box hidden. */
+  const clipOf = (name: LayerName): React.CSSProperties => {
+    const b = name === 'bottle' ? clips.bottle : name === 'logo' ? clips.logo : undefined;
+    if (!b) return {};
+    const pct = (v: number) => `${(Math.max(0, v) * 100).toFixed(2)}%`;
+    return { clipPath: `inset(${pct(b.y)} ${pct(1 - b.x - b.w)} ${pct(1 - b.y - b.h)} ${pct(b.x)})` };
+  };
   const transformFor = (name: LayerName): string | undefined => {
     const piece = pieceShowing(name);
     return piece ? transformOfPiece(piece) : undefined;
@@ -1682,6 +1802,7 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
       return;
     }
     setSelected(piece);
+    if (mode === 'move') openSettingsFor(piece);
     if (!group.has(piece)) setGroup(new Set([piece]));
     // Held still: chosen, never moved.
     if (locked.has(piece)) return;
@@ -1691,6 +1812,91 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
     drag.current = { piece, mode, x: e.clientX, y: e.clientY, from, others };
     (e.target as Element).setPointerCapture?.(e.pointerId);
   };
+  /** Whether a piece can be cropped by its edges: the bottle, the logo, a picture or a glass - upright. */
+  const croppable = (piece: Piece): boolean => {
+    const b = boxOf(piece);
+    if (!b || Math.abs(b.r ?? 0) > 0.5 || locked.has(piece)) return false;
+    if (piece === 'bottle' || piece === 'logo') return true;
+    if (isPic(piece)) { const pic = (manifest?.choices.pictures ?? []).find((x) => x.id === piece.slice(2)); return Boolean(pic?.file); }
+    return false;
+  };
+  /** The crop a piece has now, on each side, a share of the piece itself. */
+  const cropOf = (piece: Piece): { l: number; t: number; r: number; b: number } => {
+    const none = { l: 0, t: 0, r: 0, b: 0 };
+    if (piece === 'bottle') return manifest?.choices.style?.bottleCrop ?? none;
+    if (piece === 'logo') return manifest?.choices.style?.logoCrop ?? none;
+    if (isPic(piece)) return (manifest?.choices.pictures ?? []).find((x) => x.id === piece.slice(2))?.crop ?? none;
+    return none;
+  };
+  const startCrop = (piece: Piece, side: 'l' | 'r' | 't' | 'b') => (e: React.PointerEvent) => {
+    const from = boxOf(piece);
+    if (!from) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setSelected(piece);
+    cropDrag.current = { piece, side, x: e.clientX, y: e.clientY, from };
+    (e.target as Element).setPointerCapture?.(e.pointerId);
+  };
+  /** An edge pulled: the piece's crop on that side, kept between nothing and nearly half of it. */
+  const croppedTo = (d: NonNullable<typeof cropDrag.current>, clientX: number, clientY: number) => {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return null;
+    const f = d.from;
+    const c = cropOf(d.piece);
+    const vx = Math.max(0.05, 1 - c.l - c.r);
+    const vy = Math.max(0.05, 1 - c.t - c.b);
+    const horizontal = d.side === 'l' || d.side === 'r';
+    const moved = horizontal ? (clientX - d.x) / rect.width : (clientY - d.y) / rect.height;
+    // Pulled inwards crops more; outwards gives back what was cropped.
+    const inward = d.side === 'l' || d.side === 't' ? moved : -moved;
+    const span = horizontal ? f.w : f.h;
+    const v = horizontal ? vx : vy;
+    const next = Math.min(0.45, Math.max(0, c[d.side] + (inward / span) * v));
+    const by = next - c[d.side];
+    const cut = (by / v) * span;
+    const box: Frac = { ...f };
+    if (d.side === 'l') { box.x = f.x + cut; box.w = f.w - cut; }
+    if (d.side === 'r') box.w = f.w - cut;
+    if (d.side === 't') { box.y = f.y + cut; box.h = f.h - cut; }
+    if (d.side === 'b') box.h = f.h - cut;
+    return { box, crop: { ...c, [d.side]: Math.round(next * 1000) / 1000 } };
+  };
+  const onCropMove = (e: React.PointerEvent) => {
+    const d = cropDrag.current;
+    if (!d) return false;
+    const got = croppedTo(d, e.clientX, e.clientY);
+    if (got) setCropBox({ piece: d.piece, box: got.box });
+    return true;
+  };
+  /** The crop let go: set into the post, the piece staying the size it was - what was cut is simply gone. */
+  const onCropDrop = (e: React.PointerEvent) => {
+    const d = cropDrag.current;
+    if (!d) return false;
+    cropDrag.current = null;
+    setCropBox(null);
+    const got = croppedTo(d, e.clientX, e.clientY);
+    if (!got || !manifest) return true;
+    const { box, crop } = got;
+    const none = !crop.l && !crop.t && !crop.r && !crop.b;
+    if (d.piece === 'bottle' || d.piece === 'logo') setClips((c) => ({ ...c, [d.piece]: box }));
+    const unclip = () => setClips((c) => { const n = { ...c }; delete n[d.piece as 'bottle' | 'logo']; return n; });
+    if (d.piece === 'bottle') {
+      void arrange({ choices: { style: { bottleCrop: none ? null : crop }, place: { bottle: { cx: box.x + box.w / 2, base: box.y + box.h, height: box.h, ...(box.r ? { rotate: box.r } : {}) } } } }, ['bottle']).then(unclip);
+    } else if (d.piece === 'logo') {
+      void arrange({ choices: { style: { logoCrop: none ? null : crop }, place: { logo: { x: box.x, y: box.y, w: box.w, ...(box.r ? { rotate: box.r } : {}) } } } }, ['logo']).then(unclip);
+    } else if (isPic(d.piece)) {
+      const id = d.piece.slice(2);
+      const f = d.from;
+      const pictures = listNow('pictures').map((pic) => (pic.id !== id ? pic : {
+        ...pic, crop, x: box.x, y: box.y, w: box.w,
+        // Its shape follows what is left of it.
+        aspect: pic.aspect * (box.h / f.h) / (box.w / f.w),
+      }));
+      void arrange({ choices: { pictures } }, [d.piece]);
+    }
+    return true;
+  };
+
   /** Every other piece on the post, to line a moved one up with. */
   const guideBoxes = (moving: Piece): Frac[] => handles
     .filter((h) => h !== moving && !group.has(h) && !(moving === 'bottle' && (h === 'shadow' || h === 'reflection')))
@@ -1698,6 +1904,7 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
     .filter((b): b is Frac => Boolean(b) && !b!.r);
 
   const onMove = (e: React.PointerEvent) => {
+    if (onCropMove(e)) return;
     const d = drag.current;
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!d || !rect) return;
@@ -1783,7 +1990,8 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
     void arrange({ choices: { place } }, [piece]);
   };
 
-  const onDrop = () => {
+  const onDrop = (e?: React.PointerEvent) => {
+    if (e && onCropDrop(e)) return;
     const d = drag.current;
     drag.current = null;
     setGuides({ x: [], y: [] });
@@ -2087,15 +2295,6 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
     LAYER_LIST.find((l) => l.name === 'background')!,
     ...order.flatMap((g) => STACK_LAYERS[g].map((n) => LAYER_LIST.find((l) => l.name === n)!)),
   ];
-  /** A piece one step up or down the stack. */
-  const restack = (g: StackGroupC, by: 1 | -1) => {
-    const at = order.indexOf(g);
-    const to = at + by;
-    if (to < 0 || to >= order.length) return;
-    const next = [...order];
-    [next[at], next[to]] = [next[to]!, next[at]!];
-    void arrange({ choices: { order: next } });
-  };
   const handles = ([
     'shadow', 'reflection', 'bottle', 'text', 'logo',
     ...(manifest?.choices.pictures ?? []).map((pic) => `p:${pic.id}` as Piece),
@@ -2125,7 +2324,7 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
     const W = manifest!.width;
     const src = look.shape
       ? shapeSrc(look.shape, look.w * W, look.w * W * look.aspect)
-      : `/api/drive/files/${look.file}/content?disposition=inline`;
+      : `/api/drive/files/${look.file}/content?size=640`;
     const c = look.crop ?? { l: 0, t: 0, r: 0, b: 0 };
     const kw = 1 - c.l - c.r;
     const kh = 1 - c.t - c.b;
@@ -2236,12 +2435,15 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
                   alt=""
                   draggable={false}
                   className={`studio-layer ${shows(l.name) ? '' : 'is-hidden'}`}
-                  style={{ transform: transformFor(l.name), transformOrigin: originFor(l.name), ...previewOf(l.name) }}
+                  style={{ transform: transformFor(l.name), transformOrigin: originFor(l.name), ...previewOf(l.name), ...clipOf(l.name) }}
                 />
               )))
             : <div className="studio-wait">Laying out the layers…</div>}
           {painting && <div className="studio-wait">Painting a new background…</div>}
 
+          {cropBox && (
+            <div className="studio-crop-box" style={{ left: `${cropBox.box.x * 100}%`, top: `${cropBox.box.y * 100}%`, width: `${cropBox.box.w * 100}%`, height: `${cropBox.box.h * 100}%` }} />
+          )}
           {manifest && handles.map((piece) => {
             const b = boxOf(piece)!;
             return (
@@ -2285,6 +2487,11 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
                     </svg>
                   </span>
                 )}
+                {selected === piece && group.size <= 1 && croppable(piece) && (['l', 'r', 't', 'b'] as const).map((side) => (
+                  <span key={side} className={`studio-box-crop is-${side}`} onPointerDown={startCrop(piece, side)}
+                    aria-label={`Crop the ${labelOf(piece).toLowerCase()} from the ${{ l: 'left', r: 'right', t: 'top', b: 'foot' }[side]}`}
+                    title="Pull to crop - pull back out to give it back" />
+                ))}
                 {!locked.has(piece) && <span className="studio-box-grip" onPointerDown={startDrag(piece, 'resize')} aria-label={`Resize the ${labelOf(piece).toLowerCase()}`} title="Pull to make it bigger or smaller">
                   <svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true">
                     <path d="M4 12L12 4M7.5 4H12v4.5M4 7.5V12h4.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
@@ -2488,6 +2695,92 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
                   {choice('bottle', BOTTLE_PLACES)}
                 </>
               )}
+              {layers.bottle !== 'none' && library.bottles.length > 1 && part === 'bottle' && (
+                <div className="studio-group">
+                  <p className="studio-group-title">Which bottle · {library.bottles.length} in the library</p>
+                  <div className="lib-strip" role="listbox" aria-label="The brand's bottles and packs">
+                    {library.bottles.map((b) => {
+                      const on = (manifest?.choices.bottleFile ?? library.bottleFile) === b.id;
+                      return (
+                        <button key={b.id} type="button" className={`lib-pick is-bottle ${on ? 'is-on' : ''}`} aria-selected={on}
+                          onClick={() => { if (!on) void arrange({ choices: { bottleFile: b.id } }); }} title={b.name}>
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img src={`/api/drive/files/${b.id}/content?size=320`} alt="" className="lib-img" loading="lazy" />
+                          <span className="lib-name">{b.variant ?? 'Standard'}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <p className="tiny muted" style={{ margin: 0 }}>Choose any flavour or pack - it is set in the same place, with its shadow and reflection. Free.</p>
+                </div>
+              )}
+              {layers.bottle !== 'none' && part === 'bottle' && library.brand === 'Magic Moments' && library.allBottles.length > 0 && (
+                <div className="studio-group">
+                  <p className="studio-group-title">Add another bottle · {(manifest?.choices.pictures ?? []).length}/8 on the post</p>
+                  <div className="lib-strip" role="listbox" aria-label="Add another Magic Moments bottle">
+                    {library.allBottles.map((b) => (
+                      <button key={b.id} type="button" className="lib-pick is-bottle" onClick={() => void addBottle(b.id)} title={`Add ${b.name} beside the others`}>
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={`/api/drive/files/${b.id}/content?size=320`} alt="" className="lib-img" loading="lazy" />
+                        <span className="lib-name">+ {b.variant ?? 'Plain'}</span>
+                      </button>
+                    ))}
+                  </div>
+                  <p className="tiny muted" style={{ margin: 0 }}>Each one stands on the same surface beside the bottle, its size, with its shadow and reflection - drag, resize, turn or crop it in Pictures. Free.</p>
+                </div>
+              )}
+              {layers.bottle !== 'none' && part === 'bottle' && (() => {
+                const crop = cropDraft ?? manifest?.choices.style?.bottleCrop ?? { l: 0, t: 0, r: 0, b: 0 };
+                const commit = () => {
+                  if (!cropDraft) return;
+                  const sent = cropDraft;
+                  void arrange({ choices: { style: { bottleCrop: sent.l || sent.t || sent.r || sent.b ? sent : null } } }).then(() => setCropDraft((d) => (d === sent ? null : d)));
+                };
+                return (
+                  <div className="studio-group">
+                    <p className="studio-group-title">Size, light and crop</p>
+                    {slide('bright')}
+                    {manifest?.boxes.bottle && (() => {
+                      const b = manifest.boxes.bottle;
+                      const h = sizeDraft.bottle ?? b.h;
+                      const commit = () => {
+                        const v = sizeDraft.bottle;
+                        if (v === undefined) return;
+                        const k = v / b.h;
+                        setMoved((m) => ({ ...m, bottle: { ...b, x: b.x + b.w / 2 - (b.w * k) / 2, y: b.y + b.h - v, w: b.w * k, h: v } }));
+                        void arrange({ choices: { place: { bottle: { cx: b.x + b.w / 2, base: b.y + b.h, height: v, ...(manifest.choices.place?.bottle?.rotate ? { rotate: manifest.choices.place.bottle.rotate } : {}) } } } }, ['bottle'])
+                          .then(() => setSizeDraft((d) => { const n = { ...d }; if (n.bottle === v) delete n.bottle; return n; }));
+                      };
+                      return (
+                        <div className="studio-slide">
+                          <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
+                            <span className="tiny muted">Size</span><span className="tiny">{Math.round(h * 100)}% of the height</span>
+                          </div>
+                          <input type="range" min={0.15} max={1.2} step={0.01} value={h} aria-label="The bottle's size"
+                            onChange={(e) => setSizeDraft((d) => ({ ...d, bottle: Number(e.target.value) }))} onPointerUp={commit} onKeyUp={commit} onBlur={commit} />
+                        </div>
+                      );
+                    })()}
+                    {(['l', 'r', 't', 'b'] as const).map((side) => (
+                      <div className="studio-slide" key={side}>
+                        <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
+                          <span className="tiny muted">{{ l: 'Crop the left', r: 'Crop the right', t: 'Crop the top', b: 'Crop the foot' }[side]}</span>
+                          <span className="tiny">{Math.round(crop[side] * 100)}%</span>
+                        </div>
+                        <input type="range" min={0} max={0.45} step={0.01} value={crop[side]} aria-label={`Crop the bottle - ${side}`}
+                          onChange={(e) => setCropDraft({ ...crop, [side]: Number(e.target.value) })} onPointerUp={commit} onKeyUp={commit} onBlur={commit} />
+                      </div>
+                    ))}
+                    {(crop.l || crop.t || crop.r || crop.b) ? (
+                      <button type="button" className="btn btn-ghost btn-sm" style={{ justifySelf: 'start' }}
+                        onClick={() => { setCropDraft(null); void arrange({ choices: { style: { bottleCrop: null } } }); }}>
+                        Uncrop
+                      </button>
+                    ) : null}
+                    <p className="tiny muted" style={{ margin: 0 }}>Cut a box, a pouch or an edge away. Resize and turn it on the picture. Free.</p>
+                  </div>
+                );
+              })()}
               {layers.bottle !== 'none' && (
                 <>
                   {((part === 'bottle' && Boolean(manifest?.choices.place?.bottle?.rotate))
@@ -2539,7 +2832,6 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
                       <p className="studio-group-title">Bottle</p>
                       <span className="tiny muted">Where it stands</span>
                       {choice('bottle', BOTTLE_PLACES)}
-                      {slide('bright')}
                       <p className="tiny muted" style={{ margin: 0 }}>Drag it to move, pull its corner to size it, the round handle to turn it.</p>
                     </div>
                   )}
@@ -2577,6 +2869,7 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
           {current.id === 'pictures' && manifest && (
             <StudioPictures
               generationId={generation.id}
+              bottleFiles={library.allBottles.map((b) => b.id)}
               bottle={manifest.boxes.bottle}
               pictures={manifest.choices.pictures ?? []}
               postAspect={manifest.height / manifest.width}
@@ -2628,22 +2921,27 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
                       Stand the logo straight
                     </button>
                   )}
-                  {logoVersions.length > 1 && (
+                  {library.logos.length > 0 && (
                     <div className="studio-group">
-                      <p className="studio-group-title">Which logo</p>
-                      <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
-                        <button type="button" className={`chip ${!style.logoTone ? 'on' : ''}`} aria-pressed={!style.logoTone}
-                          onClick={() => void arrange({ choices: { style: { logoTone: null } } })} title="The one that stands out against the picture">
-                          Auto
+                      <p className="studio-group-title">Which logo · {library.logos.length} in the library</p>
+                      <div className="lib-strip" role="listbox" aria-label="The brand's logos">
+                        <button type="button" className={`lib-pick is-auto ${!manifest?.choices.logoFile && !style.logoTone ? 'is-on' : ''}`}
+                          aria-selected={!manifest?.choices.logoFile && !style.logoTone}
+                          onClick={() => void arrange({ choices: { logoFile: null, style: { logoTone: null } } })} title="The one that stands out against the picture">
+                          <span className="lib-auto">Auto</span>
+                          <span className="lib-name">Best for the picture</span>
                         </button>
-                        {logoVersions.map((l) => (
-                          <button key={l.tone} type="button" className={`chip logo-version ${style.logoTone === l.tone ? 'on' : ''}`} aria-pressed={style.logoTone === l.tone}
-                            onClick={() => void arrange({ choices: { style: { logoTone: l.tone } } })} title={l.name}>
-                            {/* eslint-disable-next-line @next/next/no-img-element */}
-                            <img src={`/api/drive/files/${l.id}/content?size=160`} alt="" className={`logo-version-img is-${l.tone}`} />
-                            {l.tone === 'light' ? 'White' : l.tone === 'dark' ? 'Black' : 'Colour'}
-                          </button>
-                        ))}
+                        {library.logos.map((l) => {
+                          const on = manifest?.choices.logoFile === l.id;
+                          return (
+                            <button key={l.id} type="button" className={`lib-pick ${on ? 'is-on' : ''}`} aria-selected={on}
+                              onClick={() => void arrange({ choices: { logoFile: l.id, style: { logoTone: null } } })} title={l.name}>
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img src={`/api/drive/files/${l.id}/content?size=320`} alt="" className={`lib-img is-${l.tone}`} loading="lazy" />
+                              <span className="lib-name">{l.variant ? `${l.variant} · ` : ''}{l.tone === 'light' ? 'White' : l.tone === 'dark' ? 'Dark' : 'Colour'}</span>
+                            </button>
+                          );
+                        })}
                       </div>
                     </div>
                   )}
@@ -2653,6 +2951,59 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
                     {slide('logoShadow')}
                     {slide('logoOpacity')}
                   </div>
+                  {(() => {
+                    const crop = logoCropDraft ?? manifest?.choices.style?.logoCrop ?? { l: 0, t: 0, r: 0, b: 0 };
+                    const commit = () => {
+                      if (!logoCropDraft) return;
+                      const sent = logoCropDraft;
+                      void arrange({ choices: { style: { logoCrop: sent.l || sent.t || sent.r || sent.b ? sent : null } } }).then(() => setLogoCropDraft((d) => (d === sent ? null : d)));
+                    };
+                    return (
+                      <div className="studio-group">
+                        <p className="studio-group-title">Size and crop</p>
+                        {manifest?.boxes.logo && (() => {
+                          const lb = manifest.boxes.logo;
+                          const w = sizeDraft.logo ?? lb.w;
+                          const commit = () => {
+                            const v = sizeDraft.logo;
+                            if (v === undefined) return;
+                            // Kept to its right edge when it sits on the right, as a logo in a corner is.
+                            const x = lb.x + lb.w / 2 > 0.5 ? lb.x + lb.w - v : lb.x;
+                            const k = v / lb.w;
+                            setMoved((m) => ({ ...m, logo: { ...lb, x, w: v, h: lb.h * k } }));
+                            void arrange({ choices: { place: { logo: { x, y: lb.y, w: v, ...(manifest.choices.place?.logo?.rotate ? { rotate: manifest.choices.place.logo.rotate } : {}) } } } }, ['logo'])
+                              .then(() => setSizeDraft((d) => { const n = { ...d }; if (n.logo === v) delete n.logo; return n; }));
+                          };
+                          return (
+                            <div className="studio-slide">
+                              <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
+                                <span className="tiny muted">Size</span><span className="tiny">{Math.round(w * 100)}% of the width</span>
+                              </div>
+                              <input type="range" min={0.05} max={0.6} step={0.005} value={w} aria-label="The logo's size"
+                                onChange={(e) => setSizeDraft((d) => ({ ...d, logo: Number(e.target.value) }))} onPointerUp={commit} onKeyUp={commit} onBlur={commit} />
+                            </div>
+                          );
+                        })()}
+                        {(['l', 'r', 't', 'b'] as const).map((side) => (
+                          <div className="studio-slide" key={side}>
+                            <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
+                              <span className="tiny muted">{{ l: 'Crop the left', r: 'Crop the right', t: 'Crop the top', b: 'Crop the foot' }[side]}</span>
+                              <span className="tiny">{Math.round(crop[side] * 100)}%</span>
+                            </div>
+                            <input type="range" min={0} max={0.45} step={0.01} value={crop[side]} aria-label={`Crop the logo - ${side}`}
+                              onChange={(e) => setLogoCropDraft({ ...crop, [side]: Number(e.target.value) })} onPointerUp={commit} onKeyUp={commit} onBlur={commit} />
+                          </div>
+                        ))}
+                        {(crop.l || crop.t || crop.r || crop.b) ? (
+                          <button type="button" className="btn btn-ghost btn-sm" style={{ justifySelf: 'start' }}
+                            onClick={() => { setLogoCropDraft(null); void arrange({ choices: { style: { logoCrop: null } } }); }}>
+                            Uncrop
+                          </button>
+                        ) : null}
+                        <p className="tiny muted" style={{ margin: 0 }}>Keep only the mark, or drop a line under it - for posts where the full logo is too much. Free.</p>
+                      </div>
+                    );
+                  })()}
                 </>
               )}
             </>
@@ -2893,46 +3244,8 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
           </div>
         </div>
 
-        <div className="studio-layers">
-          <p className="insp-label">Order - what lies over what</p>
-          <ol className="studio-stack">
-            {[...order].reverse().map((g, i, top) => (
-              <li key={g}>
-                <span>{STACK_LABEL[g]}</span>
-                <span className="row" style={{ gap: 2 }}>
-                  <button type="button" className="studio-stack-btn" disabled={i === 0} onClick={() => restack(g, 1)} aria-label={`Bring the ${STACK_LABEL[g].toLowerCase()} forward`} title="Bring forward">↑</button>
-                  <button type="button" className="studio-stack-btn" disabled={i === top.length - 1} onClick={() => restack(g, -1)} aria-label={`Send the ${STACK_LABEL[g].toLowerCase()} back`} title="Send back">↓</button>
-                </span>
-              </li>
-            ))}
-            <li className="is-fixed"><span>Background</span><Icon name="lock" size={12} /></li>
-          </ol>
-          <p className="insp-label">Layers</p>
-          {LAYER_LIST.map((l) => {
-            const there = reached.has(l.name) && present.has(l.name);
-            const locked = l.name === 'background';
-            return (
-              <button
-                key={l.name}
-                type="button"
-                className={`studio-layer-row ${there ? '' : 'is-off'} ${selected && PIECE_OF[l.name] === selected ? 'is-on' : ''}`}
-                disabled={!there || locked}
-                onClick={() => setHidden((h) => {
-                  const next = new Set(h);
-                  if (next.has(l.name)) next.delete(l.name); else next.add(l.name);
-                  return next;
-                })}
-                title={locked ? 'The background stays' : there ? 'Show or hide' : 'Added in a later step'}
-              >
-                <span className="studio-eye">
-                  {locked ? <Icon name="lock" size={12} /> : there && !hidden.has(l.name) ? <Icon name="check" size={12} /> : null}
-                </span>
-                {l.label}
-              </button>
-            );
-          })}
-        </div>
-
+        {/* A picture of your own, or a new one painted: only where the background is set. */}
+        {current.id === 'background' && (
         <div className="studio-redesign">
           <p className="insp-label">Your own background</p>
           <p className="tiny muted" style={{ margin: 0 }}>
@@ -2981,6 +3294,7 @@ function LayerStudio({ generation, layers, fresh, onChanged }: {
           back to the one before is free, and so is your own picture.
         </p>
         </div>
+        )}
       </aside>
     </div>
   );
@@ -3232,17 +3546,9 @@ type PictureFind = { id: string; name: string; type: string; mine: boolean; bran
  * computer or from Drive. A plain ground (a glass shot on white) can be taken off on the way in.
  * Nothing is painted and no model is asked: free. Each is dragged, sized and turned on the post.
  */
-/** The shapes that can be added, each as it first comes. */
-const SHAPE_KINDS: { kind: ShapeC['kind']; label: string; aspect: number; text?: string }[] = [
-  { kind: 'rect', label: 'Box', aspect: 0.6 },
-  { kind: 'round', label: 'Rounded box', aspect: 0.6 },
-  { kind: 'circle', label: 'Circle', aspect: 1 },
-  { kind: 'line', label: 'Band', aspect: 0.04 },
-  { kind: 'badge', label: 'Badge', aspect: 1, text: 'NEW' },
-  { kind: 'button', label: 'Button', aspect: 0.28, text: 'Shop now' },
-];
-
-function StudioPictures({ generationId, pictures, postAspect, selected, onSelect, drafts, onDraft, onChange, inks, fonts, onBrush }: {
+function StudioPictures({ generationId, bottleFiles, bottle, pictures, postAspect, selected, onSelect, drafts, onDraft, onChange, inks, fonts, onBrush }: {
+  /** The brand's bottles: a picture that is one is lit as "the bottle", any other as "the glass". */
+  bottleFiles: string[];
   /** The post, for its brand's glasses and its scene. */
   generationId: string;
   /** Where the bottle stands, for a glass set beside it. */
@@ -3269,13 +3575,14 @@ function StudioPictures({ generationId, pictures, postAspect, selected, onSelect
   const [found, setFound] = useState<PictureFind[] | null>(null);
   /** The post's brand, once known: its pictures are listed first. */
   const brandRef = useRef<string | null>(null);
+  // Searched for only: the brand's glasses are in their own row above, so nothing is listed until asked.
   const look = useCallback(async (q: string) => {
+    if (!q.trim()) { setFound(null); return; }
     const params = new URLSearchParams({ ...(q ? { q } : {}), ...(brandRef.current ? { brand: brandRef.current } : {}) });
     const res = await fetch(`/api/media/pictures?${params}`, { cache: 'no-store' }).catch(() => null);
     const body = res?.ok ? ((await res.json()) as { pictures: PictureFind[] }) : { pictures: [] };
     setFound(body.pictures);
   }, []);
-  useEffect(() => { void look(''); }, [look]);
 
   /** A picture laid in the middle of the post, a little apart from the last: a quarter of it wide, no taller than half. */
   const place = async (picture: { file: string; aspect: number }, size = 0.24): Promise<boolean> => {
@@ -3289,8 +3596,8 @@ function StudioPictures({ generationId, pictures, postAspect, selected, onSelect
     return ok;
   };
 
-  // The post's brand, so its own pictures are listed first.
-  const [brandOf, setBrandOf] = useState<{ brand: string } | null>(null);
+  // The post's brand, so its own pictures are listed first - and its glasses, to set beside the bottle.
+  const [brandOf, setBrandOf] = useState<{ brand: string; glasses?: { id: string; name: string }[] } | null>(null);
   const loadBrand = useCallback(() => {
     void fetch(`/api/media/generations/${generationId}/glass`, { cache: 'no-store' })
       .then((r) => (r.ok ? r.json() : null))
@@ -3306,6 +3613,33 @@ function StudioPictures({ generationId, pictures, postAspect, selected, onSelect
     // Once per brand; the query is the one shown.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [brandOf]);
+  /** A picture's shape, read from the picture itself. */
+  const aspectOf = (file: string) => new Promise<number>((done) => {
+    const img = new Image();
+    img.onload = () => done(img.naturalWidth ? img.naturalHeight / img.naturalWidth : 1);
+    img.onerror = () => done(1);
+    img.src = `/api/drive/files/${file}/content?size=320`;
+  });
+  /**
+   * A glass stood beside the bottle as a designer would: on the same surface, about four tenths of its
+   * height, on the side with more room - its shadow on the counter and its reflection under it.
+   */
+  const besideBottle = async (file: string) => {
+    if (pictures.length >= 8) { note('A post takes at most 8 added pictures.'); return; }
+    const aspect = await aspectOf(file);
+    const h = bottle ? bottle.h * 0.42 : 0.3;
+    const w = Math.min(0.6, (h * postAspect) / aspect);
+    const foot = bottle ? bottle.y + bottle.h : 0.8;
+    const left = bottle ? bottle.x + bottle.w / 2 > 0.5 : false;
+    const x = bottle ? (left ? bottle.x - w - 0.015 : bottle.x + bottle.w + 0.015) : 0.5 - w / 2;
+    const pic: PictureC = {
+      id: blockId(), file, aspect, w,
+      x: Math.min(0.98 - w, Math.max(0.02, x)), y: foot - (w * aspect) / postAspect,
+      ground: 0.55, mirror: 0.45,
+    };
+    const ok = await onChange((all) => [...all, pic]);
+    if (ok) { onSelect(pic.id); note('Glass set beside the bottle - free. Drag it anywhere.'); }
+  };
   /** A studio picture taken away (archived in Drive, restorable). */
   const removePicture = async (f: PictureFind) => {
     if (!window.confirm(`Remove "${f.name}" from Studio pictures? It stays in Drive's archive.`)) return;
@@ -3361,17 +3695,6 @@ function StudioPictures({ generationId, pictures, postAspect, selected, onSelect
   };
 
   const chosen = pictures.find((p) => p.id === selected) ?? null;
-  /** A shape laid in the middle, in the brand's first colour. */
-  const addShape = (k: (typeof SHAPE_KINDS)[number]) => {
-    if (pictures.length >= 8) { note('A post takes at most 8 added pictures and shapes.'); return; }
-    const fill = k.kind === 'button' ? '#ffffff' : inks[0] ?? '#d4202a';
-    const w = k.kind === 'line' ? 0.5 : k.kind === 'button' ? 0.36 : 0.22;
-    const pic: PictureC = {
-      id: blockId(), aspect: k.aspect, x: 0.5 - w / 2, y: 0.5 - (w * k.aspect) / postAspect / 2, w,
-      shape: { kind: k.kind, fill, ...(k.text ? { text: k.text, ink: k.kind === 'button' ? '#141414' : '#ffffff' } : {}) },
-    };
-    void onChange((all) => [...all, pic]).then((ok) => ok && onSelect(pic.id));
-  };
   /** A look being slid on the chosen one, set into the post when let go. */
   const letGoAll = () => {
     if (!chosen) return;
@@ -3418,6 +3741,22 @@ function StudioPictures({ generationId, pictures, postAspect, selected, onSelect
 
   return (
     <>
+      {(brandOf?.glasses?.length ?? 0) > 0 && (
+        <div className="studio-group">
+          <p className="studio-group-title">{brandOf!.brand}&apos;s glasses · {brandOf!.glasses!.length}</p>
+          <div className="lib-strip" role="listbox" aria-label="The brand's glasses">
+            {brandOf!.glasses!.map((g) => (
+              <button key={g.id} type="button" className="lib-pick is-glass" disabled={busy}
+                onClick={() => void besideBottle(g.id)} title={`${g.name} - set it beside the bottle`}>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={`/api/drive/files/${g.id}/content?size=320`} alt="" className="lib-img" loading="lazy" />
+                <span className="lib-name">{g.name.replace(/^.*? glass - /, '').replace(/\.png$/i, '')}</span>
+              </button>
+            ))}
+          </div>
+          <p className="tiny muted" style={{ margin: 0 }}>Click one: it stands beside the bottle on the same surface, with its shadow and reflection. Click again to add another - up to 8 pictures on a post. Drag, resize, turn or crop each in the list below. Free.</p>
+        </div>
+      )}
       <p className="studio-q">A picture, ice, anything - laid on the post</p>
       <p className="tiny muted" style={{ margin: 0 }}>
         Bring a picture, or take one from Drive. Drag it on the post, pull its corner to size it, turn it by the round handle. Free - nothing is painted.
@@ -3469,17 +3808,9 @@ function StudioPictures({ generationId, pictures, postAspect, selected, onSelect
           ))}
         </div>
       )}
-      <div className="studio-group">
-        <p className="studio-group-title">Shapes and badges</p>
-        <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
-          {SHAPE_KINDS.map((k) => (
-            <button key={k.kind} type="button" className="chip" onClick={() => addShape(k)} disabled={busy}>{k.label}</button>
-          ))}
-        </div>
-      </div>
       {found && found.length === 0 && (
         <p className="tiny muted" style={{ margin: 0 }}>
-          {query ? 'Nothing in Drive by that name.' : 'Pictures you add are kept in Drive, in "Studio pictures", for every post after.'}
+          Nothing in Drive by that name.
         </p>
       )}
 
@@ -3541,6 +3872,7 @@ function StudioPictures({ generationId, pictures, postAspect, selected, onSelect
           {chosen && now && chosen.file && (
             <div className="studio-group">
               <p className="studio-group-title">Make it sit in the scene</p>
+              {range(chosen.file && bottleFiles.includes(chosen.file) ? 'Light on this bottle' : 'Light on the glass', (now.bright ?? 0) === 0 ? 'As it is' : `${(now.bright ?? 0) > 0 ? '+' : ''}${Math.round((now.bright ?? 0) * 100)}%`, now.bright ?? 0, -0.5, 0.5, 0.01, (v) => ({ bright: Math.abs(v) < 0.005 ? 0 : v }))}
               <button
                 type="button"
                 className="btn btn-ghost btn-sm"
@@ -3552,13 +3884,16 @@ function StudioPictures({ generationId, pictures, postAspect, selected, onSelect
                 {matching ? 'Matching…' : 'Match the scene'}
               </button>
               {range('Shadow on the surface', now.ground ? `${Math.round(now.ground * 100)}%` : 'None', now.ground ?? 0, 0, 1, 0.02, (v) => ({ ground: v }))}
+              {(now.ground ?? 0) > 0 && range('Shadow softness', `${Math.round((now.groundSoft ?? 0.2) * 100)}%`, now.groundSoft ?? 0.2, 0, 1, 0.02, (v) => ({ groundSoft: v }))}
               {range('Reflection on the surface', now.mirror ? `${Math.round(now.mirror * 100)}%` : 'None', now.mirror ?? 0, 0, 1, 0.02, (v) => ({ mirror: v }))}
+              {(now.mirror ?? 0) > 0 && range('Reflection softness', `${Math.round((now.mirrorSoft ?? 0.2) * 100)}%`, now.mirrorSoft ?? 0.2, 0, 1, 0.02, (v) => ({ mirrorSoft: v }))}
               <p className="tiny muted" style={{ margin: 0 }}>Matching lights it as the scene is; the shadow and reflection stand it on the counter. All free.</p>
             </div>
           )}
           {chosen && now && chosen.file && (
             <div className="studio-group">
-              <p className="studio-group-title">Crop, edges and colour</p>
+              <p className="studio-group-title">Size, crop, edges and colour</p>
+              {range('Size', `${Math.round(now.w * 100)}% of the width`, now.w, 0.03, 1.2, 0.005, (v) => ({ w: v }))}
               {(['l', 'r', 't', 'b'] as const).map((side) => range(
                 { l: 'Crop the left', r: 'Crop the right', t: 'Crop the top', b: 'Crop the foot' }[side],
                 `${Math.round((now.crop?.[side] ?? 0) * 100)}%`, now.crop?.[side] ?? 0, 0, 0.45, 0.01, (v) => cropTo(side, v)))}
@@ -3570,7 +3905,7 @@ function StudioPictures({ generationId, pictures, postAspect, selected, onSelect
           )}
           {chosen && (
             <>
-              {PIC_SLIDES.map((k) => {
+              {PIC_SLIDES.filter((k) => k.key !== 'bright').map((k) => {
                 const v = drafts[chosen.id]?.[k.key] ?? chosen[k.key] ?? k.plain;
                 const letGo = () => {
                   const d = drafts[chosen.id]?.[k.key];

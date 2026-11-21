@@ -7,7 +7,8 @@ import { brandLayouts, type BrandLayout, type LayoutSpec } from './layouts';
 import { brain } from './providers';
 import type { BenchDraft } from './providers/types';
 import { printable, type Casing, type HeadlineLine } from '../media/typography';
-import { capitalsFromWords, pickHeadline, styleOf, styleScene, type BrandStyle } from '@/lib/brandStyle';
+import { COLLECTION, STANDARD as STANDARD_PACK, variantForPack } from '@/lib/packs';
+import { capitalsFromWords, hash, layoutPointedTo, pickHeadline, rankHeadlines, styleOf, styleScene, type BrandStyle } from '@/lib/brandStyle';
 
 /**
  * The Bench: a post planned the way a senior creative director, the brand's
@@ -345,6 +346,8 @@ export async function headlineSuggestions(
   brand: string,
   current: HeadlineLine[],
   roles: Set<HeadlineLine['role']>,
+  /** What the post was asked for: the brand's lines that suit it come first. */
+  request?: string | null,
 ): Promise<{ from: 'words' | 'brand'; lines: HeadlineLine[] }[]> {
   const [layouts, said] = await Promise.all([
     brandLayouts(scope, brand).catch(() => []),
@@ -353,10 +356,11 @@ export async function headlineSuggestions(
        where brand = ${brand} and status = 'active'
          and lower(attribute) ~ '^(headline|static headline|headline text|headline copy)$'
        order by evidence_count desc
-       limit 40
+       limit 160
     `).catch(() => []),
   ]);
-  return suggestHeadlines(current, roles, pastHeadlines(layouts.filter((l) => l.brand === brand).map((l) => l.name), said.map((r) => r.value)));
+  const every = pastHeadlines(layouts.filter((l) => l.brand === brand).map((l) => l.name), said.map((r) => r.value), 160);
+  return suggestHeadlines(current, roles, (request ? rankHeadlines(request, every, brand).map((r) => r.line) : every).slice(0, 12));
 }
 
 /** The suggestions themselves, from the words and the brand's past headlines. */
@@ -421,7 +425,7 @@ export function inTwo(line: string): HeadlineLine[] {
 /** What the Bench would have said, from what CIP holds - no model asked. Settled like any other plan. */
 export function freeDraft(request: string, brand: string, examples: string[], style?: BrandStyle | null): Omit<BenchDraft, 'usage'> {
   // One of the brand's own lines that suits this request - its Diwali line for a Diwali post.
-  const past = pickHeadline(request, examples, 12);
+  const past = pickHeadline(request, examples, 12, brand);
   // The scene as the person described it, without the headline they quoted; its light and surface
   // read off their words - "golden light from the side", "a wooden bar counter".
   const said = request.replace(/headline\s*:?\s*["“][^"”]*["”]/gi, '').replace(/["“][^"”]*["”]/g, '').replace(/\s+/g, ' ').trim();
@@ -435,11 +439,21 @@ export function freeDraft(request: string, brand: string, examples: string[], st
   };
 }
 
+/**
+ * The request as the brand's look and lines are read for it: with the pack chosen on the page named in it,
+ * so a Honey post reads Honey's own look and lines, and not another pack's.
+ */
+function packAsked(input: { request: string; pack?: string | null }): string {
+  return input.pack && input.pack !== STANDARD_PACK && input.pack !== COLLECTION ? `${input.pack}: ${input.request}` : input.request;
+}
+
 /** The Bench plans one post for a brand. */
 export async function planPost(
   scope: CompanyScope,
   input: {
     request: string; brand: string; ratio: number; market?: string | null;
+    /** The brand's pack chosen on the page: its bottle, its look and its lines. */
+    pack?: string | null;
     /**
      * Planned from what CIP holds, with no model asked and nothing spent: for
      * a post on a picture the person brought. The person's words, when they
@@ -459,14 +473,14 @@ export async function planPost(
        where brand = ${input.brand} and status = 'active'
          and lower(attribute) ~ '^(headline|static headline|headline text|headline copy)$'
        order by evidence_count desc
-       limit 40
+       limit 160
     `).catch(() => []),
     pastScenes(scope, input.brand),
     brandDrink(scope, input.brand),
-    brandStyle(scope, input.brand, { market: input.market ?? null, request: input.request }),
+    brandStyle(scope, input.brand, { market: input.market ?? null, request: packAsked(input) }),
   ]);
   // The scene its own posts are set in, as learned, first - then the pictures CIP read.
-  const learned = styleScene(style, input.request);
+  const learned = styleScene(style, packAsked(input), input.market ?? null);
   const scenes = learned ? [learned, ...readScenes] : readScenes;
   // How this brand writes headlines: its own posts, not every brand's.
   const examples = pastHeadlines(
@@ -478,7 +492,7 @@ export async function planPost(
   const everyLine = pastHeadlines(
     layouts.filter((l) => l.brand === input.brand).map((l) => l.name),
     saidHeadlines.map((r) => r.value),
-    60,
+    160,
   );
   // The rules this post can meet. Not the statutory lines: the design team
   // sets those in their approved wording. Asked for them, the reviewer had
@@ -488,12 +502,17 @@ export async function planPost(
   // A layout made for one market - "Magic Moments (Nigeria) 1" - is that market's: first for it, not offered to another.
   const marketOfLayout = (name: string) => /\(([^)]+)\)/.exec(name)?.[1]?.trim().toLowerCase() ?? null;
   const market = (input.market ?? '').toLowerCase();
-  const usable = layouts
+  const forMarket = layouts
     .filter((l) => l.spec.text)
     .filter((l) => { const m = marketOfLayout(l.name); return !m || m === market; })
     .sort((a, b) => Number(marketOfLayout(b.name) === market && Boolean(market)) - Number(marketOfLayout(a.name) === market && Boolean(market)));
+  // A market the brand has no layout of its own for takes the brand's layouts for its other markets, before the house's.
+  const ownAnywhere = layouts.filter((l) => l.spec.text && l.brand === input.brand);
+  const placed = forMarket.some((l) => l.brand === input.brand) ? forMarket : [...ownAnywhere, ...forMarket.filter((l) => l.brand !== input.brand)];
+  // A brand with a bottle to show is laid out where a bottle stands: a layout with no place for one leaves the post without it.
+  const usable = variants.length && placed.some((l) => l.spec.bottle) ? placed.filter((l) => l.spec.bottle) : placed;
 
-  const draft = input.noModel ? freeDraft(input.request, input.brand, everyLine, style) : await brain().benchPlan({
+  const draft = input.noModel ? freeDraft(packAsked(input), input.brand, everyLine, style) : await brain().benchPlan({
     request: input.request,
     brand: input.brand,
     variants,
@@ -505,6 +524,19 @@ export async function planPost(
     pastScenes: scenes,
   });
   // The brand's own line is set whole: it was written that long. Only a new line is held to the brand's length.
+  // With no model to choose, the brand's own layouts for this market take turns by the request's words,
+  // so its posts are not all one shape.
+  if (input.noModel) {
+    const tier = (l: { name: string }) => marketOfLayout(l.name) === market && Boolean(market);
+    const own = usable.filter((l) => l.brand === input.brand && usable[0] && tier(l) === tier(usable[0]));
+    // One the request points to by name - a Honey post to the Honey layout - else the next in turn.
+    if (own.length > 1) draft.artDirector.layout = layoutPointedTo(input.request, own.map((l) => l.name), input.brand) ?? own[hash(input.request.trim().toLowerCase()) % own.length]!.name;
+  }
+  // The pack chosen on the page is the bottle shown: its plain bottle before one with its box.
+  if (input.pack) {
+    const v = variantForPack(input.pack, variants);
+    if (v !== undefined) draft.brandManager.variant = v;
+  }
   const plan = settlePlan(draft, { request: input.request, brand: input.brand, variants, layouts: usable, brands, maxWords: input.noModel ? Math.max(maxWords, 12) : maxWords });
   const [bottle] = await brandAssets(scope, { brand: input.brand, kind: 'bottle', variant: plan.variant });
   // A layout the brand's own designers made keeps its own places; one borrowed from the house or another brand takes this brand's style.

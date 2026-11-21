@@ -560,6 +560,35 @@ export async function readFile(scope: CompanyScope, fileId: string): Promise<Fil
   return { file: toFile(row), body, filename: row.name };
 }
 
+/**
+ * A brand's bottle or logo that a post was made with, even after it was taken out of the library: the
+ * post stays as it was made, and can still be moved and set again. Only a file filed as a brand asset of
+ * this company - never any other archived file.
+ */
+export async function readBrandAsset(scope: CompanyScope, fileId: string): Promise<FileForDownload> {
+  try {
+    return await readFile(scope, fileId);
+  } catch (error) {
+    if (!(error instanceof DriveNotFound)) throw error;
+    const row = await withCompanyScope(scope, async (tx) => {
+      const rows = await tx<(FileRow & { storage_path: string })[]>`
+        select id, name, original_filename, file_type, mime_type, file_size,
+               created_at, updated_at, processing_status, source_type, market, storage_path,
+               null::text as understanding_status, null::text as understanding_kind,
+               uploaded_by as uploaded_by_id, null::text as uploaded_by_name
+          from drive_files
+         where id = ${fileId} and company_id = ${scope.companyId} and metadata ? 'asset'
+      `;
+      const found = rows[0];
+      if (!found) throw new DriveNotFound('That file');
+      return found;
+    });
+    const changed = row.updated_at instanceof Date ? row.updated_at.toISOString() : String(row.updated_at);
+    const body = await readThrough(row.storage_path, `file:${changed}:${row.file_size}`, () => driveStorage().get(row.storage_path));
+    return { file: toFile(row), body, filename: row.name };
+  }
+}
+
 export async function listArchived(scope: CompanyScope): Promise<D.DriveFileDTO[]> {
   return withCompanyScope(scope, async (tx) => {
     const rows = await tx<FileRow[]>`

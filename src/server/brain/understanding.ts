@@ -411,12 +411,14 @@ export async function understandClaimedAsset(claim: ClaimedAsset): Promise<Under
 async function bytesFor(claim: ClaimedAsset): Promise<Buffer> {
   if (claim.storagePath) return driveStorage().get(claim.storagePath);
 
-  const rows = await adminSql()<{ external_id: string }[]>`
+  // Ended here: a connection left open held a slot of the shared pooler until the process stopped.
+  const admin = adminSql();
+  const rows = await admin<{ external_id: string }[]>`
     select g.external_id
       from google_drive_files g
      where g.file_id = ${claim.fileId} and g.company_id = ${claim.companyId}
      limit 1
-  `;
+  `.finally(() => admin.end().catch(() => undefined));
 
   const externalId = rows[0]?.external_id;
   if (!externalId) {

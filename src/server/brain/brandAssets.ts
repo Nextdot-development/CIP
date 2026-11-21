@@ -15,7 +15,7 @@ import type { CompanyScope } from '../db';
  * scaled evenly and never redrawn.
  */
 
-export type AssetKind = 'bottle' | 'logo' | 'creative' | 'other';
+export type AssetKind = 'bottle' | 'logo' | 'glass' | 'creative' | 'other';
 export type LogoTone = 'light' | 'dark' | 'colour';
 
 export type BrandAsset = {

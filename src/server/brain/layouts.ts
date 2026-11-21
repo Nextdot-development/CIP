@@ -352,6 +352,10 @@ export type PostChoices = {
   order?: StackGroup[];
   /** Pieces held where they are, so a drag cannot move them: "bottle", "logo", "p:<id>"… */
   locked?: string[];
+  /** The brand's bottle or pack a person chose from its library - another flavour, the pack with its box. Absent: the one the plan chose. */
+  bottleFile?: string;
+  /** The brand's logo a person chose from its library. Absent: the one that stands out where it lands. */
+  logoFile?: string;
 };
 
 /** A shape laid on the post - a box, a band, a badge, a button - drawn, not painted. */
@@ -399,6 +403,10 @@ export type AddedPicture = {
   ground?: number;
   /** Its reflection on a glossy surface below it, as the bottle has: 0 to 1. */
   mirror?: number;
+  /** How soft and spread its shadow on the surface is: 0 crisp, 1 very soft. Absent: as a designer would. */
+  groundSoft?: number;
+  /** How soft and short its reflection is: 0 sharp and long, 1 soft and short. */
+  mirrorSoft?: number;
 };
 
 /** The pieces that can be put over or under one another; the background is always at the bottom. */
@@ -437,6 +445,10 @@ export type PostStyle = {
   /** The logo lighter or darker, its shadow, and how see-through it is. */
   /** Which of the brand's logos: its white one, its black one, its colour one. Absent: the one that stands out where it lands. */
   logoTone?: 'light' | 'dark' | 'colour';
+  /** The bottle cropped on each side, a share of the bottle itself: a box's edge or a pouch cut away. */
+  bottleCrop?: { l: number; t: number; r: number; b: number };
+  /** The logo cropped on each side, a share of the logo itself. */
+  logoCrop?: { l: number; t: number; r: number; b: number };
   logoBright?: number;
   logoShadow?: number;
   logoOpacity?: number;

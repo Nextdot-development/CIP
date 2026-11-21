@@ -41,8 +41,8 @@ if (!slug || !folderId) {
 
 const IMAGE = /\.(png|jpe?g|webp)$/i;
 /** Plenty for any post: a bottle placed at 3000 pixels tall is sharper than any feed. */
-const MAX_EDGE = { bottle: 3000, logo: 2000, creative: 2400, other: 2400 } as const;
-const FOLDER_FOR = { bottle: 'Bottles', logo: 'Logos', creative: 'Creatives', other: 'Other' } as const;
+const MAX_EDGE = { bottle: 3000, logo: 2000, glass: 2000, creative: 2400, other: 2400 } as const;
+const FOLDER_FOR = { bottle: 'Bottles', logo: 'Logos', glass: 'Glasses', creative: 'Creatives', other: 'Other' } as const;
 
 const sql = postgres(process.env.DATABASE_ADMIN_URL!, { max: 1 });
 const scopeOf = async (s: string) => {

@@ -13,7 +13,7 @@ const nextConfig: NextConfig = {
   // server and is never reachable from the client, so it is required at
   // runtime instead of bundled. pdfjs-dist rides along for the same reason:
   // its legacy build resolves fonts and workers relative to itself.
-  serverExternalPackages: ['@napi-rs/canvas', 'pdfjs-dist', 'ffmpeg-static'],
+  serverExternalPackages: ['@napi-rs/canvas', 'pdfjs-dist', 'ffmpeg-static', 'tesseract.js'],
   // ffmpeg-static is a path to a binary, not code, so nothing imports the
   // binary and the tracer that decides what ships with each function never
   // sees it. Named here, for the routes that check a creative: a video is
@@ -31,6 +31,8 @@ const nextConfig: NextConfig = {
     '/api/cron/pump': ['./node_modules/ffmpeg-static/ffmpeg*', './src/server/video/fonts/*'],
     '/api/video/**': ['./node_modules/ffmpeg-static/ffmpeg*', './src/server/video/fonts/*'],
   },
+  // Tesseract reads a creative's words for the free QC in a worker thread it starts from its own files.
+  // (Its English data is fetched once at runtime and kept in the temp folder.)
   // Next writes AGENTS.md/CLAUDE.md by default; this repo keeps its own docs.
   agentRules: false,
 };

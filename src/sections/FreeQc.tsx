@@ -5,7 +5,7 @@ import { Icon } from '../components/ui/Icon';
 import { useToast } from '@/context/toast';
 import { RulesReport, type RuleVerdict } from './PostRulesCheck';
 
-type Report = { brand: string; market: string | null; kind: 'image' | 'pdf' | 'video'; read: 'pdf-text' | 'none'; verdicts: RuleVerdict[] };
+type Report = { brand: string; market: string | null; kind: 'image' | 'pdf' | 'video'; read: 'pdf-text' | 'ocr' | 'none'; words?: string[]; verdicts: RuleVerdict[] };
 
 /**
  * Creative QC with no model: a creative brought in - a banner, a deck page, a PDF from an agency -
@@ -61,7 +61,7 @@ export function FreeQc({ brands, activeBrand, markets, held }: {
           <h2 style={{ margin: '2px 0 4px' }}>Check it before it goes out - free</h2>
           <p className="tiny muted" style={{ margin: 0 }}>
             Bring a banner, a deck page or a PDF. It is checked against the brand&apos;s and the market&apos;s rules with no AI and nothing spent,
-            and kept nowhere. A PDF&apos;s words are read and checked; its logo, its pack and its picture are a list for you to look at.
+            and kept nowhere. Its words are read - from a PDF&apos;s text, or off the picture on this server - and checked; its logo, its pack and its picture are a list for you to look at.
           </p>
         </div>
         <span className="rules-qc-free">Free · no AI</span>
@@ -118,10 +118,20 @@ export function FreeQc({ brands, activeBrand, markets, held }: {
             verdicts={report.report.verdicts}
             note={report.report.read === 'pdf-text'
               ? 'Its words were read from the PDF and checked against every rule about words.'
-              : report.report.kind === 'pdf'
-                ? 'This PDF holds no text of its own (a picture saved as PDF): its words are on the list to look at.'
-                : 'A picture\'s words cannot be read without a text reader (OCR), so rules about words are on the list to look at.'}
+              : report.report.read === 'ocr'
+                ? 'Its words were read off the picture on this server (free, no AI) and checked against every rule about words. Small or faint type may be missed - read below what was found.'
+                : report.report.kind === 'video'
+                  ? 'A video\'s words are not read here, so rules about words are on the list to look at.'
+                  : 'No words could be read off it, so rules about words are on the list to look at.'}
           />
+        )}
+        {report && (report.report.words?.length ?? 0) > 0 && (
+          <details className="tiny" style={{ marginTop: 10 }}>
+            <summary className="muted" style={{ cursor: 'pointer' }}>Words read ({report.report.words!.length})</summary>
+            <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+              {report.report.words!.map((w, i) => <li key={i}>{w}</li>)}
+            </ul>
+          </details>
         )}
       </div>
     </section>

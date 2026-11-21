@@ -1,5 +1,5 @@
 import { withDriveScope } from '@/server/drive/http';
-import { readFile, readThumbnail } from '@/server/drive/service';
+import { readBrandAsset, readThumbnail } from '@/server/drive/service';
 import { filingSourceUrl } from '@/server/brain/filings';
 import { THUMBNAIL_EDGES } from '@/server/drive/storage';
 import type { ThumbnailEdge } from '@/server/drive/storage';
@@ -24,7 +24,8 @@ export async function GET(request: Request, { params }: Params) {
     // a PDF, a video - falls through to the original, exactly as before.
     const size = Number(new URL(request.url).searchParams.get('size'));
     if ((THUMBNAIL_EDGES as readonly number[]).includes(size)) {
-      const thumbnail = await readThumbnail(scope, id, size as ThumbnailEdge);
+      // A bottle or logo taken out of the library since has no small copy to offer: it falls through to itself below.
+      const thumbnail = await readThumbnail(scope, id, size as ThumbnailEdge).catch(() => null);
       if (thumbnail) {
         return new Response(new Uint8Array(thumbnail.body), {
           headers: {
@@ -45,7 +46,8 @@ export async function GET(request: Request, { params }: Params) {
     const onExchange = await filingSourceUrl(scope, id);
     if (onExchange) return Response.redirect(onExchange, 302);
 
-    const { file, body, filename } = await readFile(scope, id);
+    // A brand's bottle or logo is still shown for the posts made with it after it leaves the library.
+    const { file, body, filename } = await readBrandAsset(scope, id);
 
     const spec = specFor(filename);
     const wantsInline = new URL(request.url).searchParams.get('disposition') === 'inline';

@@ -524,3 +524,29 @@ describe('the logo, the background and what lies over what', () => {
     assert.equal(choicesFrom({ order: ['bottle', 'headline', 'texts', 'logo'] }, set).order, undefined);
   });
 });
+
+describe('a bottle and a logo chosen from the brand library', () => {
+  const current = { bottle: 'right' as const, size: 'medium' as const, logo: 'top-right' as const };
+  const id = '0afb4b3c-1111-4222-8333-944455556666';
+  it('keeps the file a person chose, and lets it go on null', () => {
+    const chosen = choicesFrom({ bottleFile: id, logoFile: id }, current);
+    assert.equal(chosen.bottleFile, id);
+    assert.equal(chosen.logoFile, id);
+    // Kept through a later change of anything else.
+    assert.equal(choicesFrom({ bottle: 'left' }, chosen).bottleFile, id);
+    assert.equal(choicesFrom({ bottleFile: null }, chosen).bottleFile, undefined);
+  });
+  it('refuses what is not a file of the library', () => {
+    assert.throws(() => choicesFrom({ bottleFile: '../etc/passwd' }, current));
+  });
+});
+
+describe('the bottle cropped', () => {
+  it('keeps a crop within bounds, clears it on null, and refuses one that crops it all away', () => {
+    const s = styleFrom({ bottleCrop: { l: 0.1, t: 0.6, r: 0, b: 0 } }, {});
+    assert.deepEqual(s.bottleCrop, { l: 0.1, t: 0.45, r: 0, b: 0 });
+    assert.equal(styleFrom({ bottleCrop: null }, s).bottleCrop, undefined);
+    assert.equal(styleFrom({ bottleCrop: { l: 0, t: 0, r: 0, b: 0 } }, s).bottleCrop, undefined);
+    assert.throws(() => styleFrom({ bottleCrop: { l: 0.45, r: 0.45, t: 0, b: 0 } }, {}));
+  });
+});

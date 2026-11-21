@@ -8,7 +8,8 @@ import { MediaRejected } from '../media/types';
  * Creative QC with no model and nothing spent.
  *
  * A creative brought in is judged against its brand's and market's rules from what can be known
- * of it without looking: the words in a PDF's own text. Its logo and its pack were not set by CIP,
+ * of it with no model: the words in a PDF's own text, or read off the picture on this server with
+ * Tesseract (free, and the file goes nowhere). Its logo and its pack were not set by CIP,
  * and what its picture shows only eyes can say - those rules come back as a list for a person to
  * look at and tick, never passed on trust. The file is read here and kept nowhere, so nothing in
  * CIP goes on to read it with a model either.
@@ -17,8 +18,10 @@ export type FreeQcReport = {
   brand: string;
   market: string | null;
   kind: 'image' | 'pdf' | 'video';
-  /** How its words were read: from a PDF's own text, or not at all. */
-  read: 'pdf-text' | 'none';
+  /** How its words were read: from a PDF's own text, off the picture on this server, or not at all. */
+  read: 'pdf-text' | 'ocr' | 'none';
+  /** The words that were read, for a person to see what the rules were checked against. */
+  words: string[];
   verdicts: Verdict[];
 };
 
@@ -62,6 +65,12 @@ export async function freeQc(
     words = (profile?.pages ?? []).map((p) => p.text).filter((t) => t.trim().length > 0);
     if (words.length) read = 'pdf-text';
   }
+  // No text of its own - a picture, or a PDF that is pictures: read off it here, for nothing.
+  if (!words.length && kind !== 'video') {
+    const { wordsInPdfPages, wordsInPicture } = await import('./freeOcr');
+    words = await (kind === 'pdf' ? wordsInPdfPages(input.bytes) : wordsInPicture(input.bytes)).catch(() => []);
+    if (words.length) read = 'ocr';
+  }
 
   const facts: PostFacts = {
     brand, variant: null, words,
@@ -70,5 +79,5 @@ export async function freeQc(
     known: { words: read !== 'none', logo: false, bottle: false },
   };
   const rules = await rulesToJudge(scope, brand, market, kind === 'video' ? 'video' : 'image');
-  return { brand, market, kind, read, verdicts: rules.map((r) => judge(r, facts)) };
+  return { brand, market, kind, read, words: words.slice(0, 40), verdicts: rules.map((r) => judge(r, facts)) };
 }

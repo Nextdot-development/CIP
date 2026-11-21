@@ -3,10 +3,10 @@ import { createCanvas, loadImage } from '@napi-rs/canvas';
 import type { Canvas } from '@napi-rs/canvas';
 import { withCompanyScope, type CompanyScope } from '../db';
 import { planPost, type BenchPlan } from '../brain/bench';
-import { alignFromWords, cornerFromWords, fontFromWords, inkFromWords, type BrandStyle } from '@/lib/brandStyle';
+import { alignFromWords, asksForGlass, cornerFromWords, fontFromWords, inkFromWords, type BrandStyle } from '@/lib/brandStyle';
 import { brandAssets, type BrandAsset } from '../brain/brandAssets';
 import { adaptLayout, arrangeLayout, choicesOf, fitLayout, placeLayout, type FittedLayout, type LayoutSpec, type Placement, type PostChoices, type PostStyle, STACK, stackOf, type AddedPicture, type ShapeSpec, type StackGroup } from '../brain/layouts';
-import { readFile } from '../drive/service';
+import { readBrandAsset, readFile } from '../drive/service';
 import { placeBottle } from './bottleComposite';
 import { imageGenerationProvider } from './providers';
 import { measureHeadline, setHeadline, setTextBlocks, withHeadlineFont, type Casing, type HeadlineFontId, type HeadlineLine, type SetLine, type TextBlock, wordsInBox } from './typography';
@@ -101,6 +101,8 @@ export function scenePrompt(
     never?: string[];
     /** The brand's posts are bright and colourful: white words stand on a rich colour, not on black. */
     bright?: boolean;
+    /** The person asked for a glass or a drink in the scene: only then is one painted. */
+    glass?: boolean;
   } = {},
 ): string {
   // Within what the generator takes, whatever the planner wrote: the brand's past scenes are let go
@@ -115,6 +117,9 @@ export function scenePrompt(
   }
   return said.slice(0, SCENE_PROMPT_MAX);
 }
+
+/** A scene with no glass or drink in it: a glass is laid on afterwards, a picture of its own, like the bottle. */
+export const NO_GLASS = 'There are no glasses, tumblers, cups, cocktails, drinks, ice or bottles anywhere in the scene - a glass is placed afterwards, like the bottle, so leave the surface clear of them.';
 
 /** What never goes in the brand's scenes, said once and plainly. */
 export function neverLine(never: string[]): string {
@@ -155,7 +160,7 @@ function sceneLines(
   postRatio: number,
   genRatio: number,
   packColours: string[],
-  options: { open?: boolean; brandScenes?: string[]; drink?: { kind: string | null; colour: string | null; variant?: string | null }; never?: string[]; bright?: boolean },
+  options: { open?: boolean; brandScenes?: string[]; drink?: { kind: string | null; colour: string | null; variant?: string | null }; never?: string[]; bright?: boolean; glass?: boolean },
   description: string,
   brandScenes: string[],
 ): string {
@@ -182,7 +187,8 @@ function sceneLines(
       `in place, props, light and colour, without copying any: ${brandScenes.join(' / ')}.`,
     );
   }
-  lines.push(drinkLine(options.drink));
+  // A glass only when the person asked for one; otherwise it is laid on afterwards, a picture of its own.
+  lines.push(options.open && !options.glass ? NO_GLASS : drinkLine(options.drink));
   if (options.never?.length) lines.push(neverLine(options.never));
   const named = [...new Set(packColours.map(colourName).filter(Boolean))];
   if (named.length) {
@@ -809,20 +815,46 @@ async function assemble(
   // The layout as a person arranged it, when they have.
   // The face a person chose for the headline, set before anything is measured: a wider face takes more room.
   const chosen = given.choices ? { ...given, spec: arrangeLayout(withHeadlineFont(given.spec, given.choices.style?.font as HeadlineFontId | undefined), given.choices) } : given;
-  const r = chosen;
+  // A bottle chosen from the brand's library stands in for the plan's - only one that is this brand's own cut-out.
+  const pickedBottle = given.choices?.bottleFile
+    ? (await held(`bottles:${scope.companyId}:${given.brand}:*`, () => brandAssets(scope, { brand: given.brand, kind: 'bottle' })))
+      .find((b) => b.fileId === given.choices!.bottleFile && b.asset.cutout) ?? null
+    : null;
+  const r = pickedBottle ? { ...chosen, bottleFileId: pickedBottle.fileId, variant: pickedBottle.asset.variant ?? null } : chosen;
   const [bottle, allLogos, bottles] = await Promise.all([
     r.bottleFileId && r.spec.bottle ? brandFile(scope, r.bottleFileId) : Promise.resolve(null),
     held(`logos:${scope.companyId}:${r.brand}:${r.variant ?? ''}`, () => logosFor(scope, r.brand, r.variant)),
     held(`bottles:${scope.companyId}:${r.brand}:${r.variant ?? ''}`, () => brandAssets(scope, { brand: r.brand, kind: 'bottle', variant: r.variant })),
   ]);
-  const logos = r.spec.logo ? allLogos : [];
+  // A logo chosen from the brand's library is the one set; otherwise the pack's own, in the version that stands out.
+  const pickedLogo = r.choices?.logoFile
+    ? await held(`logo:${scope.companyId}:${r.choices.logoFile}`, async () => {
+        const one = (await brandAssets(scope, { brand: r.brand, kind: 'logo' })).find((l) => l.fileId === r.choices!.logoFile);
+        return one ? [{ name: one.name, asset: one.asset, bytes: (await brandFile(scope, one.fileId)).body }] : null;
+      })
+    : null;
+  // The logo cropped as a person set it: each version cut the same, and its shape from what is left.
+  const logoCrop = r.choices?.style?.logoCrop;
+  const logos = r.spec.logo
+    ? logoCrop
+      ? await Promise.all((pickedLogo ?? allLogos).map(async (l) => {
+          const bytes = await cropPack(l.bytes, l.asset, logoCrop);
+          const im = await loadImage(bytes);
+          return { ...l, bytes, asset: { ...l.asset, bbox: [0, 0, 1, 1] as [number, number, number, number], width: im.width, height: im.height } };
+        }))
+      : pickedLogo ?? allLogos
+    : [];
   // The pictures a person added, read once each; one taken out of Drive since is left off, not an error.
   const pictures = (await Promise.all((r.choices?.pictures ?? []).map((pic) =>
     pic.shape || !pic.file ? Promise.resolve({ pic, bytes: Buffer.alloc(0) })
       : brandFile(scope, pic.file).then((f) => ({ pic, bytes: f.body }), () => null))))
     .filter((p): p is { pic: AddedPicture; bytes: Buffer } => p !== null);
   const bottleAsset = bottles.find((b) => b.fileId === r.bottleFileId)?.asset ?? null;
-  const bottleAspect = bottleAsset ? (bottleAsset.bbox[2] * bottleAsset.width) / (bottleAsset.bbox[3] * bottleAsset.height) : 0.32;
+  // The bottle cropped as a person set it: cut from the pack itself, and its shape from what is left.
+  const crop = r.choices?.style?.bottleCrop;
+  const cropped = bottle && bottleAsset && crop ? await cropPack(bottle.body, bottleAsset, crop) : null;
+  const bottleAspect = (bottleAsset ? (bottleAsset.bbox[2] * bottleAsset.width) / (bottleAsset.bbox[3] * bottleAsset.height) : 0.32)
+    * (crop ? (1 - crop.l - crop.r) / Math.max(0.05, 1 - crop.t - crop.b) : 1);
   const logoAspect = logos[0] ? aspectOf(logos[0].asset) : 0.8;
   // Fitted to these words: a longer headline than the designer's pushes the
   // bottle across, or below the words in a story, rather than being squeezed.
@@ -838,7 +870,7 @@ async function assemble(
     bottle,
     layout,
     build: (scene: Buffer, tweaks: PostTweaks, options: { layers?: boolean; flatLater?: boolean } = {}) =>
-      buildPost({ scene, ratio: r.ratio, layout, plan, bottle: bottle?.body ?? null, logos: r.choices?.style?.logoTone || !sameShape.length ? logos : sameShape, tweaks, layers: options.layers, flatLater: options.flatLater, style: r.choices?.style, texts: r.choices?.texts,
+      buildPost({ scene, ratio: r.ratio, layout, plan, bottle: cropped ?? bottle?.body ?? null, logos: pickedLogo || r.choices?.style?.logoTone || !sameShape.length ? logos : sameShape, tweaks, layers: options.layers, flatLater: options.flatLater, style: r.choices?.style, texts: r.choices?.texts,
         turn: { bottle: r.choices?.place?.bottle?.rotate, logo: r.choices?.place?.logo?.rotate, shadow: r.choices?.place?.shadow, reflection: r.choices?.place?.reflection },
         order: r.choices?.order, pictures }),
   };
@@ -978,6 +1010,8 @@ export async function preparePost(
   scope: CompanyScope,
   input: {
     request: string; brand: string; ratio: number; generatorShape: string; market?: string | null;
+    /** The brand's pack chosen on the page: Honey, Fire, Collection… */
+    pack?: string | null;
     /**
      * A post to be arranged layer by layer: its scene painted to take the
      * bottle anywhere, and the layout's places kept as choices a person can
@@ -1005,7 +1039,7 @@ export async function preparePost(
   const [gw, gh] = input.generatorShape.split(':').map(Number);
   // The pack's own colours, measured from its photograph, for a scene that flatters them.
   const packColours = bottle ? (await readPalette(bottle.body, 'image/png')).filter((c) => c.share >= 0.08).slice(0, 3).map((c) => c.hex) : [];
-  const prompt = scenePrompt(plan, layout, input.ratio, gw && gh ? gw / gh : input.ratio, packColours, { open: input.layered, brandScenes: plan.pastScenes, drink: { ...plan.drink, variant: plan.variant }, never: plan.style.never, bright: looksBright(plan.pastScenes[0]) });
+  const prompt = scenePrompt(plan, layout, input.ratio, gw && gh ? gw / gh : input.ratio, packColours, { open: input.layered, brandScenes: plan.pastScenes, drink: { ...plan.drink, variant: plan.variant }, never: plan.style.never, bright: looksBright(plan.pastScenes[0]), glass: asksForGlass(input.request) });
   const headline = plan.headline.map((l) => l.text).join(' / ');
   return {
     plan,
@@ -1052,6 +1086,22 @@ export async function composePost(
 }
 
 const aspectOf = (a: Pick<BrandAsset, 'bbox' | 'width' | 'height'>) => (a.bbox[3] * a.height) / (a.bbox[2] * a.width);
+
+/**
+ * A pack cropped on its sides, a share of the pack itself (its outline in the picture, not the canvas around
+ * it): what is left, on transparency, ready to be stood in the scene.
+ */
+async function cropPack(bytes: Buffer, asset: Pick<BrandAsset, 'bbox' | 'width' | 'height'>, crop: { l: number; t: number; r: number; b: number }): Promise<Buffer> {
+  const img = await loadImage(bytes);
+  const [bx, by, bw, bh] = asset.bbox;
+  const x = (bx + bw * crop.l) * img.width;
+  const y = (by + bh * crop.t) * img.height;
+  const w = Math.max(2, bw * (1 - crop.l - crop.r) * img.width);
+  const h = Math.max(2, bh * (1 - crop.t - crop.b) * img.height);
+  const c = createCanvas(Math.round(w), Math.round(h));
+  c.getContext('2d').drawImage(img, x, y, w, h, 0, 0, Math.round(w), Math.round(h));
+  return c.toBuffer('image/png');
+}
 
 /** The brand's logos, the pack's own first, each with its bytes. */
 /**
@@ -1134,7 +1184,8 @@ function brandFile(scope: CompanyScope, fileId: string): ReturnType<typeof readF
   const key = `${scope.companyId}:${fileId}`;
   const known = brandFiles.get(key);
   if (known) return known;
-  const read = readFile(scope, fileId);
+  // A bottle or logo taken out of the library since is still read for the posts made with it.
+  const read = readBrandAsset(scope, fileId);
   brandFiles.set(key, read);
   // A failed read is not kept: the next one tries again.
   read.catch(() => brandFiles.delete(key));
@@ -1157,11 +1208,13 @@ export async function drawPictures(pictures: { pic: AddedPicture; bytes: Buffer 
     const h = piece.height * (w / piece.width);
     // A shadow on the surface at its foot, so it stands on the table.
     if ((pic.ground ?? 0) > 0.01) {
+      // Softer is wider and more blurred, as a shadow cast by a larger light.
+      const soft = pic.groundSoft ?? 0.2;
       c.save();
-      c.filter = `blur(${Math.max(2, w * 0.04).toFixed(1)}px)`;
+      c.filter = `blur(${Math.max(1, w * (0.01 + 0.15 * soft)).toFixed(1)}px)`;
       c.fillStyle = `rgba(0,0,0,${Math.min(0.75, 0.7 * pic.ground!).toFixed(2)})`;
       c.beginPath();
-      c.ellipse(pic.x * W + w / 2, pic.y * H + h * 0.985, w * 0.42, Math.max(2, w * 0.045), 0, 0, Math.PI * 2);
+      c.ellipse(pic.x * W + w / 2, pic.y * H + h * 0.985, w * (0.38 + 0.14 * soft), Math.max(2, w * (0.03 + 0.06 * soft)), 0, 0, Math.PI * 2);
       c.fill();
       c.restore();
     }
@@ -1181,7 +1234,9 @@ export async function drawPictures(pictures: { pic: AddedPicture; bytes: Buffer 
     c.restore();
     // Its reflection on a glossy surface, as the bottle's: upside down below its foot, fading away.
     if ((pic.mirror ?? 0) > 0.01 && Math.abs(pic.rotate ?? 0) < 8) {
-      const deep = Math.max(1, Math.round(h * 0.55));
+      // Softer is shorter and blurred, as on a satin surface rather than a mirror.
+      const msoft = pic.mirrorSoft ?? 0.2;
+      const deep = Math.max(1, Math.round(h * (0.65 - 0.45 * msoft)));
       const m = createCanvas(Math.max(1, Math.round(w)), deep);
       const mc = m.getContext('2d');
       mc.translate(0, h);
@@ -1197,6 +1252,7 @@ export async function drawPictures(pictures: { pic: AddedPicture; bytes: Buffer 
       mc.fillRect(0, 0, m.width, deep);
       c.save();
       c.globalAlpha = Math.min(0.6, 0.45 * pic.mirror!) * (pic.opacity ?? 1);
+      if (msoft > 0.02) c.filter = `blur(${(w * 0.025 * msoft).toFixed(1)}px)`;
       c.drawImage(m, pic.x * W, pic.y * H + h * 0.99);
       c.restore();
     }

@@ -80,6 +80,9 @@
   box-shadow: var(--sh-1); transition: all .16s ease;
 }
 .chip:hover { border-color: var(--brand); color: var(--brand-deep); transform: translateY(-1px); }
+/* A chosen chip, plainly: filled in the house colour, with its tick. */
+.chip.on { background: var(--brand); border-color: var(--brand); color: #1a1208; font-weight: 700; box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 28%, transparent); }
+.chip.on:hover { color: #1a1208; }
 
 /* Progress */
 .progress { height: 8px; border-radius: var(--r-pill); background: var(--ink-100); overflow: hidden; position: relative; }

@@ -8,6 +8,7 @@ import { ClientBriefs } from '@/sections/ClientBriefs';
 import { clientBriefs } from '@/server/brain/clientBriefs';
 import { activeBrand } from '@/server/brain/activeBrand';
 import { brainStatus } from '@/server/brain/providers';
+import { brandMarkets, brandPacks } from '@/server/brain/packs';
 
 export const metadata = { title: 'Campaign Ideation — CIP' };
 export const dynamic = 'force-dynamic';
@@ -21,6 +22,7 @@ export default async function AskPage() {
   const session = await requireSession();
 
   const { active, brands } = await activeBrand(session.scope);
+  const markets = (await companyMarkets(session.scope)).map((m) => m.market);
 
   return (
     <AskSection
@@ -32,8 +34,10 @@ export default async function AskPage() {
       }
       initial={(await listGenerations(session.scope, { limit: 30 })).generations}
       providers={providerStatus()}
-      markets={(await companyMarkets(session.scope)).map((m) => m.market)}
+      markets={markets}
+      brandMarkets={await brandMarkets(session.scope, markets)}
       brands={brands.map((b) => b.name)}
+      packs={await brandPacks(session.scope)}
       activeBrand={active}
     />
   );

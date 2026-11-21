@@ -163,6 +163,8 @@ export type BrainGenerateInput = {
   market?: string | null;
   /** Which brand this is for, chosen on the page. The Brain asks when nobody said and the request does not name one. */
   brand?: string | null;
+  /** Which of the brand's packs, chosen on the page: its look, its bottle and its lines are that pack's. */
+  pack?: string | null;
   /**
    * Called once the brief exists, before the generator is asked for anything.
    *
@@ -415,6 +417,7 @@ async function composedPost(
     ratio,
     generatorShape: made,
     market: input.market ?? null,
+    pack: input.pack ?? null,
     layered: layered(),
     // Laid out from the brand's own layouts and headlines unless planning is the model's: only the picture is paid for.
     noModel: !aiPlanning(),

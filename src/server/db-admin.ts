@@ -12,5 +12,6 @@ export function adminSql(): postgres.Sql {
   if (!url) {
     throw new Error('DATABASE_ADMIN_URL (or DATABASE_URL) must be set to run this script.');
   }
-  return postgres(url, { max: 1, onnotice: () => {} });
+  // A connection left idle is let go: one a caller forgot to end does not hold a slot of the shared pooler for good.
+  return postgres(url, { max: 1, idle_timeout: 20, onnotice: () => {} });
 }

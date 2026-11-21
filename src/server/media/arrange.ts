@@ -2,11 +2,12 @@ import 'server-only';
 import { withCompanyScope } from '../db';
 import type { CompanyScope } from '../db';
 import { STACK, choicesOf, stackOf, type AddedPicture, type ShapeSpec, type Corner, type Placement, type PostChoices, type PostStyle, type StackGroup } from '../brain/layouts';
-import { brandDrink, brandStyle, headlineSuggestions, pastScenes } from '../brain/bench';
-import { styleScene } from '@/lib/brandStyle';
+import { brandStyle, headlineSuggestions, pastScenes } from '../brain/bench';
+import { asksForGlass, styleScene } from '@/lib/brandStyle';
+import { COLLECTION, packFamily } from '@/lib/packs';
 import { brandAssets } from '../brain/brandAssets';
-import { drinkLine, neverLine, headlineInks, rebuildPost, type PostBoxes, type PostLayers, type PostRecipe } from './composePost';
-import { addStudioPicture, brandGlasses, type StudioPicture } from './studioPictures';
+import { NO_GLASS, neverLine, headlineInks, rebuildPost, type PostBoxes, type PostLayers, type PostRecipe } from './composePost';
+import { addStudioPicture, type StudioPicture } from './studioPictures';
 import { cutPlainBackground, lightOf, seeThrough } from './cutout';
 import { judge, type JudgedRule, type PostFacts, type Verdict } from '../brain/rulesJudge';
 import { generationIn, getGeneration, keepScene, sceneOf, validateProviderChoice } from './generation';
@@ -62,6 +63,15 @@ export function choicesFrom(raw: unknown, current: PostChoices): PostChoices {
   const pictures = r.pictures === undefined ? current.pictures ?? [] : picturesFrom(r.pictures);
   const order = r.order === undefined ? current.order : r.order === null ? undefined : orderFrom(r.order);
   const locked = r.locked === undefined ? current.locked ?? [] : lockedFrom(r.locked);
+  // A bottle or logo chosen from the brand's library, by its file; null goes back to the plan's own.
+  const fileOf = (v: unknown, was: string | undefined): string | undefined => {
+    if (v === undefined) return was;
+    if (v === null) return undefined;
+    if (typeof v === 'string' && UUID_RE.test(v)) return v;
+    throw new MediaRejected('That is not one of the brand\'s pictures.');
+  };
+  const bottleFile = fileOf(r.bottleFile, current.bottleFile);
+  const logoFile = fileOf(r.logoFile, current.logoFile);
   return {
     bottle, size, logo,
     ...(headline === 'none' ? { headline } : {}),
@@ -71,6 +81,8 @@ export function choicesFrom(raw: unknown, current: PostChoices): PostChoices {
     ...(pictures.length ? { pictures } : {}),
     ...(locked.length ? { locked } : {}),
     ...(order && stackOf(order).join() !== STACK.join() ? { order: stackOf(order) } : {}),
+    ...(bottleFile ? { bottleFile } : {}),
+    ...(logoFile ? { logoFile } : {}),
   };
 }
 
@@ -149,6 +161,8 @@ export function picturesFrom(raw: unknown): AddedPicture[] {
     const shadow = num('shadow', 0, 2, 0);
     const ground = num('ground', 0, 1, 0);
     const mirror = num('mirror', 0, 1, 0);
+    const groundSoft = num('groundSoft', 0, 1, -1);
+    const mirrorSoft = num('mirrorSoft', 0, 1, -1);
     const feather = num('feather', 0, 1, 0);
     const tintAmount = num('tintAmount', 0, 1, 0);
     const tint = typeof r.tint === 'string' && INK.test(r.tint) ? r.tint.toLowerCase() : undefined;
@@ -172,6 +186,8 @@ export function picturesFrom(raw: unknown): AddedPicture[] {
       ...(shadow ? { shadow } : {}),
       ...(ground ? { ground } : {}),
       ...(mirror ? { mirror } : {}),
+      ...(groundSoft >= 0 ? { groundSoft } : {}),
+      ...(mirrorSoft >= 0 ? { mirrorSoft } : {}),
     };
   });
 }
@@ -280,6 +296,15 @@ export function styleFrom(raw: unknown, current: PostStyle = {}): PostStyle {
   if (r.bgFlip !== undefined) {
     if (r.bgFlip === true) out.bgFlip = true;
     else delete out.bgFlip;
+  }
+  for (const key of ['bottleCrop', 'logoCrop'] as const) {
+    if (r[key] === undefined) continue;
+    if (r[key] === null) { delete out[key]; continue; }
+    const c = (r[key] && typeof r[key] === 'object' ? r[key] : {}) as Record<string, unknown>;
+    const side = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? Math.round(Math.min(0.45, Math.max(0, v)) * 1000) / 1000 : 0);
+    const crop = { l: side(c.l), t: side(c.t), r: side(c.r), b: side(c.b) };
+    if (crop.l + crop.r > 0.8 || crop.t + crop.b > 0.8) throw new MediaRejected(`That would crop the whole ${key === 'logoCrop' ? 'logo' : 'bottle'} away.`);
+    if (crop.l || crop.t || crop.r || crop.b) out[key] = crop; else delete out[key];
   }
   if (r.logoTone !== undefined) {
     if (r.logoTone === null) delete out.logoTone;
@@ -681,7 +706,7 @@ export async function layerFile(scope: CompanyScope, generationId: string, name:
 
 /** The other shapes a post can be taken away in, from the same background. */
 export const EXPORT_SHAPES: Record<string, number> = {
-  '1:1': 1, '4:5': 0.8, '9:16': 9 / 16, '16:9': 16 / 9,
+  '1:1': 1, '4:5': 0.8, '3:2': 1.5, '2:3': 2 / 3, '9:16': 9 / 16, '16:9': 16 / 9,
   // What Radico's briefs ask for besides posts: A-size posters (A2, A3 - one shape), a standee,
   // a billboard, Jumia's banners and a shelf unit's panels.
   '1:1.414': 1 / Math.SQRT2, '1:2': 0.5, '4:3': 4 / 3, '5:1': 5, '720:261': 720 / 261, '41:16': 41 / 16, '18:60': 18 / 60,
@@ -852,7 +877,9 @@ export async function headlineOptions(scope: CompanyScope, generationId: string)
   const roles = new Set((recipe.spec.text?.lines ?? []).map((l) => l.role));
   if (!roles.size) roles.add('lead');
   // The colours the headline may take come with them: the brand's own, read once the step opens.
-  const [options, inks] = await Promise.all([headlineSuggestions(scope, recipe.brand, headline, roles), headlineInks(scope, recipe)]);
+  // What the post was asked for, so the brand's lines that suit it are offered first.
+  const [asked] = await withCompanyScope(scope, (tx) => tx<{ prompt: string | null }[]>`select prompt from media_generations where id = ${generationId} and company_id = ${scope.companyId}`).catch(() => []);
+  const [options, inks] = await Promise.all([headlineSuggestions(scope, recipe.brand, headline, roles, asked?.prompt ?? null), headlineInks(scope, recipe)]);
   // The faces to choose from, and which are set from the brand's own files rather than a free stand-in.
   const fonts = HEADLINE_FONTS.map((f) => ({ id: f.id, label: f.label, own: headlineFontIsOwn(f.id) }));
   return { options, inks, fonts };
@@ -892,7 +919,7 @@ export async function newBackground(scope: CompanyScope, generationId: string, r
   const provider = imageGenerationProvider(validateProviderChoice(meta.providerChoice ?? null));
   if (!provider.configured && provider.name !== 'fake-image') throw new MediaProviderUnavailable('Image generation is not configured.');
 
-  const [readScenes, drink, style] = await Promise.all([pastScenes(scope, recipe.brand), brandDrink(scope, recipe.brand), brandStyle(scope, recipe.brand)]);
+  const [readScenes, style] = await Promise.all([pastScenes(scope, recipe.brand), brandStyle(scope, recipe.brand)]);
   // The scene the brand's own posts are set in, as learned, beside the pictures CIP read - and the person's note, when there is one.
   const learned = styleScene(style, note ?? '');
   const brandScenes = learned ? [learned, ...readScenes] : readScenes;
@@ -906,7 +933,8 @@ export async function newBackground(scope: CompanyScope, generationId: string, r
     brief,
     asked,
     CLEAR,
-    drinkLine({ ...drink, variant: recipe.variant }),
+    // No glass, unless the post was asked for one or the person asks now.
+    ...(composed.scenePrompt && String(composed.scenePrompt).includes('There are no glasses') && !asksForGlass(note) ? [NO_GLASS] : []),
     ...(style.never.length ? [neverLine(style.never)] : []),
     'Still no bottles, packs, labels, text, letters, logos, warnings or disclaimers anywhere.',
   ].join('\n').slice(0, MEDIA_LIMITS.maxPromptChars);
@@ -1075,20 +1103,35 @@ function fallbackBrief(composed: Composed, recipe: PostRecipe): string {
  */
 export async function glassOptions(scope: CompanyScope, generationId: string): Promise<{
   brand: string; variant: string | null; glasses: { id: string; name: string }[];
-  /** The brand's logos, one of each kind - white, black, colour - for the person to choose between. */
-  logos: { id: string; name: string; tone: 'light' | 'dark' | 'colour' }[];
+  /** Every logo the brand has - white, black, colour, each pack's - for the person to choose between. */
+  logos: { id: string; name: string; tone: 'light' | 'dark' | 'colour'; variant: string | null }[];
+  /** Every bottle and pack the brand has, cut out - each flavour, with its box or pouch - to choose between. */
+  bottles: { id: string; name: string; variant: string | null }[];
+  /** Every bottle of the brand, whatever the post's pack: for standing several together. */
+  allBottles: { id: string; name: string; variant: string | null }[];
+  /** The bottle and logo on the post now. */
+  bottleFile: string | null;
+  logoFile: string | null;
 }> {
   const { recipe } = await composedOf(scope, generationId);
-  const [glasses, logos] = await Promise.all([
-    brandGlasses(scope, recipe.brand),
+  const [glasses, logos, bottles] = await Promise.all([
+    brandAssets(scope, { brand: recipe.brand, kind: 'glass' }).then((g) => g.filter((x) => x.asset.cutout).map((x) => ({ id: x.fileId, name: x.name }))).catch(() => []),
     brandAssets(scope, { brand: recipe.brand, kind: 'logo' }).catch(() => []),
+    brandAssets(scope, { brand: recipe.brand, kind: 'bottle' }).catch(() => []),
   ]);
-  const byTone = new Map<string, { id: string; name: string; tone: 'light' | 'dark' | 'colour' }>();
-  for (const l of logos) {
-    const tone = l.asset.tone === 'light' || l.asset.tone === 'dark' ? l.asset.tone : 'colour';
-    if (!byTone.has(tone)) byTone.set(tone, { id: l.fileId, name: l.name, tone });
-  }
-  return { brand: recipe.brand, variant: recipe.variant ?? null, glasses, logos: [...byTone.values()] };
+  return {
+    brand: recipe.brand, variant: recipe.variant ?? null, glasses,
+    logos: logos.map((l) => ({ id: l.fileId, name: l.name, tone: l.asset.tone === 'light' || l.asset.tone === 'dark' ? l.asset.tone : 'colour', variant: l.asset.variant ?? null })),
+    bottles: (() => {
+      const cut = bottles.filter((b) => b.asset.cutout);
+      const pack = packFamily(recipe.variant);
+      const own = pack === COLLECTION ? cut : cut.filter((b) => packFamily(b.asset.variant) === pack);
+      return (own.length ? own : cut).map((b) => ({ id: b.fileId, name: b.name, variant: b.asset.variant ?? null }));
+    })(),
+    allBottles: bottles.filter((b) => b.asset.cutout).map((b) => ({ id: b.fileId, name: b.name, variant: b.asset.variant ?? null })),
+    bottleFile: recipe.choices?.bottleFile ?? recipe.bottleFileId ?? null,
+    logoFile: recipe.choices?.logoFile ?? null,
+  };
 }
 
 /**
